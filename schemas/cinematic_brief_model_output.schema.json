@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cinescaffold.local/schemas/cinematic_brief_model_output.schema.json",
+  "title": "Cinematic Brief Model Output v0.1",
+  "type": "object",
+  "properties": {
+    "summary": {"type": "string"},
+    "subjects": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/subject"}
+    },
+    "subject_motion": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/subjectMotion"}
+    },
+    "scene_design": {"$ref": "#/$defs/sceneDesign"},
+    "mood": {"$ref": "#/$defs/mood"},
+    "composition": {"$ref": "#/$defs/composition"},
+    "camera": {"$ref": "#/$defs/camera"},
+    "timeline": {"$ref": "#/$defs/timeline"},
+    "uncertainties": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/uncertainty"}
+    }
+  },
+  "required": [
+    "summary",
+    "subjects",
+    "subject_motion",
+    "scene_design",
+    "mood",
+    "composition",
+    "camera",
+    "timeline",
+    "uncertainties"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "sourceStatus": {
+      "type": "string",
+      "enum": ["explicit", "inferred", "default", "agent_selected", "unknown"]
+    },
+    "annotatedText": {
+      "type": "object",
+      "properties": {
+        "value": {"type": ["string", "null"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "semanticStatement": {
+      "type": "object",
+      "properties": {
+        "value": {"type": "string"},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "attribute": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "value": {"type": "string"},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["name", "value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "subject": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "category": {"$ref": "#/$defs/annotatedText"},
+        "description": {"$ref": "#/$defs/annotatedText"},
+        "narrative_role": {"$ref": "#/$defs/annotatedText"},
+        "attributes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/attribute"}
+        }
+      },
+      "required": ["id", "category", "description", "narrative_role", "attributes"],
+      "additionalProperties": false
+    },
+    "subjectMotion": {
+      "type": "object",
+      "properties": {
+        "subject_id": {"type": "string"},
+        "action": {"$ref": "#/$defs/annotatedText"},
+        "direction": {"$ref": "#/$defs/annotatedText"},
+        "speed": {"$ref": "#/$defs/annotatedText"},
+        "trajectory": {"$ref": "#/$defs/annotatedText"},
+        "start_time_seconds": {"type": ["number", "null"]},
+        "end_time_seconds": {"type": ["number", "null"]},
+        "secondary_motion": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/semanticStatement"}
+        }
+      },
+      "required": [
+        "subject_id",
+        "action",
+        "direction",
+        "speed",
+        "trajectory",
+        "start_time_seconds",
+        "end_time_seconds",
+        "secondary_motion"
+      ],
+      "additionalProperties": false
+    },
+    "spatialLayer": {
+      "type": "object",
+      "properties": {
+        "layer": {"type": "string"},
+        "content_ids": {"type": "array", "items": {"type": "string"}},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["layer", "content_ids", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "relationship": {
+      "type": "object",
+      "properties": {
+        "type": {"type": "string"},
+        "subject_id": {"type": "string"},
+        "reference_id": {"type": ["string", "null"]},
+        "strength": {"type": ["string", "null"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["type", "subject_id", "reference_id", "strength", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "sceneDesign": {
+      "type": "object",
+      "properties": {
+        "environment": {"$ref": "#/$defs/annotatedText"},
+        "spatial_layers": {"type": "array", "items": {"$ref": "#/$defs/spatialLayer"}},
+        "relationships": {"type": "array", "items": {"$ref": "#/$defs/relationship"}},
+        "environmental_motion": {"type": "array", "items": {"$ref": "#/$defs/semanticStatement"}}
+      },
+      "required": ["environment", "spatial_layers", "relationships", "environmental_motion"],
+      "additionalProperties": false
+    },
+    "mood": {
+      "type": "object",
+      "properties": {
+        "emotional_tones": {"type": "array", "items": {"$ref": "#/$defs/semanticStatement"}},
+        "color_intent": {"type": "array", "items": {"$ref": "#/$defs/semanticStatement"}},
+        "lighting_intent": {"type": "array", "items": {"$ref": "#/$defs/semanticStatement"}},
+        "atmosphere": {"type": "array", "items": {"$ref": "#/$defs/semanticStatement"}}
+      },
+      "required": ["emotional_tones", "color_intent", "lighting_intent", "atmosphere"],
+      "additionalProperties": false
+    },
+    "screenPlacement": {
+      "type": "object",
+      "properties": {
+        "subject_id": {"type": "string"},
+        "horizontal": {"$ref": "#/$defs/annotatedText"},
+        "vertical": {"$ref": "#/$defs/annotatedText"}
+      },
+      "required": ["subject_id", "horizontal", "vertical"],
+      "additionalProperties": false
+    },
+    "visualScale": {
+      "type": "object",
+      "properties": {
+        "subject_id": {"type": "string"},
+        "scale": {"$ref": "#/$defs/annotatedText"}
+      },
+      "required": ["subject_id", "scale"],
+      "additionalProperties": false
+    },
+    "visibilityRequirement": {
+      "type": "object",
+      "properties": {
+        "subject_id": {"type": "string"},
+        "requirement": {"$ref": "#/$defs/annotatedText"}
+      },
+      "required": ["subject_id", "requirement"],
+      "additionalProperties": false
+    },
+    "composition": {
+      "type": "object",
+      "properties": {
+        "shot_size": {"$ref": "#/$defs/annotatedText"},
+        "patterns": {"type": "array", "items": {"$ref": "#/$defs/semanticStatement"}},
+        "screen_placements": {"type": "array", "items": {"$ref": "#/$defs/screenPlacement"}},
+        "visual_scales": {"type": "array", "items": {"$ref": "#/$defs/visualScale"}},
+        "visibility_requirements": {"type": "array", "items": {"$ref": "#/$defs/visibilityRequirement"}}
+      },
+      "required": ["shot_size", "patterns", "screen_placements", "visual_scales", "visibility_requirements"],
+      "additionalProperties": false
+    },
+    "cameraMovement": {
+      "type": "object",
+      "properties": {
+        "type": {"$ref": "#/$defs/annotatedText"},
+        "direction": {"$ref": "#/$defs/annotatedText"},
+        "speed": {"$ref": "#/$defs/annotatedText"},
+        "trajectory": {"$ref": "#/$defs/annotatedText"},
+        "easing": {"$ref": "#/$defs/annotatedText"},
+        "start_time_seconds": {"type": ["number", "null"]},
+        "end_time_seconds": {"type": ["number", "null"]}
+      },
+      "required": ["type", "direction", "speed", "trajectory", "easing", "start_time_seconds", "end_time_seconds"],
+      "additionalProperties": false
+    },
+    "camera": {
+      "type": "object",
+      "properties": {
+        "shot_type": {"$ref": "#/$defs/annotatedText"},
+        "view_angle": {"$ref": "#/$defs/annotatedText"},
+        "camera_height": {"$ref": "#/$defs/annotatedText"},
+        "lens_intent": {"$ref": "#/$defs/annotatedText"},
+        "focus_target_id": {"$ref": "#/$defs/annotatedText"},
+        "movement": {"$ref": "#/$defs/cameraMovement"}
+      },
+      "required": ["shot_type", "view_angle", "camera_height", "lens_intent", "focus_target_id", "movement"],
+      "additionalProperties": false
+    },
+    "timelineEvent": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "description": {"type": "string"},
+        "start_time_seconds": {"type": ["number", "null"]},
+        "end_time_seconds": {"type": ["number", "null"]},
+        "reference_ids": {"type": "array", "items": {"type": "string"}},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["id", "description", "start_time_seconds", "end_time_seconds", "reference_ids", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "timeline": {
+      "type": "object",
+      "properties": {
+        "duration_seconds": {"type": ["number", "null"]},
+        "duration_source_status": {"$ref": "#/$defs/sourceStatus"},
+        "events": {"type": "array", "items": {"$ref": "#/$defs/timelineEvent"}}
+      },
+      "required": ["duration_seconds", "duration_source_status", "events"],
+      "additionalProperties": false
+    },
+    "uncertainty": {
+      "type": "object",
+      "properties": {
+        "field": {"type": "string"},
+        "reason": {"type": "string"},
+        "resolution": {"type": "string", "enum": ["unresolved", "use_default", "use_inference"]},
+        "selected_value": {"type": ["string", "null"]}
+      },
+      "required": ["field", "reason", "resolution", "selected_value"],
+      "additionalProperties": false
+    }
+  }
+}
