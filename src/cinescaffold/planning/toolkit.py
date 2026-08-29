@@ -512,6 +512,11 @@ def _initial_candidate(
             duration_seconds=frame_count * profile.fps_denominator / profile.fps_numerator,
         ),
         required_source_refs=[item.path for item in brief.explicit_requirements],
+        runner_mapped_source_refs=[
+            item.path
+            for item in brief.explicit_requirements
+            if item.path == "content.timeline.duration_seconds"
+        ],
     )
 
 
@@ -699,7 +704,7 @@ def _camera_violations(state: CandidateState) -> list[Violation]:
 
 
 def _hard_semantic_violations(state: CandidateState) -> list[Violation]:
-    mapped: set[str] = set()
+    mapped: set[str] = set(state.runner_mapped_source_refs)
     for entity in state.entities.values():
         mapped.update(entity.source_refs)
     for track in state.motion_tracks.values():

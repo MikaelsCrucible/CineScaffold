@@ -135,6 +135,13 @@ def _collect_explicit_requirements(
                     source_text=_optional_string(value.get("source_text")),
                 )
             )
+    if value.get("duration_source_status") == "explicit" and value.get("duration_seconds") is not None:
+        output.append(
+            ObjectiveRequirement(
+                path=f"{path}.duration_seconds",
+                value=deepcopy(value["duration_seconds"]),
+            )
+        )
     for name, child in value.items():
         if name not in {"source_status", "source_text"}:
             _collect_explicit_requirements(child, f"{path}.{name}", output)

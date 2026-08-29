@@ -1,0 +1,338 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import time
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.usage import RunUsage, UsageLimits
+
+from cinescaffold.planning.agent import PlanningDeps, create_planning_agent
+from cinescaffold.planning.compiler import CommitGateResult, SceneIRCommitGate
+from cinescaffold.planning.domain import (
+    CommitRequest,
+    InfeasibleResult,
+    PlanningProfile,
+    UnsupportedResult,
+)
+from cinescaffold.planning.models import create_planning_model
+from cinescaffold.planning.objective import ObjectiveProjection, project_objective_brief
+from cinescaffold.planning.toolkit import FULL_VALIDATION_CHECKS, ScenePlanningToolkit
+from cinescaffold.planning.trace import (
+    CostRates,
+    TraceConfig,
+    TraceRecorder,
+    TracingModel,
+    usage_summary,
+)
+
+
+class InterpreterRunConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    provider: str = "mock"
+    model: str | None = None
+    base_url: str | None = None
+    system_prompt_path: Path = Path("prompts/scene_planner/system.md")
+    run_dir: Path
+    run_id: str | None = None
+    max_requests: int = Field(default=12, ge=1)
+    max_tool_calls: int = Field(default=40, ge=1)
+    max_input_tokens: int | None = Field(default=120_000, ge=1)
+    max_output_tokens: int | None = Field(default=30_000, ge=1)
+    max_total_tokens: int | None = Field(default=150_000, ge=1)
+    max_seconds: float = Field(default=300.0, gt=0)
+    max_commit_attempts: int = Field(default=3, ge=1)
+    trace_config: TraceConfig = Field(default_factory=TraceConfig)
+    cost_rates: CostRates | None = None
+
+
+class InterpreterRunResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str
+    status: str
+    provider: str
+    model: str
+    terminal_type: str | None
+    scene_ir_hash: str | None
+    final_revision: int
+    usage: dict[str, Any]
+    artifacts: dict[str, str]
+    error: dict[str, str] | None = None
+
+
+class InterpreterRunner:
+    def __init__(self, config: InterpreterRunConfig) -> None:
+        self.config = config
+
+    async def run(self, cinematic_brief: dict[str, Any]) -> InterpreterRunResult:
+        run_id = self.config.run_id or _new_run_id()
+        run_dir = self.config.run_dir
+        if run_dir.exists() and any(run_dir.iterdir()):
+            raise ValueError(f"规划输出目录必须为空，避免覆盖实验记录：{run_dir}")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        trace_path = run_dir / "planning_agent_tool_trace.jsonl"
+        trace = TraceRecorder(trace_path, run_id, self.config.trace_config)
+        started = time.monotonic()
+        usage = RunUsage()
+        projection: ObjectiveProjection | None = None
+        toolkit: ScenePlanningToolkit | None = None
+        commit_result: CommitGateResult | None = None
+        terminal_type: str | None = None
+        status = "failed"
+        error_payload: dict[str, str] | None = None
+        model_label = self.config.model or "mock-scene-planner-v0.1"
+
+        try:
+            projection = project_objective_brief(cinematic_brief)
+            _write_json(run_dir / "cinematic_brief.json", cinematic_brief)
+            _write_json(run_dir / "objective_planning_brief.json", projection.model_dump(mode="json"))
+            system_prompt = self.config.system_prompt_path.read_text(encoding="utf-8")
+            trace.record(
+                "run_started",
+                provider=self.config.provider,
+                model=model_label,
+                source_brief_hash=projection.objective_brief.source_brief_sha256,
+                system_prompt_sha256=_text_hash(system_prompt),
+                toolkit_version="0.1",
+                limits={
+                    "max_requests": self.config.max_requests,
+                    "max_tool_calls": self.config.max_tool_calls,
+                    "max_input_tokens": self.config.max_input_tokens,
+                    "max_output_tokens": self.config.max_output_tokens,
+                    "max_total_tokens": self.config.max_total_tokens,
+                    "max_seconds": self.config.max_seconds,
+                    "max_commit_attempts": self.config.max_commit_attempts,
+                },
+            )
+            trace.record(
+                "objective_projection_completed",
+                objective_fields=[
+                    "subjects",
+                    "subject_motion",
+                    "scene_design",
+                    "composition",
+                    "camera",
+                    "timeline",
+                    "uncertainties",
+                ],
+                explicit_requirement_count=len(projection.objective_brief.explicit_requirements),
+                ignored_subjective_fields=[
+                    item.model_dump(mode="json") for item in projection.ignored_subjective_fields
+                ],
+            )
+            profile = PlanningProfile()
+            toolkit = ScenePlanningToolkit(projection.objective_brief, profile)
+            api_key = _provider_api_key(self.config.provider)
+            raw_model = create_planning_model(
+                self.config.provider,
+                self.config.model,
+                projection.objective_brief,
+                api_key=api_key,
+                base_url=self.config.base_url,
+            )
+            model_label = raw_model.model_name
+            agent = create_planning_agent(TracingModel(raw_model, trace), system_prompt)
+            deps = PlanningDeps(
+                toolkit=toolkit,
+                trace=trace,
+                deadline_monotonic=started + self.config.max_seconds,
+            )
+            usage_limits = UsageLimits(
+                request_limit=self.config.max_requests,
+                tool_calls_limit=self.config.max_tool_calls,
+                input_tokens_limit=self.config.max_input_tokens,
+                output_tokens_limit=self.config.max_output_tokens,
+                total_tokens_limit=self.config.max_total_tokens,
+            )
+            history = None
+            prompt = _initial_agent_prompt(projection)
+
+            async with asyncio.timeout(self.config.max_seconds):
+                for attempt in range(1, self.config.max_commit_attempts + 1):
+                    trace.record(
+                        "planning_attempt_started",
+                        attempt=attempt,
+                        current_revision=toolkit.store.current_revision,
+                    )
+                    result = await agent.run(
+                        prompt,
+                        message_history=history,
+                        deps=deps,
+                        usage=usage,
+                        usage_limits=usage_limits,
+                        run_id=run_id,
+                    )
+                    history = result.all_messages()
+                    terminal = result.output
+                    terminal_type = terminal.type
+                    trace.record(
+                        "agent_terminal_received",
+                        attempt=attempt,
+                        terminal=terminal.model_dump(mode="json"),
+                        aggregate_usage=usage_summary(usage, None)["tokens"],
+                    )
+                    if isinstance(terminal, UnsupportedResult):
+                        status = "unsupported"
+                        break
+                    if isinstance(terminal, InfeasibleResult):
+                        status = "infeasible"
+                        break
+                    assert isinstance(terminal, CommitRequest)
+                    commit_result = SceneIRCommitGate(toolkit).commit(
+                        terminal,
+                        agent_run_id=run_id,
+                        trace_ref=trace_path.name,
+                    )
+                    trace.record(
+                        "commit_gate_completed",
+                        attempt=attempt,
+                        requested_revision=terminal.candidate_revision,
+                        status=commit_result.status,
+                        scene_ir_hash=commit_result.scene_ir_hash,
+                        validation=commit_result.validation,
+                        violations=commit_result.violations,
+                    )
+                    if commit_result.status == "success":
+                        status = "success"
+                        break
+                    status = "commit_rejected"
+                    prompt = _repair_prompt(commit_result, toolkit.store.current_revision)
+                else:
+                    status = "commit_rejected"
+        except TimeoutError as error:
+            status = "budget_exhausted"
+            error_payload = {"type": type(error).__name__, "message": str(error)}
+            trace.record("run_failed", status=status, error=error_payload)
+        except UsageLimitExceeded as error:
+            status = "budget_exhausted"
+            error_payload = {"type": type(error).__name__, "message": str(error)}
+            trace.record("run_failed", status=status, error=error_payload)
+        except Exception as error:
+            status = "failed"
+            error_payload = {"type": type(error).__name__, "message": str(error)}
+            trace.record("run_failed", status=status, error=error_payload)
+
+        artifacts = _persist_run_artifacts(
+            run_dir,
+            toolkit,
+            commit_result,
+        )
+        usage_data = usage_summary(usage, self.config.cost_rates)
+        final_revision = (
+            toolkit.store.committed_revision
+            if toolkit and toolkit.store.committed_revision is not None
+            else toolkit.store.current_revision if toolkit else 0
+        )
+        summary = InterpreterRunResult(
+            run_id=run_id,
+            status=status,
+            provider=self.config.provider,
+            model=model_label,
+            terminal_type=terminal_type,
+            scene_ir_hash=commit_result.scene_ir_hash if commit_result else None,
+            final_revision=final_revision,
+            usage=usage_data,
+            artifacts=artifacts,
+            error=error_payload,
+        )
+        summary.artifacts["summary"] = "planning_summary.json"
+        _write_json(run_dir / "planning_summary.json", summary.model_dump(mode="json"))
+        trace.record(
+            "run_finished",
+            status=status,
+            terminal_type=terminal_type,
+            final_revision=final_revision,
+            scene_ir_hash=summary.scene_ir_hash,
+            usage=usage_data,
+            duration_ms=round((time.monotonic() - started) * 1000, 3),
+            artifacts=summary.artifacts,
+        )
+        return summary
+
+
+def _initial_agent_prompt(projection: ObjectiveProjection) -> str:
+    payload = projection.objective_brief.model_dump(mode="json")
+    return (
+        "请根据以下只含客观内容的 Objective Planning Brief 建立并验证 Candidate。"
+        "先检查能力，再通过工具构造；不要处理或猜测已剥离的主观字段。\n\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+    )
+
+
+def _repair_prompt(result: CommitGateResult, current_revision: int) -> str:
+    feedback = {
+        "current_revision": current_revision,
+        "hard_pass": result.validation.get("hard_pass"),
+        "soft_score": result.validation.get("soft_score"),
+        "violations": result.violations,
+    }
+    return (
+        "Commit Gate 拒绝了提交。只依据以下结构化证据继续检查、修复、求解和验证；"
+        "不要放松 explicit hard requirement。\n\n"
+        + json.dumps(feedback, ensure_ascii=False, indent=2)
+    )
+
+
+def _persist_run_artifacts(
+    run_dir: Path,
+    toolkit: ScenePlanningToolkit | None,
+    commit_result: CommitGateResult | None,
+) -> dict[str, str]:
+    artifacts = {"trace": "planning_agent_tool_trace.jsonl"}
+    for key, name in (
+        ("cinematic_brief", "cinematic_brief.json"),
+        ("objective_brief", "objective_planning_brief.json"),
+    ):
+        if (run_dir / name).exists():
+            artifacts[key] = name
+    if toolkit is not None:
+        constraint_plan_path = run_dir / "constraint_plan.json"
+        _write_json(
+            constraint_plan_path,
+            (
+                commit_result.constraint_plan
+                if commit_result and commit_result.status == "success"
+                else toolkit.store.get().model_dump(mode="json")
+            ),
+        )
+        artifacts["constraint_plan"] = constraint_plan_path.name
+        validation = toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
+        validation_path = run_dir / "planning_validation.json"
+        _write_json(validation_path, validation["data"])
+        artifacts["validation"] = validation_path.name
+    if commit_result and commit_result.scene_ir is not None:
+        scene_ir_path = run_dir / "final_scene_ir.json"
+        _write_json(scene_ir_path, commit_result.scene_ir.model_dump(mode="json"))
+        artifacts["scene_ir"] = scene_ir_path.name
+    return artifacts
+
+
+def _write_json(path: Path, value: Any) -> None:
+    path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _provider_api_key(provider: str) -> str | None:
+    if provider == "openai":
+        return os.environ.get("OPENAI_API_KEY")
+    if provider == "deepseek":
+        return os.environ.get("DEEPSEEK_API_KEY")
+    return None
+
+
+def _new_run_id() -> str:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"planning_{timestamp}_{uuid.uuid4().hex[:8]}"
+
+
+def _text_hash(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"

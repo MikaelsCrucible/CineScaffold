@@ -50,6 +50,18 @@ class ObjectiveProjectionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "缺少客观字段"):
             project_objective_brief(brief)
 
+    def test_explicit_duration_is_indexed_as_objective_requirement(self) -> None:
+        brief = _valid_brief()
+        brief["content"]["timeline"]["duration_seconds"] = 6.0
+        brief["content"]["timeline"]["duration_source_status"] = "explicit"
+
+        result = project_objective_brief(brief)
+
+        self.assertIn(
+            "content.timeline.duration_seconds",
+            [item.path for item in result.objective_brief.explicit_requirements],
+        )
+
 
 def _valid_brief() -> dict:
     return {

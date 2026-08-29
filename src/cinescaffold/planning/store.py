@@ -39,6 +39,10 @@ class CandidateStore:
     def revisions(self) -> list[int]:
         return sorted(self._history)
 
+    @property
+    def committed_revision(self) -> int | None:
+        return self._committed_revision
+
     def get(self, revision: int | None = None) -> CandidateState:
         selected = self._current_revision if revision is None else revision
         if selected not in self._history:

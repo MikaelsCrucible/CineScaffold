@@ -39,7 +39,7 @@
 
 ## 当前状态
 
-已实现第一段研究管线：
+已实现前两段研究管线：
 
 ```text
 自然语言
@@ -47,6 +47,11 @@
   -> OpenAI / DeepSeek / Mock Provider
   -> Cinematic Brief v0.1
   -> 本地 Schema 验证与来源记录
+  -> 客观语义投影（剥离 mood、摘要和原始提示词）
+  -> OpenAI / DeepSeek / Mock Scene Planning Agent
+  -> 九个 Scene Planning Toolkit 接口
+  -> Candidate 求解、验证、修复与 Commit Gate
+  -> Constraint Plan + 逐帧 Scene IR v0.1
 ```
 
 规则文件当前有意保持为空，等待项目成员提供正式转换规则。
@@ -97,6 +102,48 @@ cinescaffold parse \
   --output runs/example/cinematic_brief.json
 ```
 
+将 Cinematic Brief 通过 Agent 1 转换为 Scene IR：
+
+```bash
+cinescaffold plan \
+  --provider mock \
+  --brief runs/example/cinematic_brief.json \
+  --output-dir runs/example/planning
+```
+
+真实规划模型需要显式指定模型 ID：
+
+```bash
+export OPENAI_API_KEY="..."
+cinescaffold plan \
+  --provider openai \
+  --model <model-id> \
+  --brief runs/example/cinematic_brief.json \
+  --output-dir runs/example/openai-planning
+
+export DEEPSEEK_API_KEY="..."
+cinescaffold plan \
+  --provider deepseek \
+  --model <model-id> \
+  --brief runs/example/cinematic_brief.json \
+  --output-dir runs/example/deepseek-planning
+```
+
+每次规划都会写出 `planning_agent_tool_trace.jsonl`、`constraint_plan.json`、`planning_validation.json`、`planning_summary.json`；成功时额外写出 `final_scene_ir.json`。Trace 记录每轮模型请求、工具参数/结果、revision、验证错误和耗时，但不保存模型 thinking/reasoning 内容。`planning_summary.json` 记录输入、输出、缓存、请求和工具调用用量。
+
+Provider 价格会变化，因此代码不硬编码价格。实验运行时可把当日价格作为快照显式传入：
+
+```bash
+cinescaffold plan \
+  --provider openai \
+  --model <model-id> \
+  --brief <brief.json> \
+  --output-dir <run-dir> \
+  --input-cost-per-million <price> \
+  --output-cost-per-million <price> \
+  --price-source "provider pricing page YYYY-MM-DD"
+```
+
 使用 OpenAI Responses API：
 
 ```bash
@@ -129,7 +176,7 @@ API 实现依据 [OpenAI Structured Outputs](https://developers.openai.com/api/d
 2. `Constraint Plan v0.1`：机器 Schema 已由领域模型生成。
 3. `Scene IR v0.1`：机器 Schema、坐标、逐帧状态、相机和 Blender 映射基线已实现。
 
-下一步是接入 PydanticAI `InterpreterRunner`、OpenAI/DeepSeek/Mock Agent、领域预算和 Trace，再用“荒漠中的男人、远处巨型飞船、镜头缓慢推近”运行完整 CLI 样例。
+下一步是实现 Agent 2 的 ExecutionRunner、Blender Execution Toolkit、固定 Executor 与 Runtime Commit Gate，把已提交 Scene IR 转换成 `.blend` 和白模 Control Bundle。
 
 ## 名称
 

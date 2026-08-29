@@ -1660,6 +1660,13 @@
       "title": "Required Source Refs",
       "type": "array"
     },
+    "runner_mapped_source_refs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Runner Mapped Source Refs",
+      "type": "array"
+    },
     "validation": {
       "anyOf": [
         {

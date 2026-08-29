@@ -448,6 +448,7 @@ class CandidateState(StrictModel):
     constraints: dict[str, ConstraintSpec] = Field(default_factory=dict)
     camera: CameraCandidate | None = None
     required_source_refs: list[str] = Field(default_factory=list)
+    runner_mapped_source_refs: list[str] = Field(default_factory=list)
     validation: ValidationReport | None = None
 
 
