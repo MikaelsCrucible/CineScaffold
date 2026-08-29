@@ -51,7 +51,7 @@
 
 规则文件当前有意保持为空，等待项目成员提供正式转换规则。
 
-双 Agent、Scene IR v0.1 和 Blender 执行接口目前已经完成设计基线，但尚未实现。开发环境已经固定并验证 Python 3.12、PydanticAI Core 2.36.0、Blender 5.2.1 LTS 与官方 Blender Lab MCP 1.0.0；MCP 到后台 Blender 的真实调用链路已经通过冒烟测试。
+双 Agent、Scene IR v0.1 和 Blender 执行接口已经完成设计基线。Agent 1 的客观语义投影层已经实现：在模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文。开发环境已经固定并验证 Python 3.12、PydanticAI Core 2.36.0、Blender 5.2.1 LTS 与官方 Blender Lab MCP 1.0.0；MCP 到后台 Blender 的真实调用链路已经通过冒烟测试。
 
 ## 使用
 
