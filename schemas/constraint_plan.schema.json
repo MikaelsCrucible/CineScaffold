@@ -1,0 +1,1683 @@
+{
+  "$defs": {
+    "BoxGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "box",
+          "title": "Type",
+          "type": "string"
+        },
+        "size_xyz_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Size Xyz M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "size_xyz_m"
+      ],
+      "title": "BoxGeometry",
+      "type": "object"
+    },
+    "CameraCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "camera_id": {
+          "default": "camera_main",
+          "title": "Camera Id",
+          "type": "string"
+        },
+        "projection": {
+          "const": "perspective",
+          "default": "perspective",
+          "title": "Projection",
+          "type": "string"
+        },
+        "active": {
+          "default": true,
+          "title": "Active",
+          "type": "boolean"
+        },
+        "static": {
+          "$ref": "#/$defs/CameraStatic"
+        },
+        "tracks": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TrackSpec"
+          },
+          "title": "Tracks",
+          "type": "object"
+        },
+        "solved_transform": {
+          "$ref": "#/$defs/TransformValue"
+        }
+      },
+      "title": "CameraCandidate",
+      "type": "object"
+    },
+    "CameraDistanceParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "camera_id": {
+          "default": "camera_main",
+          "title": "Camera Id",
+          "type": "string"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "minimum_meters": {
+          "minimum": 0,
+          "title": "Minimum Meters",
+          "type": "number"
+        },
+        "maximum_meters": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Meters",
+          "type": "number"
+        }
+      },
+      "required": [
+        "target_id",
+        "minimum_meters",
+        "maximum_meters"
+      ],
+      "title": "CameraDistanceParameters",
+      "type": "object"
+    },
+    "CameraMotionDirectionParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "camera_id": {
+          "default": "camera_main",
+          "title": "Camera Id",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "left",
+            "right",
+            "forward",
+            "backward",
+            "up",
+            "down",
+            "push_in",
+            "pull_out"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "minimum_displacement_m": {
+          "default": 0.01,
+          "minimum": 0,
+          "title": "Minimum Displacement M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "direction"
+      ],
+      "title": "CameraMotionDirectionParameters",
+      "type": "object"
+    },
+    "CameraStatic": {
+      "additionalProperties": false,
+      "properties": {
+        "focal_length_mm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focal Length Mm"
+        },
+        "sensor_width_mm": {
+          "default": 36.0,
+          "exclusiveMinimum": 0,
+          "title": "Sensor Width Mm",
+          "type": "number"
+        },
+        "focus_target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Focus Target Id"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        }
+      },
+      "title": "CameraStatic",
+      "type": "object"
+    },
+    "CapsuleGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "capsule",
+          "title": "Type",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0,
+          "title": "Radius M",
+          "type": "number"
+        },
+        "segment_length_m": {
+          "exclusiveMinimum": 0,
+          "title": "Segment Length M",
+          "type": "number"
+        },
+        "axis": {
+          "default": "+Z",
+          "enum": [
+            "+X",
+            "+Y",
+            "+Z"
+          ],
+          "title": "Axis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "radius_m",
+        "segment_length_m"
+      ],
+      "title": "CapsuleGeometry",
+      "type": "object"
+    },
+    "ConeGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "cone",
+          "title": "Type",
+          "type": "string"
+        },
+        "radius_bottom_m": {
+          "exclusiveMinimum": 0,
+          "title": "Radius Bottom M",
+          "type": "number"
+        },
+        "radius_top_m": {
+          "minimum": 0,
+          "title": "Radius Top M",
+          "type": "number"
+        },
+        "depth_m": {
+          "exclusiveMinimum": 0,
+          "title": "Depth M",
+          "type": "number"
+        },
+        "axis": {
+          "default": "+Z",
+          "enum": [
+            "+X",
+            "+Y",
+            "+Z"
+          ],
+          "title": "Axis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "radius_bottom_m",
+        "radius_top_m",
+        "depth_m"
+      ],
+      "title": "ConeGeometry",
+      "type": "object"
+    },
+    "ConstraintSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "constraint_id": {
+          "minLength": 1,
+          "title": "Constraint Id",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "relative_position",
+            "distance_range",
+            "depth_order",
+            "orientation_relation",
+            "contact",
+            "collision_clearance",
+            "parent_attachment",
+            "screen_region",
+            "projected_size",
+            "projected_scale_ratio",
+            "keep_in_frame",
+            "visibility_fraction",
+            "occlusion_order",
+            "negative_space",
+            "framing",
+            "look_at",
+            "camera_distance",
+            "view_angle",
+            "focal_length_range",
+            "camera_motion_direction",
+            "camera_motion_smoothness",
+            "position_at_time",
+            "orientation_at_time",
+            "motion_direction",
+            "speed_range",
+            "hold",
+            "event_order",
+            "synchronization",
+            "path_adherence",
+            "motion_smoothness"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "strength": {
+          "enum": [
+            "hard",
+            "soft"
+          ],
+          "title": "Strength",
+          "type": "string"
+        },
+        "weight": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Weight",
+          "type": "number"
+        },
+        "subjects": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Subjects",
+          "type": "array"
+        },
+        "time_range_seconds": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Time Range Seconds",
+          "type": "array"
+        },
+        "parameters": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RelativePositionParameters"
+            },
+            {
+              "$ref": "#/$defs/DistanceRangeParameters"
+            },
+            {
+              "$ref": "#/$defs/DepthOrderParameters"
+            },
+            {
+              "$ref": "#/$defs/ScreenRegionParameters"
+            },
+            {
+              "$ref": "#/$defs/ProjectedSizeParameters"
+            },
+            {
+              "$ref": "#/$defs/ProjectedScaleRatioParameters"
+            },
+            {
+              "$ref": "#/$defs/KeepInFrameParameters"
+            },
+            {
+              "$ref": "#/$defs/LookAtParameters"
+            },
+            {
+              "$ref": "#/$defs/CameraDistanceParameters"
+            },
+            {
+              "$ref": "#/$defs/FocalLengthRangeParameters"
+            },
+            {
+              "$ref": "#/$defs/MotionDirectionParameters"
+            },
+            {
+              "$ref": "#/$defs/CameraMotionDirectionParameters"
+            },
+            {
+              "$ref": "#/$defs/PositionAtTimeParameters"
+            },
+            {
+              "$ref": "#/$defs/HoldParameters"
+            },
+            {
+              "$ref": "#/$defs/UnsupportedConstraintParameters"
+            }
+          ],
+          "title": "Parameters"
+        },
+        "source_status": {
+          "enum": [
+            "explicit",
+            "inferred",
+            "default",
+            "agent_selected",
+            "unknown"
+          ],
+          "title": "Source Status",
+          "type": "string"
+        },
+        "source_ref": {
+          "title": "Source Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "constraint_id",
+        "type",
+        "strength",
+        "time_range_seconds",
+        "parameters",
+        "source_status",
+        "source_ref"
+      ],
+      "title": "ConstraintSpec",
+      "type": "object"
+    },
+    "CylinderGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "cylinder",
+          "title": "Type",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0,
+          "title": "Radius M",
+          "type": "number"
+        },
+        "depth_m": {
+          "exclusiveMinimum": 0,
+          "title": "Depth M",
+          "type": "number"
+        },
+        "axis": {
+          "default": "+Z",
+          "enum": [
+            "+X",
+            "+Y",
+            "+Z"
+          ],
+          "title": "Axis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "radius_m",
+        "depth_m"
+      ],
+      "title": "CylinderGeometry",
+      "type": "object"
+    },
+    "DepthOrderParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "near_entity_id": {
+          "title": "Near Entity Id",
+          "type": "string"
+        },
+        "far_entity_id": {
+          "title": "Far Entity Id",
+          "type": "string"
+        },
+        "camera_id": {
+          "default": "camera_main",
+          "title": "Camera Id",
+          "type": "string"
+        },
+        "minimum_depth_gap_meters": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum Depth Gap Meters"
+        }
+      },
+      "required": [
+        "near_entity_id",
+        "far_entity_id"
+      ],
+      "title": "DepthOrderParameters",
+      "type": "object"
+    },
+    "DistanceRangeParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_ids": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "minimum_meters": {
+          "minimum": 0,
+          "title": "Minimum Meters",
+          "type": "number"
+        },
+        "maximum_meters": {
+          "minimum": 0,
+          "title": "Maximum Meters",
+          "type": "number"
+        }
+      },
+      "required": [
+        "entity_ids",
+        "minimum_meters",
+        "maximum_meters"
+      ],
+      "title": "DistanceRangeParameters",
+      "type": "object"
+    },
+    "EntitySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "minLength": 1,
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "proxy": {
+          "discriminator": {
+            "mapping": {
+              "box": "#/$defs/BoxGeometry",
+              "capsule": "#/$defs/CapsuleGeometry",
+              "cone": "#/$defs/ConeGeometry",
+              "cylinder": "#/$defs/CylinderGeometry",
+              "plane": "#/$defs/PlaneGeometry",
+              "sphere": "#/$defs/SphereGeometry"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/BoxGeometry"
+            },
+            {
+              "$ref": "#/$defs/SphereGeometry"
+            },
+            {
+              "$ref": "#/$defs/CapsuleGeometry"
+            },
+            {
+              "$ref": "#/$defs/CylinderGeometry"
+            },
+            {
+              "$ref": "#/$defs/ConeGeometry"
+            },
+            {
+              "$ref": "#/$defs/PlaneGeometry"
+            }
+          ],
+          "title": "Proxy"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Id"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "locked_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Locked Fields",
+          "type": "array"
+        },
+        "source_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "solved_transform": {
+          "$ref": "#/$defs/TransformValue"
+        }
+      },
+      "required": [
+        "entity_id",
+        "role",
+        "proxy"
+      ],
+      "title": "EntitySpec",
+      "type": "object"
+    },
+    "FocalLengthRangeParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "camera_id": {
+          "default": "camera_main",
+          "title": "Camera Id",
+          "type": "string"
+        },
+        "minimum_mm": {
+          "exclusiveMinimum": 0,
+          "title": "Minimum Mm",
+          "type": "number"
+        },
+        "maximum_mm": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Mm",
+          "type": "number"
+        }
+      },
+      "required": [
+        "minimum_mm",
+        "maximum_mm"
+      ],
+      "title": "FocalLengthRangeParameters",
+      "type": "object"
+    },
+    "HoldParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "components": {
+          "items": {
+            "enum": [
+              "translation",
+              "rotation",
+              "scale",
+              "visibility"
+            ],
+            "type": "string"
+          },
+          "title": "Components",
+          "type": "array"
+        },
+        "tolerance_m": {
+          "default": 0.0001,
+          "minimum": 0,
+          "title": "Tolerance M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "target_id",
+        "components"
+      ],
+      "title": "HoldParameters",
+      "type": "object"
+    },
+    "KeepInFrameParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "minimum_inside_fraction": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Minimum Inside Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "entity_id",
+        "minimum_inside_fraction"
+      ],
+      "title": "KeepInFrameParameters",
+      "type": "object"
+    },
+    "LookAtParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "observer_id": {
+          "title": "Observer Id",
+          "type": "string"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "maximum_angle_error_degrees": {
+          "default": 1.0,
+          "minimum": 0,
+          "title": "Maximum Angle Error Degrees",
+          "type": "number"
+        }
+      },
+      "required": [
+        "observer_id",
+        "target_id"
+      ],
+      "title": "LookAtParameters",
+      "type": "object"
+    },
+    "MotionDirectionParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "left",
+            "right",
+            "forward",
+            "backward",
+            "up",
+            "down"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "minimum_displacement_m": {
+          "default": 0.01,
+          "minimum": 0,
+          "title": "Minimum Displacement M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "target_id",
+        "direction"
+      ],
+      "title": "MotionDirectionParameters",
+      "type": "object"
+    },
+    "PathSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "representation": {
+          "default": "polyline",
+          "enum": [
+            "polyline",
+            "sampled"
+          ],
+          "title": "Representation",
+          "type": "string"
+        },
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "local",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "control_points": {
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "minItems": 2,
+          "title": "Control Points",
+          "type": "array"
+        },
+        "closed": {
+          "default": false,
+          "title": "Closed",
+          "type": "boolean"
+        },
+        "parameterization": {
+          "default": "normalized_time",
+          "enum": [
+            "normalized_time",
+            "arc_length"
+          ],
+          "title": "Parameterization",
+          "type": "string"
+        },
+        "orientation_mode": {
+          "default": "keep",
+          "enum": [
+            "keep",
+            "tangent",
+            "look_at",
+            "keyframed"
+          ],
+          "title": "Orientation Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "control_points"
+      ],
+      "title": "PathSpec",
+      "type": "object"
+    },
+    "PlaneGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "plane",
+          "title": "Type",
+          "type": "string"
+        },
+        "size_xy_m": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Size Xy M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "size_xy_m"
+      ],
+      "title": "PlaneGeometry",
+      "type": "object"
+    },
+    "PositionAtTimeParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "position_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Position M",
+          "type": "array"
+        },
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "tolerance_m": {
+          "default": 0.01,
+          "minimum": 0,
+          "title": "Tolerance M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "target_id",
+        "position_m"
+      ],
+      "title": "PositionAtTimeParameters",
+      "type": "object"
+    },
+    "ProjectedScaleRatioParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "numerator_entity_id": {
+          "title": "Numerator Entity Id",
+          "type": "string"
+        },
+        "denominator_entity_id": {
+          "title": "Denominator Entity Id",
+          "type": "string"
+        },
+        "measurement": {
+          "default": "height",
+          "enum": [
+            "height",
+            "width",
+            "diameter"
+          ],
+          "title": "Measurement",
+          "type": "string"
+        },
+        "minimum_ratio": {
+          "minimum": 0,
+          "title": "Minimum Ratio",
+          "type": "number"
+        },
+        "maximum_ratio": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Ratio",
+          "type": "number"
+        }
+      },
+      "required": [
+        "numerator_entity_id",
+        "denominator_entity_id",
+        "minimum_ratio",
+        "maximum_ratio"
+      ],
+      "title": "ProjectedScaleRatioParameters",
+      "type": "object"
+    },
+    "ProjectedSizeParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "measurement": {
+          "default": "height",
+          "enum": [
+            "height",
+            "width",
+            "diameter"
+          ],
+          "title": "Measurement",
+          "type": "string"
+        },
+        "minimum": {
+          "minimum": 0,
+          "title": "Minimum",
+          "type": "number"
+        },
+        "maximum": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum",
+          "type": "number"
+        }
+      },
+      "required": [
+        "entity_id",
+        "minimum",
+        "maximum"
+      ],
+      "title": "ProjectedSizeParameters",
+      "type": "object"
+    },
+    "RelativePositionParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "subject_id": {
+          "title": "Subject Id",
+          "type": "string"
+        },
+        "reference_id": {
+          "title": "Reference Id",
+          "type": "string"
+        },
+        "relation": {
+          "enum": [
+            "left",
+            "right",
+            "front",
+            "behind",
+            "below",
+            "above"
+          ],
+          "title": "Relation",
+          "type": "string"
+        },
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "minimum_gap": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum Gap"
+        },
+        "maximum_gap": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Gap"
+        }
+      },
+      "required": [
+        "subject_id",
+        "reference_id",
+        "relation"
+      ],
+      "title": "RelativePositionParameters",
+      "type": "object"
+    },
+    "ScreenRegionParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "region": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Region",
+          "type": "array"
+        }
+      },
+      "required": [
+        "entity_id",
+        "region"
+      ],
+      "title": "ScreenRegionParameters",
+      "type": "object"
+    },
+    "SphereGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "sphere",
+          "title": "Type",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0,
+          "title": "Radius M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "radius_m"
+      ],
+      "title": "SphereGeometry",
+      "type": "object"
+    },
+    "TimelineSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "fps_numerator": {
+          "default": 24,
+          "exclusiveMinimum": 0,
+          "title": "Fps Numerator",
+          "type": "integer"
+        },
+        "fps_denominator": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "title": "Fps Denominator",
+          "type": "integer"
+        },
+        "frame_start": {
+          "default": 1,
+          "title": "Frame Start",
+          "type": "integer"
+        },
+        "frame_count": {
+          "exclusiveMinimum": 0,
+          "title": "Frame Count",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Duration Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "frame_count",
+        "duration_seconds"
+      ],
+      "title": "TimelineSpec",
+      "type": "object"
+    },
+    "TrackKeyframe": {
+      "additionalProperties": false,
+      "properties": {
+        "time_seconds": {
+          "minimum": 0,
+          "title": "Time Seconds",
+          "type": "number"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "title": "Value"
+        },
+        "interpolation": {
+          "default": "linear",
+          "enum": [
+            "step",
+            "linear",
+            "smooth"
+          ],
+          "title": "Interpolation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "time_seconds",
+        "value"
+      ],
+      "title": "TrackKeyframe",
+      "type": "object"
+    },
+    "TrackSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "track_id": {
+          "minLength": 1,
+          "title": "Track Id",
+          "type": "string"
+        },
+        "target_entity_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Entity Id"
+        },
+        "type": {
+          "enum": [
+            "transform",
+            "path_follow",
+            "visibility",
+            "look_at",
+            "focal_length"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "time_range_seconds": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Time Range Seconds",
+          "type": "array"
+        },
+        "keyframes": {
+          "items": {
+            "$ref": "#/$defs/TrackKeyframe"
+          },
+          "title": "Keyframes",
+          "type": "array"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PathSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "interpolation": {
+          "default": "linear",
+          "enum": [
+            "step",
+            "linear",
+            "smooth"
+          ],
+          "title": "Interpolation",
+          "type": "string"
+        },
+        "locked_components": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Locked Components",
+          "type": "array"
+        },
+        "source_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Ref"
+        }
+      },
+      "required": [
+        "track_id",
+        "type",
+        "time_range_seconds"
+      ],
+      "title": "TrackSpec",
+      "type": "object"
+    },
+    "TransformValue": {
+      "additionalProperties": false,
+      "properties": {
+        "translation_m": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Translation M"
+        },
+        "rotation_quaternion_wxyz": {
+          "anyOf": [
+            {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rotation Quaternion Wxyz"
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scale"
+        },
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "local",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        }
+      },
+      "title": "TransformValue",
+      "type": "object"
+    },
+    "UnsupportedConstraintParameters": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "UnsupportedConstraintParameters",
+      "type": "object"
+    },
+    "ValidationReport": {
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "title": "Revision",
+          "type": "integer"
+        },
+        "hard_pass": {
+          "title": "Hard Pass",
+          "type": "boolean"
+        },
+        "soft_score": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Soft Score",
+          "type": "number"
+        },
+        "checks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "violations": {
+          "items": {
+            "$ref": "#/$defs/Violation"
+          },
+          "title": "Violations",
+          "type": "array"
+        },
+        "capability_gaps": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Capability Gaps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "revision",
+        "hard_pass",
+        "soft_score",
+        "checks"
+      ],
+      "title": "ValidationReport",
+      "type": "object"
+    },
+    "Violation": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "hard",
+            "soft",
+            "warning"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "constraint_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Constraint Id"
+        },
+        "entity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "time_range_seconds": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Time Range Seconds"
+        },
+        "expected": {
+          "default": null,
+          "title": "Expected"
+        },
+        "actual": {
+          "default": null,
+          "title": "Actual"
+        },
+        "adjustable_variables": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Adjustable Variables",
+          "type": "array"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "code",
+        "severity",
+        "message"
+      ],
+      "title": "Violation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scene_id": {
+      "title": "Scene Id",
+      "type": "string"
+    },
+    "revision": {
+      "default": 0,
+      "title": "Revision",
+      "type": "integer"
+    },
+    "timeline": {
+      "$ref": "#/$defs/TimelineSpec"
+    },
+    "entities": {
+      "additionalProperties": {
+        "$ref": "#/$defs/EntitySpec"
+      },
+      "title": "Entities",
+      "type": "object"
+    },
+    "motion_tracks": {
+      "additionalProperties": {
+        "$ref": "#/$defs/TrackSpec"
+      },
+      "title": "Motion Tracks",
+      "type": "object"
+    },
+    "constraints": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ConstraintSpec"
+      },
+      "title": "Constraints",
+      "type": "object"
+    },
+    "camera": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CameraCandidate"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "required_source_refs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Source Refs",
+      "type": "array"
+    },
+    "validation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ValidationReport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "scene_id",
+    "timeline"
+  ],
+  "title": "CandidateState",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cinescaffold.local/schemas/constraint_plan.schema.json"
+}

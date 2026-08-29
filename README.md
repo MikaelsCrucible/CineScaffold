@@ -51,7 +51,7 @@
 
 规则文件当前有意保持为空，等待项目成员提供正式转换规则。
 
-双 Agent、Scene IR v0.1 和 Blender 执行接口已经完成设计基线。Agent 1 的客观语义投影层已经实现：在模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文。开发环境已经固定并验证 Python 3.12、PydanticAI Core 2.36.0、Blender 5.2.1 LTS 与官方 Blender Lab MCP 1.0.0；MCP 到后台 Blender 的真实调用链路已经通过冒烟测试。
+双 Agent、Scene IR v0.1 和 Blender 执行接口已经完成设计基线。Agent 1 的客观语义投影、Candidate revision store、九个 Planning Toolkit 接口、确定性启发式 Solver、结构化 Validator 和 Scene IR Commit Gate 已经实现。模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文；Commit Gate 会把规划轨迹烘焙为完整逐帧 Scene IR。当前确定性约束能力以 `get_capabilities` 返回为准，尚未实现的约束会产生明确 capability gap。开发环境已经固定并验证 Python 3.12、PydanticAI Core 2.36.0、Blender 5.2.1 LTS 与官方 Blender Lab MCP 1.0.0；MCP 到后台 Blender 的真实调用链路已经通过冒烟测试。
 
 ## 使用
 
@@ -123,13 +123,13 @@ API 实现依据 [OpenAI Structured Outputs](https://developers.openai.com/api/d
 
 ## 下一步
 
-下一步是继续定义并评审三个版本化 Schema：
+三个版本化 Schema 当前状态：
 
 1. `Cinematic Brief v0.1`：已完成首稿和离线验证。
-2. `Constraint Plan v0.1`：待开发。
-3. `Scene IR v0.1`：语义、坐标、帧状态、相机和 Blender 映射基线已确定；JSON Schema 与样例待开发。
+2. `Constraint Plan v0.1`：机器 Schema 已由领域模型生成。
+3. `Scene IR v0.1`：机器 Schema、坐标、逐帧状态、相机和 Blender 映射基线已实现。
 
-下一步先评审双 Agent 权限和工具契约，并用“荒漠中的男人、远处巨型飞船、镜头缓慢推近”建立 Brief、Constraint Plan、Scene IR 三层完整样例，然后实现 Constraint Plan 与 Scene IR JSON Schema。
+下一步是接入 PydanticAI `InterpreterRunner`、OpenAI/DeepSeek/Mock Agent、领域预算和 Trace，再用“荒漠中的男人、远处巨型飞船、镜头缓慢推近”运行完整 CLI 样例。
 
 ## 名称
 

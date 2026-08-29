@@ -1,0 +1,1382 @@
+{
+  "$defs": {
+    "AcceptanceIR": {
+      "additionalProperties": false,
+      "properties": {
+        "constraint_plan_hash": {
+          "title": "Constraint Plan Hash",
+          "type": "string"
+        },
+        "constraints": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "required_validators": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Validators",
+          "type": "array"
+        },
+        "sampling_profile_id": {
+          "title": "Sampling Profile Id",
+          "type": "string"
+        },
+        "minimum_soft_score": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Minimum Soft Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "constraint_plan_hash",
+        "constraints",
+        "required_validators",
+        "sampling_profile_id",
+        "minimum_soft_score"
+      ],
+      "title": "AcceptanceIR",
+      "type": "object"
+    },
+    "BoxGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "box",
+          "title": "Type",
+          "type": "string"
+        },
+        "size_xyz_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Size Xyz M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "size_xyz_m"
+      ],
+      "title": "BoxGeometry",
+      "type": "object"
+    },
+    "CameraFrameSample": {
+      "additionalProperties": false,
+      "properties": {
+        "frame": {
+          "title": "Frame",
+          "type": "integer"
+        },
+        "value": {
+          "$ref": "#/$defs/CameraState"
+        }
+      },
+      "required": [
+        "frame",
+        "value"
+      ],
+      "title": "CameraFrameSample",
+      "type": "object"
+    },
+    "CameraIR": {
+      "additionalProperties": false,
+      "properties": {
+        "camera_id": {
+          "title": "Camera Id",
+          "type": "string"
+        },
+        "projection": {
+          "const": "perspective",
+          "title": "Projection",
+          "type": "string"
+        },
+        "intrinsics": {
+          "$ref": "#/$defs/CameraIntrinsics"
+        },
+        "state_track": {
+          "discriminator": {
+            "mapping": {
+              "constant": "#/$defs/ConstantCameraTrack",
+              "per_frame": "#/$defs/PerFrameCameraTrack"
+            },
+            "propertyName": "mode"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ConstantCameraTrack"
+            },
+            {
+              "$ref": "#/$defs/PerFrameCameraTrack"
+            }
+          ],
+          "title": "State Track"
+        }
+      },
+      "required": [
+        "camera_id",
+        "projection",
+        "intrinsics",
+        "state_track"
+      ],
+      "title": "CameraIR",
+      "type": "object"
+    },
+    "CameraIntrinsics": {
+      "additionalProperties": false,
+      "properties": {
+        "sensor_fit": {
+          "const": "HORIZONTAL",
+          "default": "HORIZONTAL",
+          "title": "Sensor Fit",
+          "type": "string"
+        },
+        "sensor_width_mm": {
+          "exclusiveMinimum": 0,
+          "title": "Sensor Width Mm",
+          "type": "number"
+        },
+        "sensor_height_mm": {
+          "exclusiveMinimum": 0,
+          "title": "Sensor Height Mm",
+          "type": "number"
+        },
+        "shift_x": {
+          "default": 0.0,
+          "title": "Shift X",
+          "type": "number"
+        },
+        "shift_y": {
+          "default": 0.0,
+          "title": "Shift Y",
+          "type": "number"
+        },
+        "clip_start_m": {
+          "default": 0.1,
+          "exclusiveMinimum": 0,
+          "title": "Clip Start M",
+          "type": "number"
+        },
+        "clip_end_m": {
+          "default": 2000.0,
+          "exclusiveMinimum": 0,
+          "title": "Clip End M",
+          "type": "number"
+        },
+        "depth_of_field": {
+          "const": false,
+          "default": false,
+          "title": "Depth Of Field",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sensor_width_mm",
+        "sensor_height_mm"
+      ],
+      "title": "CameraIntrinsics",
+      "type": "object"
+    },
+    "CameraState": {
+      "additionalProperties": false,
+      "properties": {
+        "translation_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Translation M",
+          "type": "array"
+        },
+        "rotation_quaternion_wxyz": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Rotation Quaternion Wxyz",
+          "type": "array"
+        },
+        "focal_length_mm": {
+          "exclusiveMinimum": 0,
+          "title": "Focal Length Mm",
+          "type": "number"
+        }
+      },
+      "required": [
+        "translation_m",
+        "rotation_quaternion_wxyz",
+        "focal_length_mm"
+      ],
+      "title": "CameraState",
+      "type": "object"
+    },
+    "CapsuleGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "capsule",
+          "title": "Type",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0,
+          "title": "Radius M",
+          "type": "number"
+        },
+        "segment_length_m": {
+          "exclusiveMinimum": 0,
+          "title": "Segment Length M",
+          "type": "number"
+        },
+        "axis": {
+          "default": "+Z",
+          "enum": [
+            "+X",
+            "+Y",
+            "+Z"
+          ],
+          "title": "Axis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "radius_m",
+        "segment_length_m"
+      ],
+      "title": "CapsuleGeometry",
+      "type": "object"
+    },
+    "ColorManagement": {
+      "additionalProperties": false,
+      "properties": {
+        "display_device": {
+          "const": "sRGB",
+          "default": "sRGB",
+          "title": "Display Device",
+          "type": "string"
+        },
+        "view_transform": {
+          "const": "Standard",
+          "default": "Standard",
+          "title": "View Transform",
+          "type": "string"
+        },
+        "look": {
+          "const": "NONE",
+          "default": "NONE",
+          "title": "Look",
+          "type": "string"
+        },
+        "exposure": {
+          "default": 0.0,
+          "title": "Exposure",
+          "type": "number"
+        },
+        "gamma": {
+          "default": 1.0,
+          "title": "Gamma",
+          "type": "number"
+        }
+      },
+      "title": "ColorManagement",
+      "type": "object"
+    },
+    "ConeGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "cone",
+          "title": "Type",
+          "type": "string"
+        },
+        "radius_bottom_m": {
+          "exclusiveMinimum": 0,
+          "title": "Radius Bottom M",
+          "type": "number"
+        },
+        "radius_top_m": {
+          "minimum": 0,
+          "title": "Radius Top M",
+          "type": "number"
+        },
+        "depth_m": {
+          "exclusiveMinimum": 0,
+          "title": "Depth M",
+          "type": "number"
+        },
+        "axis": {
+          "default": "+Z",
+          "enum": [
+            "+X",
+            "+Y",
+            "+Z"
+          ],
+          "title": "Axis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "radius_bottom_m",
+        "radius_top_m",
+        "depth_m"
+      ],
+      "title": "ConeGeometry",
+      "type": "object"
+    },
+    "ConstantCameraTrack": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "constant",
+          "title": "Mode",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/CameraState"
+        }
+      },
+      "required": [
+        "mode",
+        "value"
+      ],
+      "title": "ConstantCameraTrack",
+      "type": "object"
+    },
+    "ConstantEntityTrack": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "constant",
+          "title": "Mode",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/EntityState"
+        }
+      },
+      "required": [
+        "mode",
+        "value"
+      ],
+      "title": "ConstantEntityTrack",
+      "type": "object"
+    },
+    "CoordinateSystem": {
+      "additionalProperties": false,
+      "properties": {
+        "linear_unit": {
+          "const": "meter",
+          "default": "meter",
+          "title": "Linear Unit",
+          "type": "string"
+        },
+        "angle_unit": {
+          "const": "radian",
+          "default": "radian",
+          "title": "Angle Unit",
+          "type": "string"
+        },
+        "handedness": {
+          "const": "right",
+          "default": "right",
+          "title": "Handedness",
+          "type": "string"
+        },
+        "up_axis": {
+          "const": "+Z",
+          "default": "+Z",
+          "title": "Up Axis",
+          "type": "string"
+        },
+        "rotation_representation": {
+          "const": "quaternion_wxyz",
+          "default": "quaternion_wxyz",
+          "title": "Rotation Representation",
+          "type": "string"
+        },
+        "transform_space": {
+          "const": "parent_local_trs",
+          "default": "parent_local_trs",
+          "title": "Transform Space",
+          "type": "string"
+        },
+        "camera_local_forward_axis": {
+          "const": "-Z",
+          "default": "-Z",
+          "title": "Camera Local Forward Axis",
+          "type": "string"
+        },
+        "camera_local_up_axis": {
+          "const": "+Y",
+          "default": "+Y",
+          "title": "Camera Local Up Axis",
+          "type": "string"
+        },
+        "screen_coordinates": {
+          "$ref": "#/$defs/ScreenCoordinates"
+        },
+        "camera_depth": {
+          "const": "positive_forward_meters",
+          "default": "positive_forward_meters",
+          "title": "Camera Depth",
+          "type": "string"
+        }
+      },
+      "title": "CoordinateSystem",
+      "type": "object"
+    },
+    "CylinderGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "cylinder",
+          "title": "Type",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0,
+          "title": "Radius M",
+          "type": "number"
+        },
+        "depth_m": {
+          "exclusiveMinimum": 0,
+          "title": "Depth M",
+          "type": "number"
+        },
+        "axis": {
+          "default": "+Z",
+          "enum": [
+            "+X",
+            "+Y",
+            "+Z"
+          ],
+          "title": "Axis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "radius_m",
+        "depth_m"
+      ],
+      "title": "CylinderGeometry",
+      "type": "object"
+    },
+    "EntityFrameSample": {
+      "additionalProperties": false,
+      "properties": {
+        "frame": {
+          "title": "Frame",
+          "type": "integer"
+        },
+        "value": {
+          "$ref": "#/$defs/EntityState"
+        }
+      },
+      "required": [
+        "frame",
+        "value"
+      ],
+      "title": "EntityFrameSample",
+      "type": "object"
+    },
+    "EntityIR": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "geometry": {
+          "discriminator": {
+            "mapping": {
+              "box": "#/$defs/BoxGeometry",
+              "capsule": "#/$defs/CapsuleGeometry",
+              "cone": "#/$defs/ConeGeometry",
+              "cylinder": "#/$defs/CylinderGeometry",
+              "plane": "#/$defs/PlaneGeometry",
+              "sphere": "#/$defs/SphereGeometry"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/BoxGeometry"
+            },
+            {
+              "$ref": "#/$defs/SphereGeometry"
+            },
+            {
+              "$ref": "#/$defs/CapsuleGeometry"
+            },
+            {
+              "$ref": "#/$defs/CylinderGeometry"
+            },
+            {
+              "$ref": "#/$defs/ConeGeometry"
+            },
+            {
+              "$ref": "#/$defs/PlaneGeometry"
+            }
+          ],
+          "title": "Geometry"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Parent Id"
+        },
+        "local_state_track": {
+          "discriminator": {
+            "mapping": {
+              "constant": "#/$defs/ConstantEntityTrack",
+              "per_frame": "#/$defs/PerFrameEntityTrack"
+            },
+            "propertyName": "mode"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ConstantEntityTrack"
+            },
+            {
+              "$ref": "#/$defs/PerFrameEntityTrack"
+            }
+          ],
+          "title": "Local State Track"
+        },
+        "material_id": {
+          "title": "Material Id",
+          "type": "string"
+        },
+        "object_index": {
+          "maximum": 32767,
+          "minimum": 1,
+          "title": "Object Index",
+          "type": "integer"
+        },
+        "semantic_forward_axis": {
+          "const": "+Y",
+          "default": "+Y",
+          "title": "Semantic Forward Axis",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "entity_id",
+        "label",
+        "role",
+        "geometry",
+        "parent_id",
+        "local_state_track",
+        "material_id",
+        "object_index",
+        "tags"
+      ],
+      "title": "EntityIR",
+      "type": "object"
+    },
+    "EntityState": {
+      "additionalProperties": false,
+      "properties": {
+        "translation_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Translation M",
+          "type": "array"
+        },
+        "rotation_quaternion_wxyz": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Rotation Quaternion Wxyz",
+          "type": "array"
+        },
+        "scale": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Scale",
+          "type": "array"
+        },
+        "render_visible": {
+          "title": "Render Visible",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "translation_m",
+        "rotation_quaternion_wxyz",
+        "scale",
+        "render_visible"
+      ],
+      "title": "EntityState",
+      "type": "object"
+    },
+    "IRTimeline": {
+      "additionalProperties": false,
+      "properties": {
+        "fps_numerator": {
+          "exclusiveMinimum": 0,
+          "title": "Fps Numerator",
+          "type": "integer"
+        },
+        "fps_denominator": {
+          "exclusiveMinimum": 0,
+          "title": "Fps Denominator",
+          "type": "integer"
+        },
+        "frame_start": {
+          "title": "Frame Start",
+          "type": "integer"
+        },
+        "frame_count": {
+          "exclusiveMinimum": 0,
+          "title": "Frame Count",
+          "type": "integer"
+        },
+        "frame_end": {
+          "title": "Frame End",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Duration Seconds",
+          "type": "number"
+        },
+        "time_domain": {
+          "const": "half_open",
+          "default": "half_open",
+          "title": "Time Domain",
+          "type": "string"
+        },
+        "motion_blur": {
+          "const": false,
+          "default": false,
+          "title": "Motion Blur",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fps_numerator",
+        "fps_denominator",
+        "frame_start",
+        "frame_count",
+        "frame_end",
+        "duration_seconds"
+      ],
+      "title": "IRTimeline",
+      "type": "object"
+    },
+    "LightIR": {
+      "additionalProperties": false,
+      "properties": {
+        "light_id": {
+          "title": "Light Id",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "SUN",
+            "AREA",
+            "POINT"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "translation_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Translation M",
+          "type": "array"
+        },
+        "rotation_quaternion_wxyz": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Rotation Quaternion Wxyz",
+          "type": "array"
+        },
+        "color_linear_rgb": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Color Linear Rgb",
+          "type": "array"
+        },
+        "energy": {
+          "exclusiveMinimum": 0,
+          "title": "Energy",
+          "type": "number"
+        },
+        "size_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size M"
+        }
+      },
+      "required": [
+        "light_id",
+        "type",
+        "translation_m",
+        "rotation_quaternion_wxyz",
+        "color_linear_rgb",
+        "energy"
+      ],
+      "title": "LightIR",
+      "type": "object"
+    },
+    "LightingIR": {
+      "additionalProperties": false,
+      "properties": {
+        "world_color_linear_rgb": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "World Color Linear Rgb",
+          "type": "array"
+        },
+        "world_strength": {
+          "minimum": 0,
+          "title": "World Strength",
+          "type": "number"
+        },
+        "lights": {
+          "items": {
+            "$ref": "#/$defs/LightIR"
+          },
+          "title": "Lights",
+          "type": "array"
+        }
+      },
+      "required": [
+        "world_color_linear_rgb",
+        "world_strength",
+        "lights"
+      ],
+      "title": "LightingIR",
+      "type": "object"
+    },
+    "MaterialIR": {
+      "additionalProperties": false,
+      "properties": {
+        "material_id": {
+          "title": "Material Id",
+          "type": "string"
+        },
+        "model": {
+          "const": "principled_clay",
+          "default": "principled_clay",
+          "title": "Model",
+          "type": "string"
+        },
+        "base_color_linear_rgba": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Base Color Linear Rgba",
+          "type": "array"
+        },
+        "roughness": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Roughness",
+          "type": "number"
+        },
+        "metallic": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Metallic",
+          "type": "number"
+        }
+      },
+      "required": [
+        "material_id",
+        "base_color_linear_rgba",
+        "roughness",
+        "metallic"
+      ],
+      "title": "MaterialIR",
+      "type": "object"
+    },
+    "PerFrameCameraTrack": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "per_frame",
+          "title": "Mode",
+          "type": "string"
+        },
+        "samples": {
+          "items": {
+            "$ref": "#/$defs/CameraFrameSample"
+          },
+          "title": "Samples",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mode",
+        "samples"
+      ],
+      "title": "PerFrameCameraTrack",
+      "type": "object"
+    },
+    "PerFrameEntityTrack": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "per_frame",
+          "title": "Mode",
+          "type": "string"
+        },
+        "samples": {
+          "items": {
+            "$ref": "#/$defs/EntityFrameSample"
+          },
+          "title": "Samples",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mode",
+        "samples"
+      ],
+      "title": "PerFrameEntityTrack",
+      "type": "object"
+    },
+    "PlaneGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "plane",
+          "title": "Type",
+          "type": "string"
+        },
+        "size_xy_m": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Size Xy M",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "size_xy_m"
+      ],
+      "title": "PlaneGeometry",
+      "type": "object"
+    },
+    "ProvenanceIR": {
+      "additionalProperties": false,
+      "properties": {
+        "cinematic_brief_schema_version": {
+          "const": "0.1",
+          "default": "0.1",
+          "title": "Cinematic Brief Schema Version",
+          "type": "string"
+        },
+        "cinematic_brief_hash": {
+          "title": "Cinematic Brief Hash",
+          "type": "string"
+        },
+        "constraint_plan_schema_version": {
+          "const": "0.1",
+          "default": "0.1",
+          "title": "Constraint Plan Schema Version",
+          "type": "string"
+        },
+        "constraint_plan_hash": {
+          "title": "Constraint Plan Hash",
+          "type": "string"
+        },
+        "candidate_revision": {
+          "minimum": 0,
+          "title": "Candidate Revision",
+          "type": "integer"
+        },
+        "candidate_hash": {
+          "title": "Candidate Hash",
+          "type": "string"
+        },
+        "commit_gate_version": {
+          "title": "Commit Gate Version",
+          "type": "string"
+        },
+        "planning_toolkit_version": {
+          "title": "Planning Toolkit Version",
+          "type": "string"
+        },
+        "constraint_catalog_version": {
+          "title": "Constraint Catalog Version",
+          "type": "string"
+        },
+        "solver": {
+          "title": "Solver",
+          "type": "string"
+        },
+        "sampling_profile_id": {
+          "title": "Sampling Profile Id",
+          "type": "string"
+        },
+        "scene_ir_compiler_version": {
+          "title": "Scene Ir Compiler Version",
+          "type": "string"
+        },
+        "random_seed": {
+          "title": "Random Seed",
+          "type": "integer"
+        },
+        "target_runtime_profile": {
+          "title": "Target Runtime Profile",
+          "type": "string"
+        },
+        "executor_api_version": {
+          "title": "Executor Api Version",
+          "type": "string"
+        },
+        "expected_blender": {
+          "title": "Expected Blender",
+          "type": "string"
+        },
+        "agent_run_id": {
+          "title": "Agent Run Id",
+          "type": "string"
+        },
+        "trace_ref": {
+          "title": "Trace Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cinematic_brief_hash",
+        "constraint_plan_hash",
+        "candidate_revision",
+        "candidate_hash",
+        "commit_gate_version",
+        "planning_toolkit_version",
+        "constraint_catalog_version",
+        "solver",
+        "sampling_profile_id",
+        "scene_ir_compiler_version",
+        "random_seed",
+        "target_runtime_profile",
+        "executor_api_version",
+        "expected_blender",
+        "agent_run_id",
+        "trace_ref"
+      ],
+      "title": "ProvenanceIR",
+      "type": "object"
+    },
+    "RenderIR": {
+      "additionalProperties": false,
+      "properties": {
+        "engine": {
+          "const": "BLENDER_EEVEE_NEXT",
+          "default": "BLENDER_EEVEE_NEXT",
+          "title": "Engine",
+          "type": "string"
+        },
+        "resolution_x": {
+          "exclusiveMinimum": 0,
+          "title": "Resolution X",
+          "type": "integer"
+        },
+        "resolution_y": {
+          "exclusiveMinimum": 0,
+          "title": "Resolution Y",
+          "type": "integer"
+        },
+        "resolution_percentage": {
+          "default": 100,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Resolution Percentage",
+          "type": "integer"
+        },
+        "pixel_aspect_x": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Pixel Aspect X",
+          "type": "number"
+        },
+        "pixel_aspect_y": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Pixel Aspect Y",
+          "type": "number"
+        },
+        "transparent_background": {
+          "default": false,
+          "title": "Transparent Background",
+          "type": "boolean"
+        },
+        "motion_blur": {
+          "const": false,
+          "default": false,
+          "title": "Motion Blur",
+          "type": "boolean"
+        },
+        "color_management": {
+          "$ref": "#/$defs/ColorManagement"
+        },
+        "outputs": {
+          "items": {
+            "$ref": "#/$defs/RenderOutput"
+          },
+          "title": "Outputs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "resolution_x",
+        "resolution_y",
+        "outputs"
+      ],
+      "title": "RenderIR",
+      "type": "object"
+    },
+    "RenderOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "output_id": {
+          "title": "Output Id",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "rgb_png_sequence",
+            "depth_openexr_sequence",
+            "object_index_openexr_sequence",
+            "h264_preview"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "relative_directory": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Directory"
+        },
+        "relative_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Path"
+        }
+      },
+      "required": [
+        "output_id",
+        "type"
+      ],
+      "title": "RenderOutput",
+      "type": "object"
+    },
+    "ScreenCoordinates": {
+      "additionalProperties": false,
+      "properties": {
+        "range": {
+          "default": [
+            0.0,
+            1.0
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Range",
+          "type": "array"
+        },
+        "origin": {
+          "const": "top_left",
+          "default": "top_left",
+          "title": "Origin",
+          "type": "string"
+        },
+        "x_direction": {
+          "const": "right",
+          "default": "right",
+          "title": "X Direction",
+          "type": "string"
+        },
+        "y_direction": {
+          "const": "down",
+          "default": "down",
+          "title": "Y Direction",
+          "type": "string"
+        }
+      },
+      "title": "ScreenCoordinates",
+      "type": "object"
+    },
+    "SphereGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "sphere",
+          "title": "Type",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0,
+          "title": "Radius M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "radius_m"
+      ],
+      "title": "SphereGeometry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scene_id": {
+      "title": "Scene Id",
+      "type": "string"
+    },
+    "coordinate_system": {
+      "$ref": "#/$defs/CoordinateSystem"
+    },
+    "timeline": {
+      "$ref": "#/$defs/IRTimeline"
+    },
+    "render": {
+      "$ref": "#/$defs/RenderIR"
+    },
+    "materials": {
+      "items": {
+        "$ref": "#/$defs/MaterialIR"
+      },
+      "title": "Materials",
+      "type": "array"
+    },
+    "lighting": {
+      "$ref": "#/$defs/LightingIR"
+    },
+    "entities": {
+      "items": {
+        "$ref": "#/$defs/EntityIR"
+      },
+      "title": "Entities",
+      "type": "array"
+    },
+    "camera": {
+      "$ref": "#/$defs/CameraIR"
+    },
+    "acceptance": {
+      "$ref": "#/$defs/AcceptanceIR"
+    },
+    "provenance": {
+      "$ref": "#/$defs/ProvenanceIR"
+    }
+  },
+  "required": [
+    "scene_id",
+    "timeline",
+    "render",
+    "materials",
+    "lighting",
+    "entities",
+    "camera",
+    "acceptance",
+    "provenance"
+  ],
+  "title": "SceneIR",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cinescaffold.local/schemas/scene_ir.schema.json"
+}
