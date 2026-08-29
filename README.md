@@ -51,17 +51,42 @@
 
 规则文件当前有意保持为空，等待项目成员提供正式转换规则。
 
-双 Agent、Scene IR v0.1 和 Blender 执行接口目前已经完成设计基线，但尚未实现。Blender MCP 原型计划采用官方 Blender Lab MCP 1.0.0，并优先在 Blender 5.2 LTS 上验证；依赖尚未加入项目。
+双 Agent、Scene IR v0.1 和 Blender 执行接口目前已经完成设计基线，但尚未实现。开发环境已经固定并验证 Python 3.12、PydanticAI Core 2.36.0、Blender 5.2.1 LTS 与官方 Blender Lab MCP 1.0.0；MCP 到后台 Blender 的真实调用链路已经通过冒烟测试。
 
 ## 使用
 
-项目要求 Python 3.9 或更高版本，当前无运行时第三方依赖。项目使用 `setup.cfg + setup.py`，使 macOS 自带的 pip 21.x 也能使用 editable install。
+项目固定使用 Python 3.12.x；`.python-version` 记录解释器系列，`requirements.lock` 锁定完整 Python 依赖及哈希。推荐使用 [uv](https://docs.astral.sh/uv/) 建立环境：
 
 ```bash
-python3 -m venv .venv
+uv python install 3.12
+uv venv --python 3.12 --clear .venv
+uv pip install --python .venv/bin/python \
+  --require-hashes --requirements requirements.lock
+uv pip install --python .venv/bin/python --no-deps --editable .
 source .venv/bin/activate
-python -m pip install -e .
 ```
+
+运行时依赖采用最小化的 `pydantic-ai-slim[openai,mcp]==2.36.0`，同时覆盖 OpenAI、DeepSeek 与 MCP stdio Client，不安装 UI、Logfire 或其他未使用组件。
+
+### Blender 与 Blender MCP
+
+原型环境要求：
+
+- Blender `5.2.1 LTS`。
+- 官方 Blender Lab MCP `1.0.0`，源码固定到 commit `4309a39646e644261624bfcd2bca669b343b7621`。
+- Blender MCP Server 的 MCP Python SDK 固定为 `>=1.2,<2`。官方 1.0.0 源码仍使用 `mcp.server.fastmcp.FastMCP`，与 MCP SDK 2.x 不兼容。
+- Blender 中安装并启用官方 MCP Add-on；交互模式需要用 `blender --online-mode` 启动，或由用户明确开启 Blender 的全局在线访问偏好。
+
+Blender MCP Server 应作为独立工具安装，避免把 GPL Server 代码并入 CineScaffold Python 包：
+
+```bash
+uv tool install --python 3.12 \
+  --with "mcp[cli]>=1.2,<2" \
+  --from "git+https://projects.blender.org/lab/blender_mcp.git@4309a39646e644261624bfcd2bca669b343b7621#subdirectory=mcp" \
+  blender-mcp
+```
+
+Add-on 的官方安装说明见 [Blender Lab MCP](https://www.blender.org/lab/mcp-server/)。正式实验前仍需把 Blender、Add-on、Server、MCP SDK 和 Executor hash 一起写入运行 manifest。
 
 使用 Mock Provider 进行离线测试：
 
@@ -104,7 +129,7 @@ API 实现依据 [OpenAI Structured Outputs](https://developers.openai.com/api/d
 2. `Constraint Plan v0.1`：待开发。
 3. `Scene IR v0.1`：语义、坐标、帧状态、相机和 Blender 映射基线已确定；JSON Schema 与样例待开发。
 
-在安装 Agent/MCP 依赖前，将先评审双 Agent 权限和工具契约，并用“荒漠中的男人、远处巨型飞船、镜头缓慢推近”建立 Brief、Constraint Plan、Scene IR 三层完整样例。
+下一步先评审双 Agent 权限和工具契约，并用“荒漠中的男人、远处巨型飞船、镜头缓慢推近”建立 Brief、Constraint Plan、Scene IR 三层完整样例，然后实现 Constraint Plan 与 Scene IR JSON Schema。
 
 ## 名称
 

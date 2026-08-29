@@ -1,4 +1,4 @@
-"""兼容不支持 PEP 660 的旧版 pip。"""
+"""提供 setuptools 安装入口。"""
 
 from setuptools import setup
 
