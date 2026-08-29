@@ -16,11 +16,13 @@
 小白自然语言
   -> LLM Semantic Parser
   -> Cinematic Brief（六维、人类可读、保留来源与不确定性）
-  -> Scene Planning Agent
+  -> Scene Planning Agent（Agent 1）
   -> 调用 Scene Planning Toolkit 进行计划、尝试、验证和修复
   -> Constraint Plan + 通过验证的 Scene IR
-  -> Headless Blender Adapter / 可选 MCP Adapter
-  -> Blender 真实场景构建与运行时验证
+  -> Blender Execution Agent（Agent 2）
+  -> 调用 Blender Execution Toolkit 编排构建、检查、恢复和渲染
+  -> 官方 Blender Lab MCP Adapter + 确定性 Blender Executor
+  -> Blender 真实场景构建、运行时验证与 Artifact Commit Gate
   -> 白模视频与控制素材
   -> 视频生成模型
   -> 匿名专家评测与统计分析
@@ -28,10 +30,11 @@
 
 核心分工：
 
-- LLM 负责开放语义理解、电影策略选择和根据结构化错误进行修复。
-- Toolkit 负责三维投影、坐标与时间计算、约束求解、验证和版本化状态。
+- Agent 1 负责开放语义理解、电影策略选择和根据结构化错误修复 Scene IR Candidate。
+- Agent 2 负责不可变 Scene IR 的 Blender 执行编排、运行时诊断、重试恢复和 Control Bundle 渲染，不重新解释电影语义。
+- 两套 Toolkit 分别负责三维规划状态和 Blender 执行状态；两个 Agent 都不能绕过各自 Commit Gate。
 - Scene IR 完整描述正式实验中的场景状态，禁止产生 IR 之外的隐藏状态。
-- Blender Adapter 只负责执行；MCP 可作为工具通道，但不承担语义理解或创作决策。
+- Blender Adapter 只负责确定性映射；底层选择官方 Blender Lab MCP，原始任意代码工具不直接暴露给 Agent。
 - Blender 负责确定性执行、真实资产/场景验证和渲染。
 
 ## 当前状态
@@ -47,6 +50,8 @@
 ```
 
 规则文件当前有意保持为空，等待项目成员提供正式转换规则。
+
+双 Agent、Scene IR v0.1 和 Blender 执行接口目前已经完成设计基线，但尚未实现。Blender MCP 原型计划采用官方 Blender Lab MCP 1.0.0，并优先在 Blender 5.2 LTS 上验证；依赖尚未加入项目。
 
 ## 使用
 
@@ -93,13 +98,13 @@ API 实现依据 [OpenAI Structured Outputs](https://developers.openai.com/api/d
 
 ## 下一步
 
-下一步是定义并评审三个版本化 Schema：
+下一步是继续定义并评审三个版本化 Schema：
 
 1. `Cinematic Brief v0.1`：已完成首稿和离线验证。
 2. `Constraint Plan v0.1`：待开发。
-3. `Scene IR v0.1`：待开发。
+3. `Scene IR v0.1`：语义、坐标、帧状态、相机和 Blender 映射基线已确定；JSON Schema 与样例待开发。
 
-随后用“荒漠中的男人、远处巨型飞船、镜头缓慢推近”建立第一个不接最终视频模型的端到端样例。
+在安装 Agent/MCP 依赖前，将先评审双 Agent 权限和工具契约，并用“荒漠中的男人、远处巨型飞船、镜头缓慢推近”建立 Brief、Constraint Plan、Scene IR 三层完整样例。
 
 ## 名称
 
