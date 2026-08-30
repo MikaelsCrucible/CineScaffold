@@ -1,91 +1,70 @@
 # CineScaffold
 
-面向论文研究的自然语言到三维白模视频生成管线。项目研究非专业用户的一次性自然语言描述，经过电影语义解析、Agent 场景规划、可验证 Scene IR 和 Blender 白模预演后，是否能提升最终生成视频对空间布局、主体运动和摄影机运动的忠实度。
+CineScaffold 是一个面向论文研究的自然语言到三维白模视频生成管线。它把非专业用户的描述转换为结构化电影语义，再由工具增强的场景规划 Agent 生成可验证的 Scene IR，最后通过 Blender 构建空间脚手架和摄影机预演。
 
-## 当前研究问题
+> 当前状态：研究原型。核心管线已经可以运行，但语义转换规则、目标视频模型适配和正式实验协议尚未冻结，不建议作为生产工具使用。
 
-> 在单镜头、单轮、非交互条件下，相比直接使用小白提示词或仅由 LLM 扩写提示词，引入六维电影语义、工具增强的场景规划 Agent 和 Blender 白模控制，能否更准确地还原目标视频的空间关系与运动？
+## 研究动机
 
-本阶段研究系统，不以商业产品为目标。追问、用户迭代、多镜头长视频、复杂骨骼动作、布料/流体和精细资产暂不进入 v0.1。
+纯文本视频生成经常难以稳定复现相对位置、视觉尺度、运动轨迹和摄影机运动。CineScaffold 研究一种中间控制方式：先用可验证的三维代理场景明确这些关系，再把白模视频交给后续生成模型。
 
-论文核心样本会优先采用简单到中等复杂度的单镜头场景，但系统不在 Prompt 或场景逻辑中写死主体数量，也不以“复杂运镜”这类主观标签拒绝请求。实际能力由版本化 Scene IR、Toolkit 能力清单、验证器和运行资源配置共同界定；无法表达或求解的要求返回可诊断结果。
+项目当前关注的问题是：
 
-## v0.1 管线
+> 相比直接提示词或仅由 LLM 扩写提示词，加入六维电影语义、工具增强的场景规划和 Blender 白模控制，能否提高最终视频对空间与运动要求的忠实度？
 
-```text
-小白自然语言
-  -> LLM Semantic Parser
-  -> Cinematic Brief（六维、人类可读、保留来源与不确定性）
-  -> Scene Planning Agent（Agent 1）
-  -> 调用 Scene Planning Toolkit 进行计划、尝试、验证和修复
-  -> Constraint Plan + 通过验证的 Scene IR
-  -> 确定性 ExecutionRunner
-  -> 官方 Blender Lab MCP Adapter + 确定性 Blender Executor
-  -> Blender 真实场景构建、运行时验证与 H.264 渲染
-  -> 白模视频与控制素材
-  -> 视频生成模型
-  -> 匿名专家评测与统计分析
-```
-
-核心分工：
-
-- Agent 1 负责开放语义理解、电影策略选择和根据结构化错误修复 Scene IR Candidate。
-- ExecutionRunner 通过固定状态机执行不可变 Scene IR，不需要第二个 LLM Agent 参与正常路径。
-- Agent 2 仅保留为未来可选的异常诊断与恢复实验层；是否引入由无 Agent 基线的消融实验决定。
-- Scene IR 完整描述正式实验中的场景状态，禁止产生 IR 之外的隐藏状态。
-- Blender Adapter 只负责确定性映射；底层选择官方 Blender Lab MCP，调用内容由项目固定生成，不接受模型提供的任意 Python。
-- Blender 负责确定性执行、真实资产/场景验证和渲染。
-
-## 当前状态
-
-已实现从自然语言到白模视频的首条确定性研究管线：
+## 工作流程
 
 ```text
 自然语言
-  -> 可替换规则 Prompt
-  -> OpenAI / DeepSeek / Mock Provider
-  -> Cinematic Brief v0.1
-  -> 本地 Schema 验证与来源记录
-  -> 客观语义投影（剥离 mood、摘要和原始提示词）
-  -> Semantic Parser 在六维阶段解析或推断唯一镜头时长
-  -> 24 fps 帧对齐并冻结 Timeline
-  -> OpenAI / DeepSeek / Mock Scene Planning Agent
-  -> 九个 Scene Planning Toolkit 接口
-  -> Candidate 求解、验证、修复与 Commit Gate
-  -> Constraint Plan + 逐帧 Scene IR v0.1
-  -> 执行前跨字段验证
-  -> 官方 Blender MCP 固定入口
-  -> Blender 5.2 确定性 Executor + Runtime Validator
-  -> `.blend` + H.264 白模视频 + 可复现 manifest
+  -> Semantic Parser
+  -> Cinematic Brief（六维电影语义）
+  -> Scene Planning Agent
+  -> Planning Toolkit + Commit Gate
+  -> Constraint Plan + Scene IR
+  -> 确定性 ExecutionRunner
+  -> Blender MCP + Blender Executor
+  -> .blend 场景与白模视频
+  -> 视频生成模型（后续阶段）
 ```
 
-规则文件当前有意保持为空，等待项目成员提供正式转换规则。
+三个核心表示各自承担不同职责：
 
-Agent 1 的客观语义投影、Candidate revision store、九个 Planning Toolkit 接口、确定性启发式 Solver、结构化 Validator 和 Scene IR Commit Gate 已经实现。模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文。镜头时长必须在自然语言转六维的 Semantic Parser 阶段解析完成：可以来自用户明确值，也可以由该层按正式规则推断；Planner 不再调用独立时长模型、复用 Scene Planning Agent 或使用固定六秒缺省。Brief 若仍为未知时长，规划会在第一次模型请求前失败。已解析结果按冻结 FPS 对齐，来源与最终帧数写入 checkpoint 和 Scene IR。Commit Gate 会把规划轨迹烘焙为完整逐帧 Scene IR。当前确定性约束能力以 `get_capabilities` 返回为准，尚未实现的约束会产生明确 capability gap；同一响应会提供冻结的 FPS、时长、半开时间域和最后一帧时间，避免 Agent 通过失败调用猜测时间边界。Transform Keyframe 使用关闭额外字段的类型化 Schema，错误字段会在工具调用边界被拒绝。
+- `Cinematic Brief`：记录用户想表达什么，以及信息来自明确描述、推断还是默认值。
+- `Constraint Plan`：记录 Agent 选择了哪些可执行空间、运动和摄影机策略。
+- `Scene IR`：精确描述 Blender 应创建和渲染什么，可验证、可重放、可比较。
 
-Agent 协议由 Runner 确定性约束：闭集参数直接进入 Tool Schema 枚举；模型开始时只看得到能力工具，读取后该工具会从后续请求移除；`commit_ready=true` 后所有 Candidate 工具都会移除，只能结构化终止。同一 revision 的相同 inspect 会被拒绝；实体和摄影机的每个状态通道最多存在一条 Track。同一 ID 的 remove + upsert 是原子替换；Agent 推断或自选的数值不得伪装成 hard constraint，hard constraint 的明确来源还必须与约束类型兼容。“远处 / 后景”至少需要 `depth_order`，不能只用欧氏 `distance_range` 冒充画面深度。实体通过 `ground_interaction` 显式声明地面关系；缺省禁止穿地，只有 Brief 中明确的埋入/地下语义才能获得穿地豁免，且完整代理几何保持不被削短。实体建立后代理体类型和自身轴向不可更换。Toolkit v0.12 已实现 `world/local/target_relative/camera` 参考系和类型化轨迹：`polyline/sampled` 表达分段直线，`circle/ellipse` 表达解析环绕，`catmull_rom` 表达经过 waypoint 的平滑路径，`lemniscate` 表达 ∞/8 字闭环；`cycle_count`、弧长参数化、Track 缓动和开始时间分离。晚开始的 Track 在开始前回退到静态求解状态，不再提前施加首关键帧；目标相对运动按当前帧 Transform 递归合成，引用循环原子拒绝，再统一烘焙为 Scene IR 的 parent-local TRS。Agent-facing Patch 使用紧凑输入，Toolkit 仍以关闭领域模型复验；工具轮中的非工具正文只保留在有限 Trace，不回灌下一次模型上下文。模型历史固定保留原始 Brief 与最近六轮工具交互，旧领域状态按需从权威 Candidate Store 查询，每次裁剪均写入 Trace。默认请求上限为 24；Checkpoint 只在当前 Candidate revision 真正变化时写入，Toolkit 版本变化会拒绝旧 checkpoint。
+## 当前能力
 
-真实 Agent 回归暴露的规划缺陷已经进入确定性门禁：`push_in/pull_out` 按摄影机到目标的距离变化验证，不绑定世界轴；`speed_range` 独立表达移动速度，来源兼容性检查会拒绝用摄影机距离冒充“缓慢”；屏幕构图按旋转后代理体包围盒计算并使用冻结数值容差。Solver 不会为了制造侧面可见性而擅自旋转实体；三维代理是否真实构建由 Blender Runtime Validator 读取实际 mesh 拓扑和局部包围盒验证，与摄影机投影视角解耦。
+- 支持 OpenAI、DeepSeek 和离线 Mock Provider。
+- 将 Cinematic Brief 中的客观空间、运动、构图和摄影机要求交给规划 Agent。
+- 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
+- 支持世界、局部、目标相对和摄影机相对参考系。
+- 支持直线、圆、椭圆、平滑样条和 8 字等代理运动轨迹。
+- 通过官方 Blender Lab MCP 调用固定 Blender Executor，不把任意 Blender Python 暴露给模型。
+- 输出 `.blend`、运行时验证、执行 manifest 和 H.264 白模视频。
+- CLI 实时显示 Agent 请求、工具调用、token、revision、验证和渲染进度。
 
-相对运动能力已用嵌套回归覆盖：地球通过 `target_relative` 闭合路径围绕太阳，月亮再通过第二层 `target_relative` 闭合路径围绕正在运动的地球；世界求值、父级局部 IR 编译、父级旋转合成、摄影机相对实体、循环拒绝及全帧轨道半径验证均有离线测试。控制白模以运动可辨识性为验收目标：六维明确为嵌套 `orbit_around` 时，Validator 会拒绝两层轨道相对相位近似恒定的同相锁定，并要求调整子轨道 `cycle_count` 或轨迹节奏。该能力是通用参考系系统，不包含太阳系专用代码。
+## 研究范围
 
-普通 `orbit_around` 还必须使用解析式 `circle` 或 `ellipse`，不能再用若干直线控制点冒充圆形公转；只有六维明确给出 S、∞、折线或其他异形轨迹时，才允许 `catmull_rom`、`lemniscate` 或 `polyline`。圆形在任意冻结帧直接用三角函数求值并保持恒定半径；椭圆、双纽线和样条可通过固定密度弧长表获得确定性近似匀速。旧 Path 未写 `representation` 时仍按 `polyline` 读取，保证 checkpoint 兼容。
+当前原型主要面向单镜头、有限刚性代理实体和基础摄影机运动。系统没有写死主体数量，也不会仅因“运镜复杂”而拒绝请求；实际能力边界由 Scene IR、Toolkit、Validator 和运行资源共同决定。
 
-解析圆的确定性端到端回归复用上一轮已审核 Candidate 的实体、摄影机和约束，仅通过新版 Path API 将地球/太阳与月球/地球半径分别设为 11.5 m 和 2.45 m、循环次数设为 1:3。240 个冻结帧中两条半径的最大波动分别只有 `3.553e-15 m` 与 `1.776e-15 m`；Commit Gate hard pass、soft score `1.0`，Blender Runtime Validation 为 0 violation，10 秒 Workbench preview 执行耗时约 6.58 秒。该回归不调用模型，只验证曲线采样、IR 编译与执行链；真实 Agent 的类型选择应在后续正式样本中单独统计。
+暂未覆盖：
 
-第一次太阳—地球—月亮真实回归虽然在旧门禁下 hard pass，却让两层轨道都在 10 秒内循环一次，形成肉眼近似刚性编队的 1:1 相位锁定。该产物保留为 Validator 反例：Toolkit v0.10 会稳定报告 `NESTED_ORBIT_PHASE_LOCKED`，不再把“数值相对位置变化”误当成“控制视频中可辨识的相对运动”。
+- 多轮追问和交互式修改；
+- 多镜头、转场和长视频编排；
+- 骨骼级人物表演、表情与口型；
+- 布料、流体、破坏和动态拓扑；
+- 精细资产、材质与完整灯光设计；
+- 最终视频生成模型的统一 Adapter 与正式评测管线。
 
-修复后使用同一六维稿从 revision 0 重跑，DeepSeek 在首次 Motion Patch 就采用地球 `cycle_count=1`、月球 `cycle_count=3`，最终于 revision 11 提交，hard pass、soft score `1.0`。月球相对地球在每 20 帧依次经过右、上、左、下，10 秒内完成三圈；全帧地球—太阳距离为 11.086–12.000 m，月球—地球距离为 2.310–2.500 m。官方 Blender MCP 构建与 Runtime Validation 为 0 violation，Workbench preview 输出 120 帧、640×360、12 fps 的 10 秒视频，执行耗时约 4.65 秒。本次规划使用 15 requests、12 tool calls、319,263 aggregate input tokens（270,208 cache read、49,055 uncached）和 3,695 output tokens；供应商响应 `cost=0.025533079`，未返回币种或价格快照。
+## 环境要求
 
-无 Agent 2 的执行基线也已实现：`cinescaffold execute` 在修改 Blender 前验证 IR，创建 factory template，经官方 Blender MCP 的 `execute_blender_code_for_cli` 调用固定 Executor，从空场景生成代理几何、逐帧实体/摄影机状态、白模材质和灯光，并回读 Runtime Snapshot。H.264 默认由同一固定 Executor 在后台 Blender 中渲染，避开官方 MCP CLI 工具的短调用时限；可用 `--render-backend mcp` 保留短场景的纯 MCP 渲染。执行默认使用 `preview` 诊断档：在独立渲染进程中切换到中性 Workbench，以半分辨率和每两帧一次的采样保持整段时长，输出 `diagnostic_preview.mp4`；Workbench 的 cast shadow 与 cavity 接触暗部固定关闭，不把未声明阴影带入白模。`--render-profile control` 才严格按 Scene IR 的 EEVEE、完整分辨率和 FPS 输出正式 `clay_preview.mp4`。未给定灯光语义时，Compiler 使用版本化的摄影机相对对称无影灯组，不推断世界光源方向；Runtime Validator 会核对灯组用途、模式、父级、旋转、能量和阴影开关。两次相同 IR 重建得到字节一致的规范化 Runtime Snapshot；两实体、144 帧黄金场景已在 Blender 5.2.1 LTS 上完成 0 violation 构建和视频渲染。
+- Python `3.12.x`
+- Blender `5.2.1 LTS`
+- 官方 Blender Lab MCP `1.0.0`
+- macOS 原型环境使用 `uv` 管理 Python 与工具依赖
 
-最新 10 秒真实回归由 Mock Semantic Parser 明确写入时长，再由 DeepSeek Scene Planning Agent 生成 240 帧 IR；修复后的飞船代理为 `90 × 30 × 70 m`、最低点高于地面约 5 m，摄影机推进 14 m。正式规划 hard pass、soft score `0.8333`，Blender Runtime Validation 为 0 violation；Workbench preview 输出 120 帧、640×360、12 fps 的 10 秒视频，完整 MCP 构建与渲染状态机内部耗时约 5.36 秒。
-
-第三轮道路接车回归使用 Mock Semantic Parser 生成 12 秒六维 Brief，并由真实 `deepseek-v4-pro` 规划。回归连续暴露并修复了工具 Schema 重复膨胀、工具轮正文回灌、Pydantic 联合错误洪泛、无界工具历史、晚开始 Track 与首关键帧前状态提前生效等 harness 缺陷；最终 revision 13 续跑段使用 8 requests、9 tool calls，最大单请求上下文由失败段的 38,688 降至 22,822 tokens，Commit Gate `hard_pass=true`、`soft_score=1.0`。修正首关键帧语义后的 Scene IR hash 为 `sha256:4cafe2d9360a43d2da401d49bed9c73365259b8a09e96304b352339d60b272d3`；官方 MCP 构建和 Runtime Validation 为 0 violation，12 秒 Workbench preview 共 144 个采样帧，执行耗时约 4.64 秒。视觉审计仍把该产物标为“技术链路成功、语义可读性未完全验收”：人物在开头约 2 秒不入画，上车过程被车体部分遮挡，且“沿道路行驶”的推断语义缺少通用 path-adherence 门禁。它不会作为论文正样本，相关问题应由通用动作可见性、遮挡和路径依附能力解决，不能写汽车专用规则。
-
-## 使用
-
-项目固定使用 Python 3.12.x；`.python-version` 记录解释器系列，`requirements.lock` 锁定完整 Python 依赖及哈希。推荐使用 [uv](https://docs.astral.sh/uv/) 建立环境：
+## 安装
 
 ```bash
 uv python install 3.12
@@ -96,39 +75,7 @@ uv pip install --python .venv/bin/python --no-deps --editable .
 source .venv/bin/activate
 ```
 
-运行时依赖采用最小化的 `pydantic-ai-slim[openai,mcp]==2.36.0`，同时覆盖 OpenAI、DeepSeek 与 MCP stdio Client，不安装 UI、Logfire 或其他未使用组件。
-
-### 面向演示的 CLI
-
-CLI 默认显示带耗时的中文阶段进度，并在结束时给出简短摘要和下一步命令。规划阶段会显示模型请求、token、工具用途、Candidate revision、Commit Gate 和最终 IR；执行阶段会显示 Scene IR 校验、运行目录、Blender 模板、MCP 构建、Runtime Validation、渲染参数和视频路径。进度写入 `stderr`，最终摘要写入 `stdout`，因此两者仍可被终端或脚本分别处理。
-
-```text
-[00:00] ◆ 场景规划  启动 mock/mock-scene-planner-v0.1，准备 Agent 工具循环
-[00:00] … 模型思考  第 1 次请求，上下文 1 条消息
-[00:00] → Agent 工具  读取工具能力
-[00:00] ✓ 工具结果  读取工具能力：成功 · revision 0 → 0 · 0.00s
-[00:00] ✓ Commit Gate  成功 · hard pass=True · soft score=1.000 · violations=0
-```
-
-三个命令均支持以下展示选项：
-
-- 默认：显示过程和适合协作者阅读的最终摘要。
-- `--no-color`：关闭交互终端中的颜色。
-- `--quiet`：隐藏过程，只保留最终结果。
-- `--json --quiet`：只在 `stdout` 输出完整 JSON，供测试、批处理和其他程序调用。
-
-可运行 `cinescaffold --help` 查看三阶段示例，或运行 `cinescaffold <命令> --help` 查看阶段参数。当前仍保留 `parse`、`plan`、`execute` 三个显式步骤，让论文实验可以检查和替换每个阶段的产物；一键批量入口仍属于后续里程碑。
-
-### Blender 与 Blender MCP
-
-原型环境要求：
-
-- Blender `5.2.1 LTS`。
-- 官方 Blender Lab MCP `1.0.0`，源码固定到 commit `4309a39646e644261624bfcd2bca669b343b7621`。
-- Blender MCP Server 的 MCP Python SDK 固定为 `>=1.2,<2`。官方 1.0.0 源码仍使用 `mcp.server.fastmcp.FastMCP`，与 MCP SDK 2.x 不兼容。
-- Blender 中安装并启用官方 MCP Add-on；交互模式需要用 `blender --online-mode` 启动，或由用户明确开启 Blender 的全局在线访问偏好。
-
-Blender MCP Server 应作为独立工具安装，避免把 GPL Server 代码并入 CineScaffold Python 包：
+Blender MCP 作为外部工具单独安装：
 
 ```bash
 uv tool install --python 3.12 \
@@ -137,20 +84,43 @@ uv tool install --python 3.12 \
   blender-mcp
 ```
 
-Add-on 的官方安装说明见 [Blender Lab MCP](https://www.blender.org/lab/mcp-server/)。正式实验前仍需把 Blender、Add-on、Server、MCP SDK 和 Executor hash 一起写入运行 manifest。
+还需要在 Blender 中安装并启用官方 MCP Add-on。上游安装说明见 [Blender Lab MCP](https://www.blender.org/lab/mcp-server/)。
 
-使用 Mock Provider 进行离线测试：
+## 使用
+
+CLI 保留三个显式阶段，方便研究者检查、更换或复用中间产物。
+
+### 1. 自然语言转 Cinematic Brief
+
+OpenAI：
 
 ```bash
+export OPENAI_API_KEY="..."
+export CINESCOFFOLD_MODEL_ID="..."
 cinescaffold parse \
-  --provider mock \
-  --text "一个男人站在荒漠里，远处有飞船。" \
+  --provider openai \
+  --model "$CINESCOFFOLD_MODEL_ID" \
+  --text "一个男人站在荒漠里，远处有巨大的飞船，镜头慢慢推近。" \
   --output runs/example/cinematic_brief.json
 ```
 
-未指定 `--mock-response` 时，Mock 会返回用于检查接口的空格式骨架，不会自行理解文本或推断时长，因此 CLI 会提示先完成 Semantic Parser 时长。演示完整 Mock 管线时，应通过 `--mock-response <json>` 提供一份已经过 Schema 校验、且包含正数 `timeline.duration_seconds` 的模拟模型内容。
+DeepSeek：
 
-将 Cinematic Brief 通过 Agent 1 转换为 Scene IR：
+```bash
+export DEEPSEEK_API_KEY="..."
+export CINESCOFFOLD_MODEL_ID="..."
+cinescaffold parse \
+  --provider deepseek \
+  --model "$CINESCOFFOLD_MODEL_ID" \
+  --text "一个男人站在荒漠里，远处有巨大的飞船，镜头慢慢推近。" \
+  --output runs/example/cinematic_brief.json
+```
+
+Mock Provider 不理解文本，只返回指定的模拟响应。未传入 `--mock-response` 时，它仅用于检查 Schema 和 CLI 接口。
+
+正式使用前需要由项目成员补充并评审 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md) 中的六维转换规则；该文件当前有意留空。
+
+### 2. Cinematic Brief 转 Scene IR
 
 ```bash
 cinescaffold plan \
@@ -159,43 +129,9 @@ cinescaffold plan \
   --output-dir runs/example/planning
 ```
 
-真实规划模型需要显式指定模型 ID：
+Mock 规划不需要 `--model`。使用真实 Provider 时必须显式指定模型 ID，避免模型别名变化导致实验条件漂移。
 
-```bash
-export OPENAI_API_KEY="..."
-cinescaffold plan \
-  --provider openai \
-  --model <model-id> \
-  --brief runs/example/cinematic_brief.json \
-  --output-dir runs/example/openai-planning
-
-export DEEPSEEK_API_KEY="..."
-cinescaffold plan \
-  --provider deepseek \
-  --model deepseek-v4-pro \
-  --thinking-mode enabled \
-  --reasoning-effort high \
-  --model-max-tokens 8192 \
-  --brief runs/example/cinematic_brief.json \
-  --output-dir runs/example/deepseek-planning
-```
-
-每次规划都会写出 `planning_agent_tool_trace.jsonl`、`constraint_plan.json`、`planning_validation.json`、`planning_summary.json`；成功时额外写出 `final_scene_ir.json`。Trace 记录每轮模型请求、模型设置、工具参数/结果、revision、验证错误和耗时，但不保存模型 thinking/reasoning 内容。`planning_summary.json` 分开记录累计输入 token、缓存命中、未缓存输入和最大单次上下文；累计输入会把每轮重复上下文相加，不能解释为模型上下文窗口大小。DeepSeek 的单次输出上限会通过其 Chat Completions 所需的 `max_tokens` 字段发送；其他兼容 Provider 使用 PydanticAI 的通用设置。
-
-`Cinematic Brief.timeline.duration_seconds` 必须在 Semantic Parser 输出时成为正数，并以 `explicit`、`inferred` 或 `default` 标记来源。若用户给出 `duration_range_seconds`，Semantic Parser 也必须在范围内给出最终 `duration_seconds`。Planner 只做 FPS 对齐和冻结，不产生额外时长模型调用。正式 Timeline 一旦冻结，Scene Planning Agent 和 Blender 均不得重新解释时长。
-
-每个成功 Mutation 还会写入 `checkpoints/revision_NNNN.json` 并更新 `checkpoint_latest.json`。预算或网络中断后，应使用同一份 Brief 在新的输出目录建立短上下文续跑；Checkpoint 会校验 Brief、Toolkit、Profile 与 Candidate hash：
-
-```bash
-cinescaffold plan \
-  --provider deepseek \
-  --model <model-id> \
-  --brief runs/example/cinematic_brief.json \
-  --resume-from runs/example/failed-planning/checkpoint_latest.json \
-  --output-dir runs/example/resumed-planning
-```
-
-将已提交 Scene IR 确定性执行为 Blender 场景和白模视频：
+### 3. Scene IR 转 Blender 白模视频
 
 ```bash
 cinescaffold execute \
@@ -203,7 +139,7 @@ cinescaffold execute \
   --output-dir runs/example/execution
 ```
 
-默认输出包括 `scene.blend`、`runtime_snapshot.json`、`runtime_validation.json`、`diagnostic_preview.mp4`、MCP/Blender 日志与 `execution_manifest.json`。需要用于后续视频生成或正式实验的完整控制视频时运行：
+默认 `preview` 使用 Workbench 快速生成诊断视频。需要完整分辨率和逐帧正式控制输出时使用：
 
 ```bash
 cinescaffold execute \
@@ -212,36 +148,27 @@ cinescaffold execute \
   --render-profile control
 ```
 
-`preview` 只改变渲染进程的引擎与采样设置，不修改 Scene IR、保存的 `.blend` 或 Runtime Validation；manifest 会记录实际引擎、帧步长、输出 FPS、分辨率与档位。已有同名产物时默认拒绝覆盖；只有显式传入 `--overwrite` 才会清理本次执行的固定产物。Blender 5.2 的 Metal/Workbench/EEVEE 后台执行在受限沙箱中可能无法初始化，CI 或桌面 Agent 环境需要给予 Blender 正常的 GPU/进程权限。
+## CLI 输出
 
-Provider 价格会变化，因此代码不硬编码价格。实验运行时可把当日价格作为快照显式传入：
+默认模式面向人工演示：进度写入 `stderr`，最终摘要写入 `stdout`。所有阶段都支持：
 
-```bash
-cinescaffold plan \
-  --provider openai \
-  --model <model-id> \
-  --brief <brief.json> \
-  --output-dir <run-dir> \
-  --input-cost-per-million <price> \
-  --output-cost-per-million <price> \
-  --price-source "provider pricing page YYYY-MM-DD"
-```
+- `--no-color`：关闭终端颜色；
+- `--quiet`：隐藏阶段进度；
+- `--json --quiet`：只输出机器可读 JSON，适合测试和批处理。
 
-使用 OpenAI Responses API：
+运行 `cinescaffold --help` 或 `cinescaffold <命令> --help` 查看完整参数。
 
-```bash
-export OPENAI_API_KEY="..."
-cinescaffold parse --provider openai --model <model-id> --text "..."
-```
+## 主要产物
 
-使用 DeepSeek Chat Completions API：
+| 阶段 | 主要输出 |
+| --- | --- |
+| `parse` | `cinematic_brief.json` |
+| `plan` | Agent Trace、checkpoint、Constraint Plan、验证报告、`final_scene_ir.json` |
+| `execute` | `scene.blend`、Runtime Snapshot、Runtime Validation、执行 manifest、白模 MP4 |
 
-```bash
-export DEEPSEEK_API_KEY="..."
-cinescaffold parse --provider deepseek --model <model-id> --text "..."
-```
+运行目录默认拒绝覆盖已有产物；执行阶段只有显式传入 `--overwrite` 才会覆盖其固定输出。
 
-模型名称必须显式传入，避免 API 别名变化导致实验条件静默漂移。规则可直接编辑 [rules.md](prompts/semantic_parser/rules.md)，也可通过 `--rules` 指定其他文件。
+## 开发与验证
 
 运行离线测试：
 
@@ -249,18 +176,12 @@ cinescaffold parse --provider deepseek --model <model-id> --text "..."
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-API 实现依据 [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)、[OpenAI Responses API](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)、[DeepSeek 首次调用](https://api-docs.deepseek.com/guides/function_calling/)和 [DeepSeek JSON Output](https://api-docs.deepseek.com/guides/json_mode/) 官方文档。
+JSON Schema 位于 [`schemas/`](schemas/)，Prompt 位于 [`prompts/`](prompts/)，核心实现位于 [`src/cinescaffold/`](src/cinescaffold/)。
 
-## 下一步
+## 项目状态
 
-三个版本化 Schema 当前状态：
+已完成自然语言到 Scene IR、Scene IR 到 Blender 场景和白模视频的首条研究管线。下一阶段重点是冻结语义转换规则、扩充通用 Validator、输出 Depth/Object ID 控制素材，并建立可重复的视频模型对照实验。
 
-1. `Cinematic Brief v0.1`：已完成首稿和离线验证。
-2. `Constraint Plan v0.1`：机器 Schema 已由领域模型生成。
-3. `Scene IR v0.1`：机器 Schema、坐标、逐帧状态、相机和 Blender 映射基线已实现。
+## 许可证
 
-下一步是补齐 Runtime Validator 的投影、可见性、遮挡、材质、灯光与输出 Pass 检查，并输出 RGB/Depth/Object ID Control Bundle；随后以确定性 ExecutionRunner 为基线，评估可选 Agent 2 是否能在故障恢复任务上带来可测收益。
-
-## 名称
-
-`CineScaffold` 指将非专业创作意图落地为可验证的电影空间脚手架。名称不绑定 Blender、MCP、特定 LLM 或视频生成模型。
+仓库目前尚未附带 CineScaffold 自身的开源许可证；公开可见不等于已经授予复制、修改或分发许可。Blender 与 Blender MCP 使用各自的许可证，后者作为外部工具独立安装。
