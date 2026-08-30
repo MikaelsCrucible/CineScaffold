@@ -94,6 +94,7 @@ class ExecutionTest(unittest.TestCase):
             frame_end=144,
             fps=24,
             fps_base=1.0,
+            render_engine="BLENDER_EEVEE",
             resolution_x=1280,
             resolution_y=720,
         )
@@ -101,6 +102,7 @@ class ExecutionTest(unittest.TestCase):
         self.assertEqual(plan["frame_step"], 2)
         self.assertEqual(plan["rendered_frame_count"], 72)
         self.assertEqual(plan["fps_base"], 2.0)
+        self.assertEqual(plan["render_engine"], "BLENDER_WORKBENCH")
         self.assertEqual((plan["resolution_x"], plan["resolution_y"]), (640, 360))
 
     def test_runtime_geometry_rejects_flat_mesh_for_box(self) -> None:

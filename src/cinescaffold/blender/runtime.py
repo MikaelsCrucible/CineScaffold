@@ -45,6 +45,7 @@ def apply_scene_ir(
     scene["cinescaffold_preview_path"] = str(preview_path)
     scene["cinescaffold_render_fps"] = scene.render.fps
     scene["cinescaffold_render_fps_base"] = scene.render.fps_base
+    scene["cinescaffold_render_engine"] = scene.render.engine
     scene["cinescaffold_render_resolution_x"] = scene.render.resolution_x
     scene["cinescaffold_render_resolution_y"] = scene.render.resolution_y
     scene.frame_set(scene_ir["timeline"]["frame_start"])
@@ -83,6 +84,7 @@ def render_clay_video(render_profile: str = "preview") -> dict[str, Any]:
     control_path = Path(preview_value).resolve()
     source_fps = int(scene.get("cinescaffold_render_fps", scene.render.fps))
     source_fps_base = float(scene.get("cinescaffold_render_fps_base", scene.render.fps_base))
+    source_engine = str(scene.get("cinescaffold_render_engine", scene.render.engine))
     source_resolution_x = int(
         scene.get("cinescaffold_render_resolution_x", scene.render.resolution_x)
     )
@@ -95,6 +97,7 @@ def render_clay_video(render_profile: str = "preview") -> dict[str, Any]:
         frame_end=scene.frame_end,
         fps=source_fps,
         fps_base=source_fps_base,
+        render_engine=source_engine,
         resolution_x=source_resolution_x,
         resolution_y=source_resolution_y,
     )
@@ -106,6 +109,9 @@ def render_clay_video(render_profile: str = "preview") -> dict[str, Any]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     scene.frame_step = plan["frame_step"]
+    scene.render.engine = plan["render_engine"]
+    if render_profile == "preview":
+        _configure_workbench_preview(scene)
     scene.render.fps = source_fps
     scene.render.fps_base = plan["fps_base"]
     scene.render.resolution_x = plan["resolution_x"]
@@ -126,6 +132,7 @@ def render_clay_video(render_profile: str = "preview") -> dict[str, Any]:
     return {
         "status": "ok",
         "render_profile": render_profile,
+        "render_engine": scene.render.engine,
         "scene_ir_hash": scene.get("cinescaffold_scene_ir_hash", ""),
         "artifact": str(output_path),
         "size_bytes": output_path.stat().st_size,
@@ -151,6 +158,7 @@ def _render_profile_plan(
     frame_end: int,
     fps: int,
     fps_base: float,
+    render_engine: str,
     resolution_x: int,
     resolution_y: int,
 ) -> dict[str, Any]:
@@ -162,6 +170,7 @@ def _render_profile_plan(
             "frame_step": 1,
             "rendered_frame_count": source_frame_count,
             "fps_base": fps_base,
+            "render_engine": render_engine,
             "resolution_x": resolution_x,
             "resolution_y": resolution_y,
         }
@@ -174,9 +183,22 @@ def _render_profile_plan(
         "frame_step": frame_step,
         "rendered_frame_count": rendered_frame_count,
         "fps_base": fps / output_fps,
+        "render_engine": "BLENDER_WORKBENCH",
         "resolution_x": max(1, round(resolution_x / 2)),
         "resolution_y": max(1, round(resolution_y / 2)),
     }
+
+
+def _configure_workbench_preview(scene) -> None:
+    """使用固定的中性建模视图，避免引入创作性照明。"""
+    shading = scene.display.shading
+    shading.light = "STUDIO"
+    shading.color_type = "MATERIAL"
+    shading.show_shadows = True
+    shading.show_cavity = True
+    shading.cavity_type = "WORLD"
+    shading.show_specular_highlight = False
+    shading.background_type = "WORLD"
 
 
 def _blender_modules():
