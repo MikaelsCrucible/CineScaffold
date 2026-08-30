@@ -18,6 +18,7 @@ from cinescaffold.planning.domain import (
     AgentTerminal,
     CameraStatic,
     CandidateState,
+    ConstraintKind,
     GroundInteractionSpec,
     ProxyGeometry,
     StrictModel,
@@ -43,12 +44,14 @@ class ConstraintPatchInput(StrictModel):
     """保持工具 schema 紧凑，领域模型仍由 Toolkit 严格复验。"""
 
     constraint_id: str = Field(min_length=1)
-    type: str
+    type: ConstraintKind
     strength: Literal["hard", "soft"]
     weight: float = Field(default=1.0, gt=0)
     subjects: list[str] = Field(default_factory=list)
     time_range_seconds: tuple[float, float]
-    parameters: dict[str, Any]
+    parameters: dict[str, Any] = Field(
+        description="字段必须遵循 get_capabilities.constraint_parameter_schemas 中对应 type 的契约"
+    )
     source_status: Literal["explicit", "inferred", "default", "agent_selected", "unknown"]
     source_ref: str
 

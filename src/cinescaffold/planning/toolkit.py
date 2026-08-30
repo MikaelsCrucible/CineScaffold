@@ -233,6 +233,68 @@ class ScenePlanningToolkit:
                 "commit_ready": _commit_ready(state.validation, self.profile),
             },
             "supported_constraints": sorted(SUPPORTED_CONSTRAINTS),
+            "constraint_parameter_schemas": {
+                "relative_position": {
+                    "required": ["subject_id", "reference_id", "relation"],
+                    "optional": ["space", "minimum_gap", "maximum_gap"],
+                },
+                "distance_range": {
+                    "required": ["entity_ids", "minimum_meters", "maximum_meters"],
+                },
+                "depth_order": {
+                    "required": ["near_entity_id", "far_entity_id"],
+                    "optional": ["camera_id", "minimum_depth_gap_meters"],
+                },
+                "screen_region": {"required": ["entity_id", "region"]},
+                "projected_size": {
+                    "required": ["entity_id", "minimum", "maximum"],
+                    "optional": ["measurement"],
+                },
+                "projected_scale_ratio": {
+                    "required": [
+                        "numerator_entity_id",
+                        "denominator_entity_id",
+                        "minimum_ratio",
+                        "maximum_ratio",
+                    ],
+                    "optional": ["measurement"],
+                },
+                "keep_in_frame": {
+                    "required": ["entity_id", "minimum_inside_fraction"],
+                },
+                "look_at": {
+                    "required": ["observer_id", "target_id"],
+                    "optional": ["maximum_angle_error_degrees"],
+                },
+                "camera_distance": {
+                    "required": ["target_id", "minimum_meters", "maximum_meters"],
+                    "optional": ["camera_id"],
+                },
+                "focal_length_range": {
+                    "required": ["minimum_mm", "maximum_mm"],
+                    "optional": ["camera_id"],
+                },
+                "motion_direction": {
+                    "required": ["target_id", "direction"],
+                    "optional": ["space", "minimum_displacement_m"],
+                },
+                "camera_motion_direction": {
+                    "required": ["direction"],
+                    "optional": ["camera_id", "target_id", "space", "minimum_displacement_m"],
+                },
+                "speed_range": {
+                    "required": ["target_id", "maximum_mps"],
+                    "optional": ["minimum_mps", "space"],
+                },
+                "position_at_time": {
+                    "required": ["target_id", "position_m"],
+                    "optional": ["space", "tolerance_m"],
+                },
+                "hold": {
+                    "required": ["target_id", "components"],
+                    "optional": ["tolerance_m"],
+                },
+            },
             "constraint_guidance": {
                 "camera_motion_direction": (
                     "push_in/pull_out 按摄影机到 target_id（缺省为 focus target）的距离变化验证；"
@@ -370,7 +432,7 @@ class ScenePlanningToolkit:
 
             return _mutation_envelope(self.store.apply(mutate))
         except (ValidationError, ValueError) as error:
-            return _rejected(self.store.current_revision, str(error))
+            return _rejected(self.store.current_revision, _error_message(error))
 
     def apply_constraint_patch(
         self,
@@ -446,7 +508,7 @@ class ScenePlanningToolkit:
 
             return _mutation_envelope(self.store.apply(mutate))
         except (ValidationError, ValueError) as error:
-            return _rejected(self.store.current_revision, str(error))
+            return _rejected(self.store.current_revision, _error_message(error))
 
     def apply_motion_patch(
         self,
@@ -490,7 +552,7 @@ class ScenePlanningToolkit:
 
             return _mutation_envelope(self.store.apply(mutate))
         except (ValidationError, ValueError) as error:
-            return _rejected(self.store.current_revision, str(error))
+            return _rejected(self.store.current_revision, _error_message(error))
 
     def apply_camera_patch(
         self,
@@ -546,7 +608,7 @@ class ScenePlanningToolkit:
 
             return _mutation_envelope(self.store.apply(mutate))
         except (ValidationError, ValueError) as error:
-            return _rejected(self.store.current_revision, str(error))
+            return _rejected(self.store.current_revision, _error_message(error))
 
     def solve_candidate(
         self,
@@ -616,7 +678,7 @@ class ScenePlanningToolkit:
         try:
             mutation = self.store.apply(mutate)
         except (ValidationError, ValueError) as error:
-            return _rejected(self.store.current_revision, str(error))
+            return _rejected(self.store.current_revision, _error_message(error))
         report = self._validate(self.store.get(), FULL_VALIDATION_CHECKS)
         self.store.save_validation(report)
         data = {
@@ -2296,6 +2358,35 @@ def _mutation_envelope(
         warnings=result.warnings,
         capability_gaps=capability_gaps,
     )
+
+
+def _error_message(error: ValidationError | ValueError) -> str:
+    if not isinstance(error, ValidationError):
+        return str(error)
+    details = error.errors(include_url=False, include_context=False, include_input=False)
+    direct: list[dict[str, Any]] = []
+    branches: dict[str, list[dict[str, Any]]] = {}
+    for detail in details:
+        location = detail.get("loc", ())
+        if len(location) >= 3 and location[0] in {"parameters", "path", "proxy"}:
+            branches.setdefault(str(location[1]), []).append(detail)
+        else:
+            direct.append(detail)
+    selected = direct[:4]
+    if branches and len(selected) < 4:
+        # 非判别联合只报告最接近成功的分支，避免几十条无关候选错误污染上下文。
+        closest = min(branches.values(), key=len)
+        selected.extend(closest[: 4 - len(selected)])
+    messages: list[str] = []
+    for detail in selected or details[:4]:
+        location = list(detail.get("loc", ()))
+        if len(location) >= 3 and location[0] in {"parameters", "path", "proxy"}:
+            location.pop(1)
+        path = ".".join(str(item) for item in location) or "input"
+        messages.append(f"{path}: {detail.get('msg', 'invalid value')}")
+    remaining = max(0, len(details) - len(selected))
+    suffix = f"；另省略 {remaining} 条候选分支错误" if remaining else ""
+    return f"输入校验失败：{'; '.join(messages)}{suffix}"
 
 
 def _rejected(revision: int, message: str) -> dict[str, Any]:

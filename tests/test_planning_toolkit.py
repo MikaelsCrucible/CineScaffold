@@ -31,8 +31,38 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             },
         )
         self.assertIn("camera", result["data"]["inspect_views"])
+        self.assertEqual(
+            result["data"]["constraint_parameter_schemas"]["relative_position"]["required"],
+            ["subject_id", "reference_id", "relation"],
+        )
         self.assertEqual(result["data"]["acceptance"]["minimum_soft_score"], 0.75)
         self.assertFalse(result["data"]["acceptance"]["commit_ready"])
+
+    def test_constraint_validation_returns_only_actionable_union_branch(self) -> None:
+        result = _toolkit().apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "bad_relative",
+                    "type": "relative_position",
+                    "strength": "hard",
+                    "subjects": ["man_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "subject_id": "man_01",
+                        "reference_id": "ship_01",
+                        "relation": "left",
+                        "range_m": [0.0, 4.0],
+                    },
+                    "source_status": "explicit",
+                    "source_ref": "content.scene_design.relationships[0]",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("parameters.range_m", result["warnings"][0])
+        self.assertLess(len(result["warnings"][0]), 500)
 
     def test_camera_patch_rejects_overlapping_singleton_tracks_atomically(self) -> None:
         toolkit = _toolkit()
