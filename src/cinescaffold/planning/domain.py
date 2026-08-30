@@ -474,8 +474,6 @@ class PlanningProfile(StrictModel):
     default_camera_distance_m: float = 12.0
     default_depth_gap_m: float = 12.0
     numeric_tolerance: float = Field(default=1e-8, gt=0)
-    minimum_proxy_axis_projection_ratio: float = Field(default=0.30, gt=0, lt=1)
-    minimum_readability_projected_extent: float = Field(default=0.01, gt=0)
     random_seed: int = 0
 
 

@@ -27,7 +27,6 @@ from cinescaffold.planning.geometry import (
     normalize,
     project_point,
     project_geometry_bounds,
-    projected_box_axis_lengths,
     quaternion_conjugate,
     rotate_vector,
     sample_path_track,
@@ -69,7 +68,6 @@ FULL_VALIDATION_CHECKS = [
     "visibility",
     "motion",
     "camera",
-    "proxy_readability",
     "hard_semantics",
     "rebuildability",
 ]
@@ -490,14 +488,6 @@ class ScenePlanningToolkit:
                     camera.static.focal_length_mm = self.profile.default_focal_length_mm
                     changes.append({"operation": "solve", "path": "camera.static.focal_length_mm"})
 
-                for entity_id in _apply_proxy_readability_defaults(state, self.profile):
-                    changes.append(
-                        {
-                            "operation": "solve",
-                            "path": f"entities.{entity_id}.solved_transform.rotation_quaternion_wxyz",
-                        }
-                    )
-
             return changes, []
 
         try:
@@ -572,8 +562,6 @@ class ScenePlanningToolkit:
             violations.extend(_camera_violations(state))
         if "projection" in checks:
             violations.extend(_projection_violations(state, self.profile))
-        if "proxy_readability" in checks:
-            violations.extend(_proxy_readability_violations(state, self.profile))
         if "hard_semantics" in checks:
             violations.extend(_hard_semantic_violations(state))
 
@@ -770,74 +758,6 @@ def _apply_layout_constraint(
     return False
 
 
-def _apply_proxy_readability_defaults(
-    state: CandidateState,
-    profile: PlanningProfile,
-) -> list[str]:
-    """仅在朝向未被轨道指定时，为细长 box 补充可读的技术朝向。"""
-    if state.camera is None:
-        return []
-    probe_times = _timeline_probe_times(state.timeline)
-    time_seconds = probe_times[1]
-    camera = _camera_state_at(state, time_seconds, profile)
-    if camera is None:
-        return []
-    changed: list[str] = []
-    for entity_id, entity in state.entities.items():
-        if entity.proxy.type != "box" or _is_environment_entity(entity):
-            continue
-        dimensions = entity.proxy.size_xyz_m
-        longest_axis = max(range(3), key=lambda index: dimensions[index])
-        if longest_axis == 2 or max(dimensions) / min(dimensions) < 1.5:
-            continue
-        entity_tracks = [
-            track
-            for track in state.motion_tracks.values()
-            if track.target_entity_id == entity_id and track.type == "transform"
-        ]
-        if any(
-            isinstance(keyframe.value, TransformValue)
-            and keyframe.value.rotation_quaternion_wxyz is not None
-            for track in entity_tracks
-            for keyframe in track.keyframes
-        ):
-            continue
-        ratios: list[float] = []
-        for probe_time in probe_times:
-            probe_camera = _camera_state_at(state, probe_time, profile)
-            if probe_camera is None:
-                continue
-            probe_transform = _entity_transform_at(state, entity_id, probe_time)
-            lengths = projected_box_axis_lengths(
-                entity.proxy,
-                probe_transform,
-                probe_camera[0].translation_m,
-                probe_camera[0].rotation_quaternion_wxyz,
-                probe_camera[1],
-                state.camera.static.sensor_width_mm,
-                profile.resolution_x / profile.resolution_y,
-            )
-            if lengths is not None and max(lengths) > 0:
-                ratios.append(min(lengths) / max(lengths))
-        if not ratios:
-            continue
-        if min(ratios) >= profile.minimum_proxy_axis_projection_ratio:
-            continue
-        transform = _entity_transform_at(state, entity_id, time_seconds)
-        entity_position = transform.translation_m
-        view = subtract(camera[0].translation_m, entity_position)
-        view_azimuth = math.atan2(view[1], view[0])
-        local_axis_azimuth = 0.0 if longest_axis == 0 else math.pi / 2.0
-        yaw = view_azimuth + math.radians(35.0) - local_axis_azimuth
-        rotation = (math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0))
-        completed = _complete_transform(entity.solved_transform)
-        entity.solved_transform = completed.model_copy(
-            update={"rotation_quaternion_wxyz": rotation}
-        )
-        changed.append(entity_id)
-    return changed
-
-
 def _reference_violations(state: CandidateState) -> list[Violation]:
     violations: list[Violation] = []
     try:
@@ -1026,78 +946,6 @@ def _projection_violations(
                     )
                 )
                 break
-    return violations
-
-
-def _proxy_readability_violations(
-    state: CandidateState,
-    profile: PlanningProfile,
-) -> list[Violation]:
-    """拒绝非环境长方体沿主轴退化成二维轮廓。"""
-    if state.camera is None:
-        return []
-    violations: list[Violation] = []
-    for entity_id, entity in state.entities.items():
-        if entity.proxy.type != "box" or _is_environment_entity(entity):
-            continue
-        dimensions = entity.proxy.size_xyz_m
-        if max(dimensions) / min(dimensions) < 1.5:
-            continue
-        worst_ratio = math.inf
-        worst_lengths: tuple[float, float, float] | None = None
-        worst_time = 0.0
-        visible_extent = 0.0
-        for time_seconds in _timeline_probe_times(state.timeline):
-            camera = _camera_state_at(state, time_seconds, profile)
-            if camera is None:
-                continue
-            transform = _entity_transform_at(state, entity_id, time_seconds)
-            lengths = projected_box_axis_lengths(
-                entity.proxy,
-                transform,
-                camera[0].translation_m,
-                camera[0].rotation_quaternion_wxyz,
-                camera[1],
-                state.camera.static.sensor_width_mm,
-                profile.resolution_x / profile.resolution_y,
-            )
-            if lengths is None:
-                continue
-            largest = max(lengths)
-            ratio = min(lengths) / largest if largest > 0 else 0.0
-            if ratio < worst_ratio:
-                worst_ratio = ratio
-                worst_lengths = lengths
-                worst_time = time_seconds
-                visible_extent = largest
-        if (
-            worst_lengths is not None
-            and visible_extent >= profile.minimum_readability_projected_extent
-            and worst_ratio + profile.numeric_tolerance
-            < profile.minimum_proxy_axis_projection_ratio
-        ):
-            violations.append(
-                _violation(
-                    "PROXY_DEPTH_CUE_DEGENERATE",
-                    f"长方体代理沿视线退化为近二维轮廓：{entity_id}",
-                    entity_ids=[entity_id],
-                    time_range_seconds=(
-                        worst_time,
-                        min(worst_time + 1e-6, state.timeline.duration_seconds),
-                    ),
-                    expected={
-                        "minimum_axis_projection_ratio": profile.minimum_proxy_axis_projection_ratio
-                    },
-                    actual={
-                        "axis_projected_lengths": worst_lengths,
-                        "minimum_to_maximum_ratio": worst_ratio,
-                    },
-                    adjustable_variables=[
-                        f"{entity_id}.rotation",
-                        "camera transform",
-                    ],
-                )
-            )
     return violations
 
 

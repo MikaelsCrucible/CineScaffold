@@ -483,6 +483,7 @@ def _runtime_snapshot(scene, scene_ir, entities, camera) -> dict[str, Any]:
                 "parent_id": spec["parent_id"],
                 "object_index": entities[spec["entity_id"]].pass_index,
                 "geometry": json.loads(entities[spec["entity_id"]]["cinescaffold_geometry_json"]),
+                "mesh": _mesh_snapshot(entities[spec["entity_id"]]),
                 "frames": entity_frames[spec["entity_id"]],
             }
             for spec in scene_ir["entities"]
@@ -534,6 +535,12 @@ def _validate_runtime(scene_ir: dict[str, Any], snapshot: dict[str, Any]) -> dic
             violations.append(
                 _violation(f"entities.{entity_id}.geometry", expected["geometry"], actual["geometry"])
             )
+        _validate_mesh_geometry(
+            expected["geometry"],
+            actual["mesh"],
+            f"entities.{entity_id}.mesh",
+            violations,
+        )
         for frame_state in actual["frames"]:
             frame = frame_state["frame"]
             expected_state = _track_value(expected["local_state_track"], frame)
@@ -591,6 +598,81 @@ def _validate_runtime(scene_ir: dict[str, Any], snapshot: dict[str, Any]) -> dic
         "float_tolerance": FLOAT_TOLERANCE,
         "violations": violations,
     }
+
+
+def _mesh_snapshot(obj) -> dict[str, Any]:
+    coordinates = [tuple(vertex.co) for vertex in obj.data.vertices]
+    if coordinates:
+        bounds = [
+            max(point[axis] for point in coordinates) - min(point[axis] for point in coordinates)
+            for axis in range(3)
+        ]
+    else:
+        bounds = [0.0, 0.0, 0.0]
+    return {
+        "vertex_count": len(obj.data.vertices),
+        "polygon_count": len(obj.data.polygons),
+        "local_bounds_size_m": bounds,
+    }
+
+
+def _validate_mesh_geometry(
+    geometry: dict[str, Any],
+    mesh: dict[str, Any],
+    path: str,
+    violations: list[dict[str, Any]],
+) -> None:
+    expected_bounds = _expected_local_bounds(geometry)
+    actual_bounds = mesh.get("local_bounds_size_m", [])
+    if mesh.get("vertex_count", 0) <= 0 or mesh.get("polygon_count", 0) <= 0:
+        violations.append(
+            _violation(
+                f"{path}.topology",
+                {"minimum_vertex_count": 1, "minimum_polygon_count": 1},
+                {
+                    "vertex_count": mesh.get("vertex_count"),
+                    "polygon_count": mesh.get("polygon_count"),
+                },
+            )
+        )
+    if len(actual_bounds) != 3 or any(
+        not _close(expected, actual)
+        for expected, actual in zip(expected_bounds, actual_bounds)
+    ):
+        violations.append(
+            _violation(f"{path}.local_bounds_size_m", expected_bounds, actual_bounds)
+        )
+
+
+def _expected_local_bounds(geometry: dict[str, Any]) -> list[float]:
+    geometry_type = geometry["type"]
+    if geometry_type == "box":
+        return list(geometry["size_xyz_m"])
+    if geometry_type == "sphere":
+        diameter = 2.0 * geometry["radius_m"]
+        return [diameter, diameter, diameter]
+    if geometry_type == "plane":
+        return [*geometry["size_xy_m"], 0.0]
+    if geometry_type == "capsule":
+        radius = geometry["radius_m"]
+        values = [2.0 * radius, 2.0 * radius, geometry["segment_length_m"] + 2.0 * radius]
+        return _align_bounds(values, geometry["axis"])
+    radius = geometry.get(
+        "radius_m",
+        max(geometry.get("radius_bottom_m", 0.0), geometry.get("radius_top_m", 0.0)),
+    )
+    values = [2.0 * radius, 2.0 * radius, geometry["depth_m"]]
+    return _align_bounds(values, geometry["axis"])
+
+
+def _align_bounds(values: list[float], axis: str) -> list[float]:
+    if axis == "+Z":
+        return values
+    if axis == "+X":
+        return [values[2], values[1], values[0]]
+    if axis == "+Y":
+        return [values[0], values[2], values[1]]
+    raise ValueError(f"不支持的几何主轴：{axis}")
 
 
 def _lighting_snapshot(scene) -> dict[str, Any]:

@@ -284,7 +284,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         codes = {item["code"] for item in validation["violations"]}
         self.assertNotIn("ENTITY_OUT_OF_FRAME", codes)
 
-    def test_solver_rotates_elongated_box_out_of_axis_aligned_silhouette(self) -> None:
+    def test_solver_preserves_unspecified_box_orientation(self) -> None:
         toolkit = _toolkit()
         man = _man_entity() | {
             "solved_transform": {
@@ -324,10 +324,10 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         )
 
         toolkit.solve_candidate()
-        validation = toolkit.validate_candidate(checks=["proxy_readability"])
+        validation = toolkit.validate_candidate(checks=["transforms", "projection"])
         ship_rotation = toolkit.store.get().entities["ship_01"].solved_transform.rotation_quaternion_wxyz
 
-        self.assertNotEqual(ship_rotation, (1.0, 0.0, 0.0, 0.0))
+        self.assertEqual(ship_rotation, (1.0, 0.0, 0.0, 0.0))
         self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
 
     def test_speed_requirement_rejects_unrelated_camera_distance_mapping(self) -> None:

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cinescaffold.blender.runtime import _blender_render_engine
+from cinescaffold.blender.runtime import _blender_render_engine, _validate_mesh_geometry
 from cinescaffold.errors import ExecutionError
 from cinescaffold.execution.mcp import OfficialBlenderMCPAdapter
 from cinescaffold.execution.runner import ExecutionConfig, ExecutionRunner
@@ -69,6 +69,25 @@ class ExecutionTest(unittest.TestCase):
 
     def test_scene_ir_engine_maps_to_blender_5_2_enum(self) -> None:
         self.assertEqual(_blender_render_engine("BLENDER_EEVEE_NEXT"), "BLENDER_EEVEE")
+
+    def test_runtime_geometry_rejects_flat_mesh_for_box(self) -> None:
+        violations = []
+        _validate_mesh_geometry(
+            {"type": "box", "size_xyz_m": [60.0, 20.0, 20.0]},
+            {
+                "vertex_count": 4,
+                "polygon_count": 1,
+                "local_bounds_size_m": [60.0, 20.0, 0.0],
+            },
+            "entities.ship_01.mesh",
+            violations,
+        )
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(
+            violations[0]["path"],
+            "entities.ship_01.mesh.local_bounds_size_m",
+        )
 
     def test_execution_validation_rejects_incomplete_track(self) -> None:
         payload = self.scene_ir.model_dump(mode="json")
