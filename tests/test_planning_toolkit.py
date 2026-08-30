@@ -120,6 +120,11 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             scene_ir.timeline.frame_end,
         )
         self.assertNotIn("mood", scene_ir.model_dump_json())
+        self.assertEqual(scene_ir.lighting.purpose, "technical_preview")
+        self.assertEqual(scene_ir.lighting.mode, "neutral_camera_rig")
+        self.assertEqual(scene_ir.lighting.rig_id, "neutral_camera_rig_v0.1")
+        self.assertFalse(scene_ir.lighting.cast_shadows)
+        self.assertEqual(scene_ir.lighting.lights, [])
 
     def test_unmapped_explicit_requirement_blocks_commit(self) -> None:
         toolkit = _toolkit()

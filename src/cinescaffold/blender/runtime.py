@@ -9,6 +9,13 @@ from typing import Any
 EXECUTOR_VERSION = "0.1"
 FLOAT_TOLERANCE = 1e-5
 BLENDER_ENGINE_MAP = {"BLENDER_EEVEE_NEXT": "BLENDER_EEVEE"}
+NEUTRAL_CAMERA_RIG_SPECS = (
+    ("neutral_center", (1.0, 0.0, 0.0, 0.0), 0.45),
+    ("neutral_left", (0.95371695, 0.0, 0.3007058, 0.0), 0.55),
+    ("neutral_right", (0.95371695, 0.0, -0.3007058, 0.0), 0.55),
+    ("neutral_top", (0.95371695, 0.3007058, 0.0, 0.0), 0.55),
+    ("neutral_bottom", (0.95371695, -0.3007058, 0.0, 0.0), 0.55),
+)
 
 
 def apply_scene_ir(
@@ -30,7 +37,7 @@ def apply_scene_ir(
     _apply_parenting(entities, scene_ir["entities"])
     _apply_entity_tracks(scene, entities, scene_ir["entities"])
     camera = _create_camera(bpy, scene, scene_ir["camera"])
-    _create_lighting(bpy, scene, scene_ir["lighting"])
+    _create_lighting(bpy, scene, scene_ir["lighting"], camera)
 
     preview_path = _preview_path(scene_ir, target_dir)
     scene["cinescaffold_scene_ir_hash"] = scene_ir_hash
@@ -340,7 +347,7 @@ def _create_camera(bpy, scene, spec: dict[str, Any]):
     return obj
 
 
-def _create_lighting(bpy, scene, spec: dict[str, Any]) -> None:
+def _create_lighting(bpy, scene, spec: dict[str, Any], camera) -> None:
     world = bpy.data.worlds.new(name="CS_WORLD")
     world.use_nodes = True
     background = world.node_tree.nodes.get("Background")
@@ -349,6 +356,13 @@ def _create_lighting(bpy, scene, spec: dict[str, Any]) -> None:
     background.inputs["Color"].default_value = (*spec["world_color_linear_rgb"], 1.0)
     background.inputs["Strength"].default_value = spec["world_strength"]
     scene.world = world
+    scene["cinescaffold_lighting_purpose"] = spec["purpose"]
+    scene["cinescaffold_lighting_mode"] = spec["mode"]
+    scene["cinescaffold_lighting_rig_id"] = spec["rig_id"] or ""
+    scene["cinescaffold_cast_shadows"] = spec["cast_shadows"]
+    if spec["mode"] == "neutral_camera_rig":
+        _create_neutral_camera_rig(bpy, scene, camera)
+        return
     for light_spec in spec["lights"]:
         data = bpy.data.lights.new(
             name=f"CS_LIGHT_DATA_{light_spec['light_id']}",
@@ -356,6 +370,7 @@ def _create_lighting(bpy, scene, spec: dict[str, Any]) -> None:
         )
         data.color = light_spec["color_linear_rgb"]
         data.energy = light_spec["energy"]
+        data.use_shadow = spec["cast_shadows"]
         if light_spec["size_m"] is not None and light_spec["type"] == "AREA":
             data.shape = "DISK"
             data.size = light_spec["size_m"]
@@ -366,6 +381,25 @@ def _create_lighting(bpy, scene, spec: dict[str, Any]) -> None:
         obj.rotation_quaternion = light_spec["rotation_quaternion_wxyz"]
         obj["cinescaffold_id"] = light_spec["light_id"]
         obj["cinescaffold_kind"] = "light"
+
+
+def _create_neutral_camera_rig(bpy, scene, camera) -> None:
+    """创建随摄影机移动的对称无影技术灯组。"""
+    for light_id, local_rotation, energy in NEUTRAL_CAMERA_RIG_SPECS:
+        data = bpy.data.lights.new(name=f"CS_LIGHT_DATA_{light_id}", type="SUN")
+        data.color = (1.0, 1.0, 1.0)
+        data.energy = energy
+        data.use_shadow = False
+        obj = bpy.data.objects.new(name=f"CS_LIGHT_{light_id}", object_data=data)
+        scene.collection.objects.link(obj)
+        obj.parent = camera
+        obj.matrix_parent_inverse.identity()
+        obj.rotation_mode = "QUATERNION"
+        obj.location = (0.0, 0.0, 0.0)
+        obj.rotation_quaternion = local_rotation
+        obj["cinescaffold_id"] = light_id
+        obj["cinescaffold_kind"] = "light"
+        obj["cinescaffold_lighting_purpose"] = "technical_preview"
 
 
 def _track_value(track: dict[str, Any], frame: int) -> dict[str, Any]:
@@ -440,6 +474,7 @@ def _runtime_snapshot(scene, scene_ir, entities, camera) -> dict[str, Any]:
             "pixel_aspect_x": scene.render.pixel_aspect_x,
             "pixel_aspect_y": scene.render.pixel_aspect_y,
         },
+        "lighting": _lighting_snapshot(scene),
         "scene_entity_ids": scene_entity_ids,
         "unexpected_renderable_objects": unexpected_renderable_objects,
         "entities": [
@@ -530,6 +565,13 @@ def _validate_runtime(scene_ir: dict[str, Any], snapshot: dict[str, Any]) -> dic
         if not _close(expected_render[key], actual_render[key]):
             violations.append(_violation(f"render.{key}", expected_render[key], actual_render[key]))
 
+    _validate_lighting(
+        scene_ir["lighting"],
+        snapshot["lighting"],
+        violations,
+        camera_id=scene_ir["camera"]["camera_id"],
+    )
+
     camera_spec = scene_ir["camera"]
     for frame_state in snapshot["camera"]["frames"]:
         frame = frame_state["frame"]
@@ -549,6 +591,170 @@ def _validate_runtime(scene_ir: dict[str, Any], snapshot: dict[str, Any]) -> dic
         "float_tolerance": FLOAT_TOLERANCE,
         "violations": violations,
     }
+
+
+def _lighting_snapshot(scene) -> dict[str, Any]:
+    background = scene.world.node_tree.nodes.get("Background") if scene.world else None
+    lights = []
+    for obj in sorted(
+        (item for item in scene.objects if item.get("cinescaffold_kind") == "light"),
+        key=lambda item: str(item.get("cinescaffold_id")),
+    ):
+        lights.append(
+            {
+                "light_id": str(obj.get("cinescaffold_id")),
+                "type": obj.data.type,
+                "parent_id": (
+                    str(obj.parent.get("cinescaffold_id"))
+                    if obj.parent is not None
+                    else None
+                ),
+                "translation_m": list(obj.location),
+                "local_rotation_quaternion_wxyz": list(obj.rotation_quaternion),
+                "energy": obj.data.energy,
+                "color_linear_rgb": list(obj.data.color),
+                "cast_shadows": bool(obj.data.use_shadow),
+                "size_m": obj.data.size if obj.data.type == "AREA" else None,
+            }
+        )
+    return {
+        "purpose": scene.get("cinescaffold_lighting_purpose", ""),
+        "mode": scene.get("cinescaffold_lighting_mode", ""),
+        "rig_id": scene.get("cinescaffold_lighting_rig_id", "") or None,
+        "cast_shadows": bool(scene.get("cinescaffold_cast_shadows", True)),
+        "world_color_linear_rgb": (
+            list(background.inputs["Color"].default_value[:3]) if background else None
+        ),
+        "world_strength": background.inputs["Strength"].default_value if background else None,
+        "lights": lights,
+    }
+
+
+def _validate_lighting(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+    violations: list[dict[str, Any]],
+    *,
+    camera_id: str,
+) -> None:
+    for key in ("purpose", "mode", "rig_id", "cast_shadows"):
+        if expected[key] != actual[key]:
+            violations.append(_violation(f"lighting.{key}", expected[key], actual[key]))
+    for key in ("world_color_linear_rgb", "world_strength"):
+        expected_value = expected[key]
+        actual_value = actual[key]
+        if isinstance(expected_value, list):
+            equal = all(_close(left, right) for left, right in zip(expected_value, actual_value))
+        else:
+            equal = _close(expected_value, actual_value)
+        if not equal:
+            violations.append(_violation(f"lighting.{key}", expected_value, actual_value))
+
+    actual_lights = {item["light_id"]: item for item in actual["lights"]}
+    if expected["mode"] == "neutral_camera_rig":
+        expected_ids = {item[0] for item in NEUTRAL_CAMERA_RIG_SPECS}
+        if set(actual_lights) != expected_ids:
+            violations.append(
+                _violation("lighting.neutral_rig_ids", sorted(expected_ids), sorted(actual_lights))
+            )
+        for light_id, rotation, energy in NEUTRAL_CAMERA_RIG_SPECS:
+            light = actual_lights.get(light_id)
+            if light is None:
+                continue
+            if light["type"] != "SUN" or light["parent_id"] != camera_id:
+                violations.append(
+                    _violation(
+                        f"lighting.lights.{light_id}.attachment",
+                        {"type": "SUN", "parent_id": camera_id},
+                        {"type": light["type"], "parent_id": light["parent_id"]},
+                    )
+                )
+            if light["cast_shadows"]:
+                violations.append(
+                    _violation(f"lighting.lights.{light_id}.cast_shadows", False, True)
+                )
+            if not _close(light["energy"], energy) or not all(
+                _close(left, right)
+                for left, right in zip(light["local_rotation_quaternion_wxyz"], rotation)
+            ):
+                violations.append(
+                    _violation(
+                        f"lighting.lights.{light_id}.rig_values",
+                        {"rotation": rotation, "energy": energy},
+                        {
+                            "rotation": light["local_rotation_quaternion_wxyz"],
+                            "energy": light["energy"],
+                        },
+                    )
+                )
+        return
+
+    expected_lights = {item["light_id"]: item for item in expected["lights"]}
+    if set(actual_lights) != set(expected_lights):
+        violations.append(
+            _violation(
+                "lighting.explicit_light_ids",
+                sorted(expected_lights),
+                sorted(actual_lights),
+            )
+        )
+    for light_id in sorted(set(expected_lights) & set(actual_lights)):
+        expected_light = expected_lights[light_id]
+        actual_light = actual_lights[light_id]
+        scalar_fields = ("energy", "size_m")
+        vector_fields = (
+            "translation_m",
+            "rotation_quaternion_wxyz",
+            "color_linear_rgb",
+        )
+        if expected_light["type"] != actual_light["type"]:
+            violations.append(
+                _violation(
+                    f"lighting.lights.{light_id}.type",
+                    expected_light["type"],
+                    actual_light["type"],
+                )
+            )
+        for key in scalar_fields:
+            expected_value = expected_light[key]
+            actual_value = actual_light[key]
+            if expected_value is None and actual_value is None:
+                continue
+            if expected_value is None or actual_value is None or not _close(
+                expected_value, actual_value
+            ):
+                violations.append(
+                    _violation(
+                        f"lighting.lights.{light_id}.{key}",
+                        expected_value,
+                        actual_value,
+                    )
+                )
+        for key in vector_fields:
+            actual_key = (
+                "local_rotation_quaternion_wxyz"
+                if key == "rotation_quaternion_wxyz"
+                else key
+            )
+            if not all(
+                _close(left, right)
+                for left, right in zip(expected_light[key], actual_light[actual_key])
+            ):
+                violations.append(
+                    _violation(
+                        f"lighting.lights.{light_id}.{key}",
+                        expected_light[key],
+                        actual_light[actual_key],
+                    )
+                )
+        if actual_light["cast_shadows"] != expected["cast_shadows"]:
+            violations.append(
+                _violation(
+                    f"lighting.lights.{light_id}.cast_shadows",
+                    expected["cast_shadows"],
+                    actual_light["cast_shadows"],
+                )
+            )
 
 
 def _compare_state(

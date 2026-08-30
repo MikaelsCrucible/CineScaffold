@@ -22,7 +22,6 @@ from cinescaffold.planning.ir import (
     EntityState,
     IRTimeline,
     LightingIR,
-    LightIR,
     MaterialIR,
     PerFrameCameraTrack,
     PerFrameEntityTrack,
@@ -218,18 +217,13 @@ def compile_scene_ir(
             )
         ],
         lighting=LightingIR(
-            world_color_linear_rgb=(0.05, 0.05, 0.05),
-            world_strength=0.3,
-            lights=[
-                LightIR(
-                    light_id="key_sun",
-                    type="SUN",
-                    translation_m=(0.0, 0.0, 10.0),
-                    rotation_quaternion_wxyz=(0.9238795, 0.3826834, 0.0, 0.0),
-                    color_linear_rgb=(1.0, 1.0, 1.0),
-                    energy=3.0,
-                )
-            ],
+            purpose="technical_preview",
+            mode="neutral_camera_rig",
+            rig_id="neutral_camera_rig_v0.1",
+            cast_shadows=False,
+            world_color_linear_rgb=(0.08, 0.08, 0.08),
+            world_strength=0.2,
+            lights=[],
         ),
         entities=entities,
         camera=camera,

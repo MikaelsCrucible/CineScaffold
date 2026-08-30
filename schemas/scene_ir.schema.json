@@ -863,6 +863,42 @@
     "LightingIR": {
       "additionalProperties": false,
       "properties": {
+        "purpose": {
+          "default": "semantic",
+          "enum": [
+            "technical_preview",
+            "semantic"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "mode": {
+          "default": "explicit_world",
+          "enum": [
+            "neutral_camera_rig",
+            "explicit_world"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "rig_id": {
+          "anyOf": [
+            {
+              "const": "neutral_camera_rig_v0.1",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rig Id"
+        },
+        "cast_shadows": {
+          "default": true,
+          "title": "Cast Shadows",
+          "type": "boolean"
+        },
         "world_color_linear_rgb": {
           "maxItems": 3,
           "minItems": 3,

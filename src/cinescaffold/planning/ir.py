@@ -155,9 +155,28 @@ class LightIR(StrictModel):
 
 
 class LightingIR(StrictModel):
+    purpose: Literal["technical_preview", "semantic"] = "semantic"
+    mode: Literal["neutral_camera_rig", "explicit_world"] = "explicit_world"
+    rig_id: Literal["neutral_camera_rig_v0.1"] | None = None
+    cast_shadows: bool = True
     world_color_linear_rgb: Vec3
     world_strength: float = Field(ge=0)
     lights: list[LightIR]
+
+    @model_validator(mode="after")
+    def validate_lighting_mode(self) -> LightingIR:
+        if self.mode == "neutral_camera_rig":
+            if self.purpose != "technical_preview":
+                raise ValueError("neutral_camera_rig 只能用于 technical_preview")
+            if self.rig_id != "neutral_camera_rig_v0.1":
+                raise ValueError("neutral_camera_rig 必须冻结 rig_id")
+            if self.cast_shadows:
+                raise ValueError("neutral_camera_rig 不得生成方向性投影")
+            if self.lights:
+                raise ValueError("neutral_camera_rig 不得混入世界空间显式灯光")
+        elif self.rig_id is not None:
+            raise ValueError("explicit_world 不得声明中性预览 rig_id")
+        return self
 
 
 class ColorManagement(StrictModel):

@@ -78,6 +78,13 @@ class ExecutionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "没有完整覆盖"):
             validate_scene_ir_for_execution(scene_ir)
 
+    def test_neutral_preview_lighting_rejects_directional_shadows(self) -> None:
+        payload = self.scene_ir.model_dump(mode="json")
+        payload["lighting"]["cast_shadows"] = True
+
+        with self.assertRaisesRegex(ValueError, "不得生成方向性投影"):
+            SceneIR.model_validate(payload)
+
     def test_mcp_bootstrap_is_fixed_and_syntax_valid(self) -> None:
         adapter = OfficialBlenderMCPAdapter(
             mcp_command=Path("/tmp/blender-mcp"),
