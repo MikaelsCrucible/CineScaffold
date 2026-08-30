@@ -1,0 +1,273 @@
+{
+  "schema_version": "0.1",
+  "content": {
+    "summary": "一个男人站在荒漠里，远处有巨大的飞船，整体孤独而压迫，镜头缓慢推近。",
+    "subjects": [
+      {
+        "id": "man_01",
+        "category": {
+          "value": "男人",
+          "source_status": "explicit",
+          "source_text": "一个男人"
+        },
+        "description": {
+          "value": "站在荒漠里的男人",
+          "source_status": "explicit",
+          "source_text": "一个男人站在荒漠里"
+        },
+        "narrative_role": {
+          "value": null,
+          "source_status": "unknown",
+          "source_text": null
+        },
+        "attributes": []
+      },
+      {
+        "id": "ship_01",
+        "category": {
+          "value": "飞船",
+          "source_status": "explicit",
+          "source_text": "巨大的飞船"
+        },
+        "description": {
+          "value": "巨大的飞船",
+          "source_status": "explicit",
+          "source_text": "巨大的飞船"
+        },
+        "narrative_role": {
+          "value": null,
+          "source_status": "unknown",
+          "source_text": null
+        },
+        "attributes": [
+          {
+            "name": "视觉尺度",
+            "value": "巨大",
+            "source_status": "explicit",
+            "source_text": "巨大的飞船"
+          }
+        ]
+      }
+    ],
+    "subject_motion": [
+      {
+        "subject_id": "man_01",
+        "action": {
+          "value": "静止站立",
+          "source_status": "inferred",
+          "source_text": "一个男人站在荒漠里"
+        },
+        "direction": {
+          "value": null,
+          "source_status": "unknown",
+          "source_text": null
+        },
+        "speed": {
+          "value": "静止",
+          "source_status": "inferred",
+          "source_text": "一个男人站在荒漠里"
+        },
+        "trajectory": {
+          "value": null,
+          "source_status": "unknown",
+          "source_text": null
+        },
+        "start_time_seconds": null,
+        "end_time_seconds": null,
+        "secondary_motion": []
+      }
+    ],
+    "scene_design": {
+      "environment": {
+        "value": "荒漠",
+        "source_status": "explicit",
+        "source_text": "荒漠里"
+      },
+      "spatial_layers": [
+        {
+          "layer": "前景",
+          "content_ids": [],
+          "source_status": "inferred",
+          "source_text": "荒漠里，远处有巨大的飞船"
+        },
+        {
+          "layer": "中景",
+          "content_ids": [
+            "man_01"
+          ],
+          "source_status": "inferred",
+          "source_text": "一个男人站在荒漠里"
+        },
+        {
+          "layer": "后景",
+          "content_ids": [
+            "ship_01"
+          ],
+          "source_status": "inferred",
+          "source_text": "远处有巨大的飞船"
+        }
+      ],
+      "relationships": [
+        {
+          "type": "远处",
+          "subject_id": "ship_01",
+          "reference_id": "man_01",
+          "strength": "明显",
+          "source_status": "explicit",
+          "source_text": "远处有巨大的飞船"
+        }
+      ],
+      "environmental_motion": [
+        {
+          "value": "沙尘缓慢运动",
+          "source_status": "inferred",
+          "source_text": "荒漠里"
+        }
+      ]
+    },
+    "mood": {
+      "emotional_tones": [
+        {
+          "value": "孤独",
+          "source_status": "explicit",
+          "source_text": "感觉很孤独"
+        },
+        {
+          "value": "压迫",
+          "source_status": "inferred",
+          "source_text": "远处有巨大的飞船，感觉很孤独"
+        }
+      ],
+      "color_intent": [
+        {
+          "value": "低饱和",
+          "source_status": "inferred",
+          "source_text": "感觉很孤独"
+        }
+      ],
+      "lighting_intent": [],
+      "atmosphere": [
+        {
+          "value": "冷峻",
+          "source_status": "inferred",
+          "source_text": "感觉很孤独"
+        }
+      ]
+    },
+    "composition": {
+      "shot_size": {
+        "value": "远景",
+        "source_status": "inferred",
+        "source_text": "一个男人站在荒漠里，远处有巨大的飞船"
+      },
+      "patterns": [
+        {
+          "value": "人物小比例",
+          "source_status": "inferred",
+          "source_text": "一个男人站在荒漠里，远处有巨大的飞船"
+        },
+        {
+          "value": "巨物主义",
+          "source_status": "inferred",
+          "source_text": "巨大的飞船"
+        },
+        {
+          "value": "负空间",
+          "source_status": "inferred",
+          "source_text": "荒漠里，远处有巨大的飞船"
+        }
+      ],
+      "screen_placements": [],
+      "visual_scales": [
+        {
+          "subject_id": "man_01",
+          "scale": {
+            "value": "画面中小比例",
+            "source_status": "inferred",
+            "source_text": "一个男人站在荒漠里，远处有巨大的飞船"
+          }
+        },
+        {
+          "subject_id": "ship_01",
+          "scale": {
+            "value": "相对男人巨大",
+            "source_status": "explicit",
+            "source_text": "巨大的飞船"
+          }
+        }
+      ],
+      "visibility_requirements": []
+    },
+    "camera": {
+      "shot_type": {
+        "value": "远景",
+        "source_status": "inferred",
+        "source_text": "一个男人站在荒漠里，远处有巨大的飞船"
+      },
+      "view_angle": {
+        "value": "低角度仰视",
+        "source_status": "inferred",
+        "source_text": "巨大的飞船"
+      },
+      "camera_height": {
+        "value": "低机位",
+        "source_status": "inferred",
+        "source_text": "巨大的飞船"
+      },
+      "lens_intent": {
+        "value": null,
+        "source_status": "unknown",
+        "source_text": null
+      },
+      "focus_target_id": {
+        "value": "man_01",
+        "source_status": "inferred",
+        "source_text": "一个男人站在荒漠里"
+      },
+      "movement": {
+        "type": {
+          "value": "推近",
+          "source_status": "explicit",
+          "source_text": "镜头慢慢推近"
+        },
+        "direction": {
+          "value": "向男人推进",
+          "source_status": "inferred",
+          "source_text": "镜头慢慢推近"
+        },
+        "speed": {
+          "value": "缓慢",
+          "source_status": "explicit",
+          "source_text": "镜头慢慢推近"
+        },
+        "trajectory": {
+          "value": "直线",
+          "source_status": "inferred",
+          "source_text": "镜头慢慢推近"
+        },
+        "easing": {
+          "value": null,
+          "source_status": "unknown",
+          "source_text": null
+        },
+        "start_time_seconds": null,
+        "end_time_seconds": null
+      }
+    },
+    "timeline": {
+      "duration_seconds": 10.0,
+      "duration_range_seconds": null,
+      "duration_source_status": "explicit",
+      "events": []
+    },
+    "uncertainties": []
+  },
+  "provenance": {
+    "source_prompt": "我想要一个男人站在荒漠里，远处有巨大的飞船，感觉很孤独，镜头慢慢推近。视频时长10秒。",
+    "provider": "mock",
+    "model": "mock-cinematic-brief-v0.1",
+    "parser_prompt_version": "semantic-parser-v0.1",
+    "rules_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+    "response_id": "mock-response-001"
+  }
+}
