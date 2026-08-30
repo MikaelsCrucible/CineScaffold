@@ -1123,13 +1123,8 @@
           "type": "string"
         },
         "orientation_mode": {
+          "const": "keep",
           "default": "keep",
-          "enum": [
-            "keep",
-            "tangent",
-            "look_at",
-            "keyframed"
-          ],
           "title": "Orientation Mode",
           "type": "string"
         }

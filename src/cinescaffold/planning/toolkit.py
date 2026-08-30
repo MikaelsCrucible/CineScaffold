@@ -1007,9 +1007,10 @@ def _ground_penetration_violations(
         return []
     violations: list[Violation] = []
     for time_seconds in _timeline_probe_times(state.timeline):
+        resolver = _WorldTransformResolver(state, time_seconds, profile)
         ground_levels: dict[str, float] = {}
         for ground_id in ground_ids:
-            transform = _entity_transform_at(state, ground_id, time_seconds, profile)
+            transform = resolver.entity(ground_id)
             normal = rotate_vector(transform.rotation_quaternion_wxyz, (0.0, 0.0, 1.0))
             if abs(normal[2]) >= 0.999:
                 ground_levels[ground_id] = transform.translation_m[2]
@@ -1031,7 +1032,7 @@ def _ground_penetration_violations(
                     ground_levels.items(),
                     key=lambda item: item[1],
                 )
-            transform = _entity_transform_at(state, entity.entity_id, time_seconds, profile)
+            transform = resolver.entity(entity.entity_id)
             world_z_values: list[float] = []
             for point in geometry_local_bounds_points(entity.proxy):
                 scaled = tuple(
@@ -1287,12 +1288,13 @@ def _projection_violations(
         return []
     violations: list[Violation] = []
     for time_seconds in _timeline_probe_times(state.timeline):
-        camera = _camera_state_at(state, time_seconds, profile)
+        resolver = _WorldTransformResolver(state, time_seconds, profile)
+        camera = resolver.camera()
         if camera is None:
             continue
         camera_transform, focal_length = camera
         transforms = {
-            entity_id: _entity_transform_at(state, entity_id, time_seconds, profile)
+            entity_id: resolver.entity(entity_id)
             for entity_id in state.entities
         }
         for entity_id, entity in state.entities.items():
@@ -1328,11 +1330,12 @@ def _constraint_violation(
     params = _parameters(constraint)
     sample_times = _constraint_sample_times(constraint, state.timeline)
     for time_seconds in sample_times:
+        resolver = _WorldTransformResolver(state, time_seconds, profile)
         transforms = {
-            entity_id: _entity_transform_at(state, entity_id, time_seconds, profile)
+            entity_id: resolver.entity(entity_id)
             for entity_id in state.entities
         }
-        camera = _camera_state_at(state, time_seconds, profile)
+        camera = resolver.camera()
         if camera is None:
             return _constraint_error(constraint, "CAMERA_MISSING", None)
         camera_transform, focal_length = camera

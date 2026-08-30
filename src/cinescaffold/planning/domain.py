@@ -119,7 +119,7 @@ class PathSpec(StrictModel):
     control_points: list[Vec3] = Field(min_length=2)
     closed: bool = False
     parameterization: Literal["normalized_time", "arc_length"] = "normalized_time"
-    orientation_mode: Literal["keep", "tangent", "look_at", "keyframed"] = "keep"
+    orientation_mode: Literal["keep"] = "keep"
 
     @model_validator(mode="after")
     def validate_reference_frame(self) -> PathSpec:

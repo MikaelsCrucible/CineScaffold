@@ -36,8 +36,7 @@ from cinescaffold.planning.toolkit import (
     FULL_VALIDATION_CHECKS,
     TOOLKIT_VERSION,
     ScenePlanningToolkit,
-    _camera_state_at,
-    _entity_transform_at,
+    _WorldTransformResolver,
 )
 
 
@@ -123,10 +122,9 @@ def compile_scene_ir(
     world_samples: dict[str, list[TransformValue]] = {name: [] for name in state.entities}
     for frame in frames:
         time_seconds = _frame_time(frame, timeline)
+        resolver = _WorldTransformResolver(state, time_seconds, profile)
         for entity_id in state.entities:
-            world_samples[entity_id].append(
-                _entity_transform_at(state, entity_id, time_seconds, profile)
-            )
+            world_samples[entity_id].append(resolver.entity(entity_id))
 
     entities: list[EntityIR] = []
     for object_index, entity_id in enumerate(sorted(state.entities), start=1):
@@ -169,7 +167,7 @@ def compile_scene_ir(
     previous_quaternion = None
     for frame in range(timeline.frame_start, timeline.frame_end + 1):
         time_seconds = _frame_time(frame, timeline)
-        camera_state = _camera_state_at(state, time_seconds, profile)
+        camera_state = _WorldTransformResolver(state, time_seconds, profile).camera()
         assert camera_state is not None
         transform, focal_length = camera_state
         quaternion = _continuous_quaternion(
