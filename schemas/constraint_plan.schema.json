@@ -9,6 +9,7 @@
           "type": "string"
         },
         "size_xyz_m": {
+          "description": "沿规范 X/Y/Z 三轴的完整边长，单位米；不是半尺寸",
           "maxItems": 3,
           "minItems": 3,
           "prefixItems": [
@@ -169,8 +170,7 @@
           "default": "world",
           "enum": [
             "world",
-            "camera",
-            "target_relative"
+            "camera"
           ],
           "title": "Space",
           "type": "string"
@@ -202,10 +202,12 @@
             }
           ],
           "default": null,
+          "description": "毫米焦距；null 表示交给 Solver",
           "title": "Focal Length Mm"
         },
         "sensor_width_mm": {
           "default": 36.0,
+          "description": "摄影机传感器宽度，单位毫米",
           "exclusiveMinimum": 0,
           "title": "Sensor Width Mm",
           "type": "number"
@@ -220,9 +222,11 @@
             }
           ],
           "default": null,
+          "description": "缺省观察目标；look_at Track 在其生效区间内覆盖它",
           "title": "Focus Target Id"
         },
         "source_refs": {
+          "description": "该摄影机静态选择映射的 Brief 字段路径",
           "items": {
             "type": "string"
           },
@@ -242,17 +246,20 @@
           "type": "string"
         },
         "radius_m": {
+          "description": "两端半球半径，单位米",
           "exclusiveMinimum": 0,
           "title": "Radius M",
           "type": "number"
         },
         "segment_length_m": {
+          "description": "不含两端半球的中间线段长度，单位米",
           "exclusiveMinimum": 0,
           "title": "Segment Length M",
           "type": "number"
         },
         "axis": {
           "default": "+Z",
+          "description": "胶囊中轴在自身局部坐标中的正轴方向",
           "enum": [
             "+X",
             "+Y",
@@ -526,12 +533,14 @@
           "type": "number"
         },
         "depth_m": {
+          "description": "沿 axis 的完整高度，单位米",
           "exclusiveMinimum": 0,
           "title": "Depth M",
           "type": "number"
         },
         "axis": {
           "default": "+Z",
+          "description": "圆锥中轴在自身局部坐标中的正轴方向",
           "enum": [
             "+X",
             "+Y",
@@ -724,12 +733,14 @@
           "type": "number"
         },
         "depth_m": {
+          "description": "沿 axis 的完整高度，单位米",
           "exclusiveMinimum": 0,
           "title": "Depth M",
           "type": "number"
         },
         "axis": {
           "default": "+Z",
+          "description": "圆柱中轴在自身局部坐标中的正轴方向",
           "enum": [
             "+X",
             "+Y",
@@ -1212,6 +1223,7 @@
       "properties": {
         "mode": {
           "default": "must_be_above",
+          "description": "仅存在环境地面平面时参与验证；无地面场景保持缺省即可",
           "enum": [
             "must_be_above",
             "must_touch",
@@ -1310,6 +1322,7 @@
             ],
             "type": "string"
           },
+          "minItems": 1,
           "title": "Components",
           "type": "array"
         },
@@ -1317,6 +1330,18 @@
           "default": 0.0001,
           "minimum": 0,
           "title": "Tolerance M",
+          "type": "number"
+        },
+        "rotation_tolerance_degrees": {
+          "default": 0.01,
+          "minimum": 0,
+          "title": "Rotation Tolerance Degrees",
+          "type": "number"
+        },
+        "scale_tolerance": {
+          "default": 0.0001,
+          "minimum": 0,
+          "title": "Scale Tolerance",
           "type": "number"
         }
       },
@@ -1580,12 +1605,8 @@
           "type": "string"
         },
         "space": {
+          "const": "world",
           "default": "world",
-          "enum": [
-            "world",
-            "camera",
-            "target_relative"
-          ],
           "title": "Space",
           "type": "string"
         },
@@ -1612,6 +1633,7 @@
           "type": "string"
         },
         "size_xy_m": {
+          "description": "自身局部 XY 平面的完整宽高，单位米",
           "maxItems": 2,
           "minItems": 2,
           "prefixItems": [
@@ -1744,12 +1766,8 @@
           "type": "array"
         },
         "space": {
+          "const": "world",
           "default": "world",
-          "enum": [
-            "world",
-            "camera",
-            "target_relative"
-          ],
           "title": "Space",
           "type": "string"
         },
@@ -1895,12 +1913,8 @@
           "type": "string"
         },
         "space": {
+          "const": "world",
           "default": "world",
-          "enum": [
-            "world",
-            "camera",
-            "target_relative"
-          ],
           "title": "Space",
           "type": "string"
         },
@@ -2079,12 +2093,8 @@
           "type": "number"
         },
         "space": {
+          "const": "world",
           "default": "world",
-          "enum": [
-            "world",
-            "camera",
-            "target_relative"
-          ],
           "title": "Space",
           "type": "string"
         }
@@ -2105,6 +2115,7 @@
           "type": "string"
         },
         "radius_m": {
+          "description": "球半径，单位米",
           "exclusiveMinimum": 0,
           "title": "Radius M",
           "type": "number"
@@ -2163,6 +2174,7 @@
       "additionalProperties": false,
       "properties": {
         "time_seconds": {
+          "description": "镜头起点后的秒数，必须位于冻结的半开时间域内",
           "minimum": 0,
           "title": "Time Seconds",
           "type": "number"
@@ -2179,10 +2191,12 @@
               "type": "boolean"
             }
           ],
+          "description": "值类型由 Track type 决定；Transform 坐标约定见 TransformValue",
           "title": "Value"
         },
         "interpolation": {
           "default": "linear",
+          "description": "从本关键帧到下一关键帧的插值方式",
           "enum": [
             "step",
             "linear",
@@ -2369,6 +2383,7 @@
             }
           ],
           "default": null,
+          "description": "米制 [x,y,z]；规范世界为右手 +Z-up，null 表示交给 Solver",
           "title": "Translation M"
         },
         "rotation_quaternion_wxyz": {
@@ -2397,6 +2412,7 @@
             }
           ],
           "default": null,
+          "description": "归一化 [w,x,y,z]；null 表示交给 Solver",
           "title": "Rotation Quaternion Wxyz"
         },
         "scale": {
@@ -2422,10 +2438,12 @@
             }
           ],
           "default": null,
+          "description": "三轴正比例；null 表示交给 Solver",
           "title": "Scale"
         },
         "space": {
           "default": "world",
+          "description": "world=规范世界；local=父实体；camera=当前摄影机；target_relative=target_id 当前 Transform",
           "enum": [
             "world",
             "local",
@@ -2445,6 +2463,7 @@
             }
           ],
           "default": null,
+          "description": "仅 target_relative 必填；不要同时手算世界坐标",
           "title": "Target Id"
         }
       },

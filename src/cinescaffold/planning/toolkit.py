@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from copy import deepcopy
+from statistics import median
 from typing import Any
 
 from pydantic import ValidationError
@@ -43,7 +44,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.12"
+TOOLKIT_VERSION = "0.13"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -183,6 +184,34 @@ class ScenePlanningToolkit:
                 "scene_ir": "0.1",
                 "profile": self.profile.profile_id,
             },
+            "coordinate_system": {
+                "linear_unit": "meter",
+                "handedness": "right",
+                "up_axis": "+Z",
+                "world_semantic_axes": {
+                    "right": "+X",
+                    "left": "-X",
+                    "front": "-Y",
+                    "behind": "+Y",
+                    "up": "+Z",
+                    "down": "-Z",
+                },
+                "default_horizontal_plane": "XY",
+                "default_path_plane_normal": [0.0, 0.0, 1.0],
+                "default_path_axis_direction": [1.0, 0.0, 0.0],
+                "path_direction_viewpoint": "从 +plane_normal 一侧朝路径中心观察",
+                "rotation_representation": "quaternion_wxyz",
+                "angle_unit": "radian",
+                "initial_phase_unit": "degree",
+                "camera_local_forward_axis": "-Z",
+                "camera_local_up_axis": "+Y",
+                "screen_coordinates": {
+                    "range": [0.0, 1.0],
+                    "origin": "top_left",
+                    "x_direction": "right",
+                    "y_direction": "down",
+                },
+            },
             "sections": requested,
             "supported_geometry": ["box", "sphere", "capsule", "cylinder", "cone", "plane"],
             "supported_ground_interactions": [
@@ -200,6 +229,9 @@ class ScenePlanningToolkit:
                 "unconstrained": "仅用于 Brief 明确的地下或地面不适用语义",
                 "exception_provenance": (
                     "may_intersect/embedded/unconstrained 必须引用 Brief explicit requirement"
+                ),
+                "without_ground_entity": (
+                    "场景没有环境地面平面时不执行地面相交检查；空中或太空实体保持缺省即可"
                 ),
             },
             "supported_tracks": ["transform", "path_follow", "visibility", "look_at", "focal_length"],
@@ -225,18 +257,44 @@ class ScenePlanningToolkit:
                     "普通 orbit_around 使用 circle/ellipse；S 形使用 catmull_rom；"
                     "∞ 形使用 lemniscate；polyline 只用于明确折线路径"
                 ),
+                "analytic_path_defaults": {
+                    "plane_normal": [0.0, 0.0, 1.0],
+                    "axis_direction": [1.0, 0.0, 0.0],
+                    "initial_phase_degrees": 0.0,
+                    "direction": "counterclockwise",
+                    "direction_viewpoint": "从 +plane_normal 一侧朝路径中心观察",
+                },
+            },
+            "semantic_distinctions": {
+                "relative_position_front_behind": "规范世界 -Y/+Y；不表示摄影机深度",
+                "camera_depth_order": "使用 depth_order；深度沿摄影机 -Z 前向取正值",
+                "keep_in_frame": "只验证自身投影包围盒入框比例，不验证被其他实体遮挡的比例",
+                "look_at_precedence": "生效的 look_at Track 覆盖摄影机 Transform Track 的旋转",
+                "path_follow_precedence": (
+                    "生效的 path_follow 生成位置并覆盖同实体静态求解位置；"
+                    "target_relative 由 Resolver 逐帧递归合成"
+                ),
+                "unset_optional_values": "未指定的可选实现参数应省略以采用版本化默认值，不要猜其他软件惯例",
             },
             "inspect_views": INSPECT_VIEWS,
             "acceptance": {
                 "minimum_soft_score": self.profile.minimum_soft_score,
                 "requires_hard_pass": True,
                 "commit_ready": _commit_ready(state.validation, self.profile),
+                "minimum_orbit_plane_view_alignment": (
+                    self.profile.minimum_orbit_plane_view_alignment
+                ),
             },
             "supported_constraints": sorted(SUPPORTED_CONSTRAINTS),
             "constraint_parameter_schemas": {
                 "relative_position": {
                     "required": ["subject_id", "reference_id", "relation"],
                     "optional": ["space", "minimum_gap", "maximum_gap"],
+                    "allowed_values": {
+                        "relation": ["left", "right", "front", "behind", "below", "above"],
+                        "space": ["world"],
+                    },
+                    "defaults": {"space": "world"},
                 },
                 "distance_range": {
                     "required": ["entity_ids", "minimum_meters", "maximum_meters"],
@@ -245,10 +303,15 @@ class ScenePlanningToolkit:
                     "required": ["near_entity_id", "far_entity_id"],
                     "optional": ["camera_id", "minimum_depth_gap_meters"],
                 },
-                "screen_region": {"required": ["entity_id", "region"]},
+                "screen_region": {
+                    "required": ["entity_id", "region"],
+                    "format": {"region": "[left,top,right,bottom]，归一化左上原点坐标"},
+                },
                 "projected_size": {
                     "required": ["entity_id", "minimum", "maximum"],
                     "optional": ["measurement"],
+                    "allowed_values": {"measurement": ["height", "width", "diameter"]},
+                    "defaults": {"measurement": "height"},
                 },
                 "projected_scale_ratio": {
                     "required": [
@@ -258,6 +321,8 @@ class ScenePlanningToolkit:
                         "maximum_ratio",
                     ],
                     "optional": ["measurement"],
+                    "allowed_values": {"measurement": ["height", "width", "diameter"]},
+                    "defaults": {"measurement": "height"},
                 },
                 "keep_in_frame": {
                     "required": ["entity_id", "minimum_inside_fraction"],
@@ -277,22 +342,50 @@ class ScenePlanningToolkit:
                 "motion_direction": {
                     "required": ["target_id", "direction"],
                     "optional": ["space", "minimum_displacement_m"],
+                    "allowed_values": {
+                        "direction": ["left", "right", "forward", "backward", "up", "down"],
+                        "space": ["world"],
+                    },
+                    "defaults": {"space": "world", "minimum_displacement_m": 0.01},
                 },
                 "camera_motion_direction": {
                     "required": ["direction"],
                     "optional": ["camera_id", "target_id", "space", "minimum_displacement_m"],
+                    "allowed_values": {
+                        "direction": [
+                            "left", "right", "forward", "backward", "up", "down", "push_in", "pull_out"
+                        ],
+                        "space": ["world", "camera"],
+                    },
+                    "defaults": {"camera_id": "camera_main", "space": "world", "minimum_displacement_m": 0.01},
                 },
                 "speed_range": {
                     "required": ["target_id", "maximum_mps"],
                     "optional": ["minimum_mps", "space"],
+                    "allowed_values": {"space": ["world"]},
+                    "defaults": {"minimum_mps": 0.0, "space": "world"},
                 },
                 "position_at_time": {
                     "required": ["target_id", "position_m"],
                     "optional": ["space", "tolerance_m"],
+                    "allowed_values": {"space": ["world"]},
+                    "defaults": {"space": "world", "tolerance_m": 0.01},
                 },
                 "hold": {
                     "required": ["target_id", "components"],
-                    "optional": ["tolerance_m"],
+                    "optional": [
+                        "tolerance_m",
+                        "rotation_tolerance_degrees",
+                        "scale_tolerance",
+                    ],
+                    "allowed_values": {
+                        "components": ["translation", "rotation", "scale", "visibility"]
+                    },
+                    "defaults": {
+                        "tolerance_m": 0.0001,
+                        "rotation_tolerance_degrees": 0.01,
+                        "scale_tolerance": 0.0001,
+                    },
                 },
             },
             "constraint_guidance": {
@@ -304,6 +397,10 @@ class ScenePlanningToolkit:
                     "用 target_id=camera_main 表达摄影机移动速度；缓慢/快速不能改写成摄影机距离"
                 ),
                 "keep_in_frame": "按旋转后代理体的投影包围盒面积比例验证，并使用数值容差",
+                "hold": (
+                    "逐帧对照约束起点检查所选 components；translation、rotation、scale、visibility "
+                    "分别使用自己的容差或布尔一致性"
+                ),
             },
             "validators": FULL_VALIDATION_CHECKS,
             "timeline": {
@@ -761,6 +858,13 @@ class ScenePlanningToolkit:
                     self.profile,
                 )
             )
+            violations.extend(
+                _orbit_projection_readability_violations(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
+            )
         if "hard_semantics" in checks:
             violations.extend(_hard_semantic_violations(state, self.objective_brief))
 
@@ -1136,6 +1240,115 @@ def _motion_readability_violations(
     return violations
 
 
+def _orbit_projection_readability_violations(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    """防止未指定机位时把解析轨道长期拍成近似直线。"""
+
+    if state.camera is None:
+        return []
+    path_tracks = {
+        (track.target_entity_id, track.path.target_id): track
+        for track in state.motion_tracks.values()
+        if track.type == "path_follow"
+        and track.path is not None
+        and track.path.representation in {"circle", "ellipse"}
+        and track.path.space == "target_relative"
+        and track.target_entity_id
+        and track.path.target_id
+    }
+    explicit_view = _has_explicit_camera_view(objective_brief)
+    violations: list[Violation] = []
+    for subject_id, reference_id in sorted(_objective_orbit_pairs(objective_brief)):
+        track = path_tracks.get((subject_id, reference_id))
+        if track is None or track.path is None:
+            continue
+        start, end = track.time_range_seconds
+        frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
+        last_frame_time = (
+            state.timeline.duration_seconds
+            - frame_step
+        )
+        sample_end = min(end - frame_step, last_frame_time)
+        if sample_end < start:
+            sample_end = start
+        sample_times = [
+            start + (sample_end - start) * index / 16.0
+            for index in range(17)
+        ]
+        alignments: list[float] = []
+        for time_seconds in sample_times:
+            resolver = _WorldTransformResolver(state, time_seconds, profile)
+            camera_state = resolver.camera()
+            if camera_state is None:
+                continue
+            reference = resolver.entity(reference_id)
+            camera_transform, _ = camera_state
+            scaled_center_offset = tuple(
+                track.path.center_offset_m[index] * reference.scale[index]
+                for index in range(3)
+            )
+            orbit_center = add(
+                reference.translation_m,
+                rotate_vector(
+                    reference.rotation_quaternion_wxyz,
+                    scaled_center_offset,
+                ),
+            )
+            view_vector = subtract(
+                camera_transform.translation_m,
+                orbit_center,
+            )
+            if length(view_vector) <= profile.numeric_tolerance:
+                continue
+            world_normal = rotate_vector(
+                reference.rotation_quaternion_wxyz,
+                normalize(track.path.plane_normal),
+            )
+            alignments.append(abs(dot(normalize(world_normal), normalize(view_vector))))
+        if not alignments:
+            continue
+        median_alignment = median(alignments)
+        if median_alignment + profile.numeric_tolerance >= (
+            profile.minimum_orbit_plane_view_alignment
+        ):
+            continue
+        severity = "warning" if explicit_view else "hard"
+        message = (
+            f"解析轨道在当前摄影机下长期接近侧视：{subject_id} -> {reference_id}；"
+            "请调整摄影机或轨道平面，使白模能够辨识闭合运动"
+        )
+        if explicit_view:
+            message += "；Brief 已明确机位，因此仅记录警告而不覆盖用户要求"
+        violation = _violation(
+            "ORBIT_PLANE_NEAR_EDGE_ON",
+            message,
+            entity_ids=[subject_id, reference_id],
+            time_range_seconds=(start, end),
+            expected={
+                "minimum_median_absolute_view_normal_dot": (
+                    profile.minimum_orbit_plane_view_alignment
+                ),
+                "purpose": "让控制白模中的闭合轨道保持可辨识",
+            },
+            actual={
+                "median_absolute_view_normal_dot": median_alignment,
+                "minimum_absolute_view_normal_dot": min(alignments),
+                "maximum_absolute_view_normal_dot": max(alignments),
+                "plane_normal": list(track.path.plane_normal),
+                "sample_count": len(alignments),
+            },
+            adjustable_variables=[
+                f"motion_tracks.{track.track_id}.path.plane_normal",
+                "camera transform",
+            ],
+        )
+        violations.append(violation.model_copy(update={"severity": severity}))
+    return violations
+
+
 def _orbit_trajectory_violations(
     state: CandidateState,
     objective_brief: ObjectivePlanningBrief,
@@ -1205,6 +1418,13 @@ def _objective_orbit_pairs(
         if isinstance(subject_id, str) and isinstance(reference_id, str):
             pairs.add((subject_id, reference_id))
     return pairs
+
+
+def _has_explicit_camera_view(objective_brief: ObjectivePlanningBrief) -> bool:
+    return any(
+        item.path.startswith("content.camera.view_angle")
+        for item in objective_brief.explicit_requirements
+    )
 
 
 def _has_explicit_custom_trajectory(
@@ -1659,6 +1879,48 @@ def _constraint_violation(
             entity_id: resolver.entity(entity_id)
             for entity_id in state.entities
         }
+        if constraint.type == "hold":
+            target_id = params.get("target_id")
+            if target_id not in transforms:
+                return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
+            start_time = constraint.time_range_seconds[0]
+            baseline = _WorldTransformResolver(state, start_time, profile).entity(target_id)
+            actual = transforms[target_id]
+            components = set(params.get("components") or [])
+            differences: dict[str, Any] = {}
+            if "translation" in components:
+                translation_delta = length(
+                    subtract(actual.translation_m, baseline.translation_m)
+                )
+                if translation_delta > float(params.get("tolerance_m", 1e-4)):
+                    differences["translation_delta_m"] = translation_delta
+            if "rotation" in components:
+                rotation_delta = _quaternion_angle_degrees(
+                    actual.rotation_quaternion_wxyz,
+                    baseline.rotation_quaternion_wxyz,
+                )
+                if rotation_delta > float(
+                    params.get("rotation_tolerance_degrees", 0.01)
+                ):
+                    differences["rotation_delta_degrees"] = rotation_delta
+            if "scale" in components:
+                scale_delta = max(
+                    abs(current - initial)
+                    for current, initial in zip(actual.scale, baseline.scale)
+                )
+                if scale_delta > float(params.get("scale_tolerance", 1e-4)):
+                    differences["scale_delta"] = scale_delta
+            if "visibility" in components:
+                initial_visibility = _entity_visibility_at(state, target_id, start_time)
+                current_visibility = _entity_visibility_at(state, target_id, time_seconds)
+                if current_visibility != initial_visibility:
+                    differences["visibility"] = {
+                        "expected": initial_visibility,
+                        "actual": current_visibility,
+                    }
+            if differences:
+                return _constraint_error(constraint, "HOLD_VIOLATED", differences)
+            continue
         camera = resolver.camera()
         if camera is None:
             return _constraint_error(constraint, "CAMERA_MISSING", None)
@@ -1682,18 +1944,32 @@ def _constraint_violation(
                 return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
             subject = transforms[subject_id].translation_m
             reference = transforms[reference_id].translation_m
+            delta = subtract(subject, reference)
             relation = params.get("relation")
-            gap = float(params.get("minimum_gap") or 0.0)
-            valid = {
-                "left": subject[0] <= reference[0] - gap,
-                "right": subject[0] >= reference[0] + gap,
-                "front": subject[1] <= reference[1] - gap,
-                "behind": subject[1] >= reference[1] + gap,
-                "below": subject[2] <= reference[2] - gap,
-                "above": subject[2] >= reference[2] + gap,
-            }.get(relation, False)
-            if not valid:
-                return _constraint_error(constraint, "RELATIVE_POSITION_VIOLATED", {"subject": subject, "reference": reference})
+            signed_gap = {
+                "left": -delta[0],
+                "right": delta[0],
+                "front": -delta[1],
+                "behind": delta[1],
+                "below": -delta[2],
+                "above": delta[2],
+            }.get(relation, -math.inf)
+            if not _within_range(
+                signed_gap,
+                float(params.get("minimum_gap") or 0.0),
+                float(params.get("maximum_gap") or math.inf),
+                profile.numeric_tolerance,
+            ):
+                return _constraint_error(
+                    constraint,
+                    "RELATIVE_POSITION_VIOLATED",
+                    {
+                        "subject": subject,
+                        "reference": reference,
+                        "signed_gap_m": signed_gap,
+                        "evaluated_space": "world",
+                    },
+                )
 
         elif constraint.type == "distance_range":
             ids = params.get("entity_ids") or constraint.subjects
@@ -1839,7 +2115,7 @@ def _constraint_violation(
             if length(subtract(actual, tuple(expected))) > tolerance:
                 return _constraint_error(constraint, "POSITION_AT_TIME_VIOLATED", {"position_m": actual})
 
-    if constraint.type in {"camera_motion_direction", "motion_direction", "speed_range", "hold"}:
+    if constraint.type in {"camera_motion_direction", "motion_direction", "speed_range"}:
         start, end = constraint.time_range_seconds
         end_sample = min(end - 1e-6, state.timeline.duration_seconds - 1e-6)
         if constraint.type == "camera_motion_direction":
@@ -1939,28 +2215,23 @@ def _constraint_violation(
                 state, target_id, end_sample, profile
             )
             delta = subtract(end_transform.translation_m, start_transform.translation_m)
-        if constraint.type == "hold":
-            tolerance = float(params.get("tolerance_m", 1e-4))
-            if length(delta) > tolerance:
-                return _constraint_error(constraint, "HOLD_VIOLATED", {"translation_delta_m": delta})
-        else:
-            direction = params.get("direction")
-            minimum = float(params.get("minimum_displacement_m", 0.01))
-            if not _direction_matches(
-                delta,
-                direction,
-                minimum,
-                profile.numeric_tolerance,
-                space=params.get("space", "world"),
-            ):
-                return _constraint_error(constraint, "MOTION_DIRECTION_VIOLATED", {"delta_m": delta})
+        direction = params.get("direction")
+        minimum = float(params.get("minimum_displacement_m", 0.01))
+        if not _direction_matches(
+            delta,
+            direction,
+            minimum,
+            profile.numeric_tolerance,
+            space=params.get("space", "world"),
+        ):
+            return _constraint_error(constraint, "MOTION_DIRECTION_VIOLATED", {"delta_m": delta})
     return None
 
 
 def _constraint_sample_times(constraint: ConstraintSpec, timeline: TimelineSpec) -> list[float]:
     start, end = constraint.time_range_seconds
-    if constraint.type == "distance_range":
-        # 相对距离在每个冻结帧检查，防止嵌套轨迹只在稀疏探针碰巧通过。
+    if constraint.type in {"distance_range", "hold"}:
+        # 持续语义逐帧检查，防止只在稀疏探针或首尾碰巧通过。
         frame_step = timeline.fps_denominator / timeline.fps_numerator
         frame_times = [
             frame * frame_step
@@ -1970,6 +2241,32 @@ def _constraint_sample_times(constraint: ConstraintSpec, timeline: TimelineSpec)
         if frame_times:
             return frame_times
     return [start, min((start + end) / 2.0, timeline.duration_seconds - 1e-6), min(end - 1e-6, timeline.duration_seconds - 1e-6)]
+
+
+def _entity_visibility_at(
+    state: CandidateState,
+    entity_id: str,
+    time_seconds: float,
+) -> bool:
+    track = next(
+        (
+            item
+            for item in state.motion_tracks.values()
+            if item.target_entity_id == entity_id and item.type == "visibility"
+        ),
+        None,
+    )
+    return bool(sample_scalar_track(track, time_seconds, 1.0))
+
+
+def _quaternion_angle_degrees(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> float:
+    # q 与 -q 表示同一旋转，因此使用内积绝对值。
+    product = sum(left * right for left, right in zip(first, second))
+    cosine_half_angle = max(-1.0, min(1.0, abs(product)))
+    return math.degrees(2.0 * math.acos(cosine_half_angle))
 
 
 def _validate_reference_frame_graph(
@@ -2264,8 +2561,8 @@ def _direction_matches(delta, direction, minimum, tolerance, *, space: str):
         mapping = {
             "left": -delta[0],
             "right": delta[0],
-            "forward": delta[1],
-            "backward": -delta[1],
+            "forward": -delta[1],
+            "backward": delta[1],
             "up": delta[2],
             "down": -delta[2],
         }

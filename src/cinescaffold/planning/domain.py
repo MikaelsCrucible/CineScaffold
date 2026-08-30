@@ -18,7 +18,9 @@ class StrictModel(BaseModel):
 
 class BoxGeometry(StrictModel):
     type: Literal["box"]
-    size_xyz_m: Vec3
+    size_xyz_m: Vec3 = Field(
+        description="沿规范 X/Y/Z 三轴的完整边长，单位米；不是半尺寸",
+    )
 
     @field_validator("size_xyz_m")
     @classmethod
@@ -28,34 +30,48 @@ class BoxGeometry(StrictModel):
 
 class SphereGeometry(StrictModel):
     type: Literal["sphere"]
-    radius_m: float = Field(gt=0)
+    radius_m: float = Field(gt=0, description="球半径，单位米")
 
 
 class CapsuleGeometry(StrictModel):
     type: Literal["capsule"]
-    radius_m: float = Field(gt=0)
-    segment_length_m: float = Field(gt=0)
-    axis: Literal["+X", "+Y", "+Z"] = "+Z"
+    radius_m: float = Field(gt=0, description="两端半球半径，单位米")
+    segment_length_m: float = Field(
+        gt=0,
+        description="不含两端半球的中间线段长度，单位米",
+    )
+    axis: Literal["+X", "+Y", "+Z"] = Field(
+        default="+Z",
+        description="胶囊中轴在自身局部坐标中的正轴方向",
+    )
 
 
 class CylinderGeometry(StrictModel):
     type: Literal["cylinder"]
     radius_m: float = Field(gt=0)
-    depth_m: float = Field(gt=0)
-    axis: Literal["+X", "+Y", "+Z"] = "+Z"
+    depth_m: float = Field(gt=0, description="沿 axis 的完整高度，单位米")
+    axis: Literal["+X", "+Y", "+Z"] = Field(
+        default="+Z",
+        description="圆柱中轴在自身局部坐标中的正轴方向",
+    )
 
 
 class ConeGeometry(StrictModel):
     type: Literal["cone"]
     radius_bottom_m: float = Field(gt=0)
     radius_top_m: float = Field(ge=0)
-    depth_m: float = Field(gt=0)
-    axis: Literal["+X", "+Y", "+Z"] = "+Z"
+    depth_m: float = Field(gt=0, description="沿 axis 的完整高度，单位米")
+    axis: Literal["+X", "+Y", "+Z"] = Field(
+        default="+Z",
+        description="圆锥中轴在自身局部坐标中的正轴方向",
+    )
 
 
 class PlaneGeometry(StrictModel):
     type: Literal["plane"]
-    size_xy_m: Vec2
+    size_xy_m: Vec2 = Field(
+        description="自身局部 XY 平面的完整宽高，单位米",
+    )
 
     @field_validator("size_xy_m")
     @classmethod
@@ -77,11 +93,26 @@ ProxyGeometry = Annotated[
 
 
 class TransformValue(StrictModel):
-    translation_m: Vec3 | None = None
-    rotation_quaternion_wxyz: Quaternion | None = None
-    scale: Vec3 | None = None
-    space: Literal["world", "local", "camera", "target_relative"] = "world"
-    target_id: str | None = None
+    translation_m: Vec3 | None = Field(
+        default=None,
+        description="米制 [x,y,z]；规范世界为右手 +Z-up，null 表示交给 Solver",
+    )
+    rotation_quaternion_wxyz: Quaternion | None = Field(
+        default=None,
+        description="归一化 [w,x,y,z]；null 表示交给 Solver",
+    )
+    scale: Vec3 | None = Field(
+        default=None,
+        description="三轴正比例；null 表示交给 Solver",
+    )
+    space: Literal["world", "local", "camera", "target_relative"] = Field(
+        default="world",
+        description="world=规范世界；local=父实体；camera=当前摄影机；target_relative=target_id 当前 Transform",
+    )
+    target_id: str | None = Field(
+        default=None,
+        description="仅 target_relative 必填；不要同时手算世界坐标",
+    )
 
     @field_validator("translation_m")
     @classmethod
@@ -218,9 +249,17 @@ PathSpec = Annotated[
 
 
 class TrackKeyframe(StrictModel):
-    time_seconds: float = Field(ge=0)
-    value: TransformValue | float | bool
-    interpolation: Literal["step", "linear", "smooth"] = "linear"
+    time_seconds: float = Field(
+        ge=0,
+        description="镜头起点后的秒数，必须位于冻结的半开时间域内",
+    )
+    value: TransformValue | float | bool = Field(
+        description="值类型由 Track type 决定；Transform 坐标约定见 TransformValue",
+    )
+    interpolation: Literal["step", "linear", "smooth"] = Field(
+        default="linear",
+        description="从本关键帧到下一关键帧的插值方式",
+    )
 
 
 TrackType = Literal["transform", "path_follow", "visibility", "look_at", "focal_length"]
@@ -276,7 +315,10 @@ class GroundInteractionSpec(StrictModel):
         "may_intersect",
         "embedded",
         "unconstrained",
-    ] = "must_be_above"
+    ] = Field(
+        default="must_be_above",
+        description="仅存在环境地面平面时参与验证；无地面场景保持缺省即可",
+    )
     ground_entity_id: str | None = None
     tolerance_m: float = Field(default=1e-3, ge=0)
     minimum_penetration_m: float | None = Field(default=None, ge=0)
@@ -388,9 +430,19 @@ class RelativePositionParameters(StrictModel):
     subject_id: str
     reference_id: str
     relation: Literal["left", "right", "front", "behind", "below", "above"]
-    space: Literal["world", "camera", "target_relative"] = "world"
+    space: Literal["world"] = "world"
     minimum_gap: float | None = Field(default=None, ge=0)
     maximum_gap: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_gap_range(self) -> RelativePositionParameters:
+        if (
+            self.minimum_gap is not None
+            and self.maximum_gap is not None
+            and self.maximum_gap < self.minimum_gap
+        ):
+            raise ValueError("relative_position 间距上下界颠倒")
+        return self
 
 
 class DistanceRangeParameters(StrictModel):
@@ -453,7 +505,7 @@ class FocalLengthRangeParameters(StrictModel):
 class MotionDirectionParameters(StrictModel):
     target_id: str
     direction: Literal["left", "right", "forward", "backward", "up", "down"]
-    space: Literal["world", "camera", "target_relative"] = "world"
+    space: Literal["world"] = "world"
     minimum_displacement_m: float = Field(default=0.01, ge=0)
 
 
@@ -463,7 +515,7 @@ class CameraMotionDirectionParameters(StrictModel):
     direction: Literal[
         "left", "right", "forward", "backward", "up", "down", "push_in", "pull_out"
     ]
-    space: Literal["world", "camera", "target_relative"] = "world"
+    space: Literal["world", "camera"] = "world"
     minimum_displacement_m: float = Field(default=0.01, ge=0)
 
 
@@ -471,20 +523,24 @@ class SpeedRangeParameters(StrictModel):
     target_id: str
     minimum_mps: float = Field(default=0.0, ge=0)
     maximum_mps: float = Field(gt=0)
-    space: Literal["world", "camera", "target_relative"] = "world"
+    space: Literal["world"] = "world"
 
 
 class PositionAtTimeParameters(StrictModel):
     target_id: str
     position_m: Vec3
-    space: Literal["world", "camera", "target_relative"] = "world"
+    space: Literal["world"] = "world"
     tolerance_m: float = Field(default=0.01, ge=0)
 
 
 class HoldParameters(StrictModel):
     target_id: str
-    components: list[Literal["translation", "rotation", "scale", "visibility"]]
+    components: list[
+        Literal["translation", "rotation", "scale", "visibility"]
+    ] = Field(min_length=1)
     tolerance_m: float = Field(default=1e-4, ge=0)
+    rotation_tolerance_degrees: float = Field(default=0.01, ge=0)
+    scale_tolerance: float = Field(default=1e-4, ge=0)
 
 
 class UnsupportedConstraintParameters(StrictModel):
@@ -550,10 +606,24 @@ class ConstraintSpec(StrictModel):
 
 
 class CameraStatic(StrictModel):
-    focal_length_mm: float | None = Field(default=None, gt=0)
-    sensor_width_mm: float = Field(default=36.0, gt=0)
-    focus_target_id: str | None = None
-    source_refs: list[str] = Field(default_factory=list)
+    focal_length_mm: float | None = Field(
+        default=None,
+        gt=0,
+        description="毫米焦距；null 表示交给 Solver",
+    )
+    sensor_width_mm: float = Field(
+        default=36.0,
+        gt=0,
+        description="摄影机传感器宽度，单位毫米",
+    )
+    focus_target_id: str | None = Field(
+        default=None,
+        description="缺省观察目标；look_at Track 在其生效区间内覆盖它",
+    )
+    source_refs: list[str] = Field(
+        default_factory=list,
+        description="该摄影机静态选择映射的 Brief 字段路径",
+    )
 
 
 class CameraCandidate(StrictModel):
@@ -667,7 +737,7 @@ class CandidateState(StrictModel):
 
 
 class PlanningProfile(StrictModel):
-    profile_id: str = "research_default_v0.2"
+    profile_id: str = "research_default_v0.3"
     fps_numerator: int = 24
     fps_denominator: int = 1
     resolution_x: int = 1280
@@ -676,6 +746,7 @@ class PlanningProfile(StrictModel):
     default_focal_length_mm: float = 35.0
     default_camera_distance_m: float = 12.0
     default_depth_gap_m: float = 12.0
+    minimum_orbit_plane_view_alignment: float = Field(default=0.35, gt=0, le=1)
     numeric_tolerance: float = Field(default=1e-8, gt=0)
     random_seed: int = 0
 

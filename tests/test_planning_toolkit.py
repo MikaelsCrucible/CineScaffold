@@ -5,10 +5,11 @@ import unittest
 from cinescaffold.planning.compiler import SceneIRCommitGate, compile_scene_ir
 from cinescaffold.planning.domain import CommitRequest
 from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
-from cinescaffold.planning.objective import project_objective_brief
+from cinescaffold.planning.objective import ObjectiveRequirement, project_objective_brief
 from cinescaffold.planning.toolkit import (
     FULL_VALIDATION_CHECKS,
     ScenePlanningToolkit,
+    _direction_matches,
     _entity_transform_at,
 )
 from tests.helpers import valid_model_output
@@ -37,6 +38,284 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         )
         self.assertEqual(result["data"]["acceptance"]["minimum_soft_score"], 0.75)
         self.assertFalse(result["data"]["acceptance"]["commit_ready"])
+        self.assertEqual(result["data"]["coordinate_system"]["up_axis"], "+Z")
+        self.assertEqual(
+            result["data"]["coordinate_system"]["default_path_plane_normal"],
+            [0.0, 0.0, 1.0],
+        )
+        self.assertEqual(
+            result["data"]["semantic_distinctions"]["relative_position_front_behind"],
+            "规范世界 -Y/+Y；不表示摄影机深度",
+        )
+        relative_schema = result["data"]["constraint_parameter_schemas"][
+            "relative_position"
+        ]
+        self.assertEqual(relative_schema["allowed_values"]["space"], ["world"])
+        self.assertIn("front", relative_schema["allowed_values"]["relation"])
+
+    def test_world_motion_direction_uses_negative_y_as_forward(self) -> None:
+        self.assertTrue(
+            _direction_matches(
+                (0.0, -3.0, 0.0),
+                "forward",
+                2.0,
+                1e-8,
+                space="world",
+            )
+        )
+        self.assertFalse(
+            _direction_matches(
+                (0.0, 3.0, 0.0),
+                "forward",
+                2.0,
+                1e-8,
+                space="world",
+            )
+        )
+
+    def test_hold_checks_motion_between_matching_endpoints(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "man_detour",
+                    "target_entity_id": "man_01",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {"time_seconds": 0.0, "value": {"translation_m": [0.0, 0.0, 1.0]}},
+                        {"time_seconds": 3.0, "value": {"translation_m": [4.0, 0.0, 1.0]}},
+                        {"time_seconds": 5.999, "value": {"translation_m": [0.0, 0.0, 1.0]}},
+                    ],
+                }
+            ],
+            [],
+        )
+        _apply_hold_constraint(toolkit, ["translation"])
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        violation = next(
+            item for item in validation["violations"] if item["code"] == "HOLD_VIOLATED"
+        )
+        self.assertGreater(violation["actual"]["translation_delta_m"], 0.0)
+
+    def test_hold_checks_rotation_and_scale_components(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "man_transform_change",
+                    "target_entity_id": "man_01",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {
+                                "translation_m": [0.0, 0.0, 1.0],
+                                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                                "scale": [1.0, 1.0, 1.0],
+                            },
+                        },
+                        {
+                            "time_seconds": 3.0,
+                            "value": {
+                                "translation_m": [0.0, 0.0, 1.0],
+                                "rotation_quaternion_wxyz": [0.70710678, 0.0, 0.0, 0.70710678],
+                                "scale": [2.0, 1.0, 1.0],
+                            },
+                        },
+                    ],
+                }
+            ],
+            [],
+        )
+        _apply_hold_constraint(toolkit, ["rotation", "scale"])
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        violation = next(
+            item for item in validation["violations"] if item["code"] == "HOLD_VIOLATED"
+        )
+        self.assertGreater(violation["actual"]["rotation_delta_degrees"], 0.0)
+        self.assertGreater(violation["actual"]["scale_delta"], 0.0)
+
+    def test_hold_checks_visibility_component(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "man_visibility",
+                    "target_entity_id": "man_01",
+                    "type": "visibility",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {"time_seconds": 0.0, "value": True, "interpolation": "step"},
+                        {"time_seconds": 2.0, "value": False, "interpolation": "step"},
+                        {"time_seconds": 4.0, "value": True, "interpolation": "step"},
+                    ],
+                }
+            ],
+            [],
+        )
+        _apply_hold_constraint(toolkit, ["visibility"])
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        violation = next(
+            item for item in validation["violations"] if item["code"] == "HOLD_VIOLATED"
+        )
+        self.assertEqual(violation["actual"]["visibility"]["expected"], True)
+        self.assertEqual(violation["actual"]["visibility"]["actual"], False)
+
+    def test_hold_rejects_empty_component_list(self) -> None:
+        toolkit = _toolkit()
+
+        result = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "empty_hold",
+                    "type": "hold",
+                    "strength": "soft",
+                    "subjects": ["man_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {"target_id": "man_01", "components": []},
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.invalid_hold",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("components", result["warnings"][0])
+
+    def test_unimplemented_relative_position_space_is_rejected(self) -> None:
+        toolkit = _toolkit()
+
+        result = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "camera_relative_position",
+                    "type": "relative_position",
+                    "strength": "soft",
+                    "subjects": ["man_01", "ship_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "subject_id": "man_01",
+                        "reference_id": "ship_01",
+                        "relation": "front",
+                        "space": "camera",
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.layout",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("parameters.space", result["warnings"][0])
+
+    def test_relative_position_rejects_reversed_gap_range(self) -> None:
+        toolkit = _toolkit()
+
+        result = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "invalid_gap_range",
+                    "type": "relative_position",
+                    "strength": "soft",
+                    "subjects": ["man_01", "ship_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "subject_id": "man_01",
+                        "reference_id": "ship_01",
+                        "relation": "front",
+                        "minimum_gap": 5.0,
+                        "maximum_gap": 2.0,
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.layout",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("间距上下界颠倒", result["warnings"][0])
+
+    def test_relative_position_enforces_maximum_gap(self) -> None:
+        toolkit = _toolkit()
+        man = _man_entity() | {
+            "solved_transform": {
+                "translation_m": [0.0, -5.0, 1.0],
+                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+            }
+        }
+        ship = _ship_entity() | {
+            "solved_transform": {
+                "translation_m": [0.0, 0.0, 1.0],
+                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+            }
+        }
+        toolkit.apply_entity_patch([man, ship], [])
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0, "focus_target_id": "ship_01"},
+            tracks=[
+                {
+                    "track_id": "camera_static",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [0.0, -20.0, 10.0]},
+                        }
+                    ],
+                }
+            ],
+            remove_track_ids=[],
+        )
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "front_gap",
+                    "type": "relative_position",
+                    "strength": "soft",
+                    "subjects": ["man_01", "ship_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "subject_id": "man_01",
+                        "reference_id": "ship_01",
+                        "relation": "front",
+                        "minimum_gap": 2.0,
+                        "maximum_gap": 4.0,
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.layout",
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=[])
+
+        violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "RELATIVE_POSITION_VIOLATED"
+        )
+        self.assertEqual(violation["actual"]["signed_gap_m"], 5.0)
 
     def test_constraint_validation_returns_only_actionable_union_branch(self) -> None:
         result = _toolkit().apply_constraint_patch(
@@ -836,6 +1115,54 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
 
+    def test_inferred_camera_rejects_nearly_edge_on_orbit_projection(self) -> None:
+        toolkit = _relative_motion_toolkit(
+            plane_normal=(0.0, 1.0, 0.0),
+            camera_position=(0.0, 9.0, 36.0),
+        )
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertFalse(validation["data"]["hard_pass"])
+        violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "ORBIT_PLANE_NEAR_EDGE_ON"
+        )
+        self.assertEqual(violation["severity"], "hard")
+        self.assertLess(
+            violation["actual"]["median_absolute_view_normal_dot"],
+            violation["expected"]["minimum_median_absolute_view_normal_dot"],
+        )
+
+    def test_explicit_camera_view_keeps_edge_on_orbit_as_warning(self) -> None:
+        toolkit = _relative_motion_toolkit(
+            plane_normal=(0.0, 1.0, 0.0),
+            camera_position=(0.0, 9.0, 36.0),
+        )
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "explicit_requirements": [
+                    *toolkit.objective_brief.explicit_requirements,
+                    ObjectiveRequirement(
+                        path="content.camera.view_angle",
+                        value="轨道侧视",
+                        source_text="从轨道侧面看",
+                    ),
+                ]
+            }
+        )
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "ORBIT_PLANE_NEAR_EDGE_ON"
+        )
+        self.assertTrue(validation["data"]["hard_pass"])
+        self.assertEqual(violation["severity"], "warning")
+
     def test_polygon_cannot_masquerade_as_default_orbit(self) -> None:
         toolkit = _relative_motion_toolkit(earth_radius_m=20.0)
 
@@ -1024,7 +1351,7 @@ def _solved_toolkit() -> ScenePlanningToolkit:
             {
                 "constraint_id": "ship_behind_man",
                 "type": "depth_order",
-                "strength": "hard",
+                "strength": "soft",
                 "weight": 1.0,
                 "subjects": ["man_01", "ship_01"],
                 "time_range_seconds": [0.0, 6.0],
@@ -1088,6 +1415,32 @@ def _solved_toolkit() -> ScenePlanningToolkit:
     )
     toolkit.solve_candidate()
     return toolkit
+
+
+def _apply_hold_constraint(
+    toolkit: ScenePlanningToolkit,
+    components: list[str],
+) -> None:
+    result = toolkit.apply_constraint_patch(
+        [
+            {
+                "constraint_id": "hold_man",
+                "type": "hold",
+                "strength": "soft",
+                "subjects": ["man_01"],
+                "time_range_seconds": [0.0, 6.0],
+                "parameters": {
+                    "target_id": "man_01",
+                    "components": components,
+                },
+                "source_status": "agent_selected",
+                "source_ref": "agent.hold_test",
+            }
+        ],
+        [],
+    )
+    if result["status"] != "ok":
+        raise AssertionError(result)
 
 
 def _toolkit() -> ScenePlanningToolkit:
@@ -1214,8 +1567,9 @@ def _orbit_track(
     radius_m: float,
     *,
     cycle_count: float = 1.0,
+    plane_normal: tuple[float, float, float] | None = None,
 ) -> dict:
-    return {
+    track = {
         "track_id": track_id,
         "target_entity_id": entity_id,
         "type": "path_follow",
@@ -1231,12 +1585,17 @@ def _orbit_track(
         },
         "source_ref": "content.scene_design.relationships[0]",
     }
+    if plane_normal is not None:
+        track["path"]["plane_normal"] = list(plane_normal)
+    return track
 
 
 def _relative_motion_toolkit(
     *,
     earth_radius_m: float = 10.0,
     moon_cycle_count: float = 3.0,
+    plane_normal: tuple[float, float, float] | None = None,
+    camera_position: tuple[float, float, float] = (0.0, -45.0, 35.0),
 ) -> ScenePlanningToolkit:
     toolkit = _toolkit()
     toolkit.objective_brief = toolkit.objective_brief.model_copy(
@@ -1265,7 +1624,13 @@ def _relative_motion_toolkit(
         ],
         [],
     )
-    earth_track = _orbit_track("earth_orbit", "earth", "sun", 10.0)
+    earth_track = _orbit_track(
+        "earth_orbit",
+        "earth",
+        "sun",
+        10.0,
+        plane_normal=plane_normal,
+    )
     if earth_radius_m != 10.0:
         earth_track["path"] = {
             "representation": "polyline",
@@ -1289,6 +1654,7 @@ def _relative_motion_toolkit(
                 "earth",
                 2.0,
                 cycle_count=moon_cycle_count,
+                plane_normal=plane_normal,
             ),
         ],
         [],
@@ -1308,7 +1674,7 @@ def _relative_motion_toolkit(
                 "keyframes": [
                     {
                         "time_seconds": 0.0,
-                        "value": {"translation_m": [0.0, -45.0, 35.0]},
+                        "value": {"translation_m": list(camera_position)},
                     }
                 ],
             }

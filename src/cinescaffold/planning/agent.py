@@ -73,19 +73,56 @@ class PathPatchInput(StrictModel):
         "ellipse",
         "catmull_rom",
         "lemniscate",
-    ]
-    space: Literal["world", "local", "camera", "target_relative"] = "world"
-    target_id: str | None = None
-    closed: bool | None = None
-    cycle_count: float | None = Field(default=None, gt=0)
-    parameterization: Literal["normalized_time", "arc_length"] | None = None
-    orientation_mode: Literal["keep"] | None = None
-    control_points: list[tuple[float, float, float]] | None = None
-    center_offset_m: tuple[float, float, float] | None = None
-    plane_normal: tuple[float, float, float] | None = None
-    axis_direction: tuple[float, float, float] | None = None
-    initial_phase_degrees: float | None = None
-    direction: Literal["counterclockwise", "clockwise"] | None = None
+    ] = Field(description="路径几何类型；普通公转使用 circle/ellipse")
+    space: Literal["world", "local", "camera", "target_relative"] = Field(
+        default="world",
+        description="相对运动必须用 target_relative；所有世界坐标遵循右手 +Z-up",
+    )
+    target_id: str | None = Field(
+        default=None,
+        description="target_relative 路径的动态参照实体",
+    )
+    closed: bool | None = Field(
+        default=None,
+        description="解析圆/椭圆自动闭合；其他路径按语义显式设置",
+    )
+    cycle_count: float | None = Field(
+        default=None,
+        gt=0,
+        description="Track 时间段内循环次数；省略时为 1",
+    )
+    parameterization: Literal["normalized_time", "arc_length"] | None = Field(
+        default=None,
+        description="省略时为 normalized_time；匀速经过非解析路径可选 arc_length",
+    )
+    orientation_mode: Literal["keep"] | None = Field(
+        default=None,
+        description="当前只支持 keep，不自动让实体沿切线旋转",
+    )
+    control_points: list[tuple[float, float, float]] | None = Field(
+        default=None,
+        description="位于 path.space 的米制 [x,y,z] 控制点",
+    )
+    center_offset_m: tuple[float, float, float] | None = Field(
+        default=None,
+        description="解析路径中心相对 target_id 的米制偏移；省略为 [0,0,0]",
+    )
+    plane_normal: tuple[float, float, float] | None = Field(
+        default=None,
+        description="解析路径平面法线；省略为 +Z，即规范 XY 水平面",
+    )
+    axis_direction: tuple[float, float, float] | None = Field(
+        default=None,
+        description="解析路径 0 度方向；省略为 +X，且不得平行 plane_normal",
+    )
+    initial_phase_degrees: float | None = Field(
+        default=None,
+        description="从 axis_direction 起算的初相位；此字段明确使用角度而非弧度",
+    )
+    direction: Literal["counterclockwise", "clockwise"] | None = Field(
+        default=None,
+        description="从 +plane_normal 一侧朝路径中心观察时的方向；省略为 counterclockwise",
+    )
     radius_m: float | None = Field(default=None, gt=0)
     semi_major_axis_m: float | None = Field(default=None, gt=0)
     semi_minor_axis_m: float | None = Field(default=None, gt=0)
@@ -99,7 +136,9 @@ class TrackPatchInput(StrictModel):
     track_id: str = Field(min_length=1)
     target_entity_id: str | None = None
     type: Literal["transform", "path_follow", "visibility", "look_at", "focal_length"]
-    time_range_seconds: tuple[float, float]
+    time_range_seconds: tuple[float, float] = Field(
+        description="Track 生效的半开秒区间 [start,end)；不得用末帧时间替代 end",
+    )
     keyframes: list[TrackKeyframe] = Field(default_factory=list)
     path: PathPatchInput | None = None
     target_id: str | None = None

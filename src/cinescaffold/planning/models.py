@@ -261,7 +261,7 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                     "camera_id": "camera_main",
                     "target_id": focus_target,
                     "direction": "push_in",
-                    "space": "target_relative",
+                    "space": "world",
                     "minimum_displacement_m": 3.0,
                 },
                 "source_status": "explicit",

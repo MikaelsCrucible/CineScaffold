@@ -21,6 +21,7 @@ from pydantic_ai.models import ModelRequestParameters
 from cinescaffold.planning.agent import (
     ConstraintPatchInput,
     NON_TOOL_TEXT_MARKER,
+    PathPatchInput,
     PlanningDeps,
     TrackPatchInput,
     _compact_tool_call_history,
@@ -40,8 +41,17 @@ class PlanningProtocolTest(unittest.TestCase):
         constraint_chars = len(json.dumps(ConstraintPatchInput.model_json_schema()))
         domain_constraint_chars = len(json.dumps(ConstraintSpec.model_json_schema()))
 
-        self.assertLess(compact_chars, domain_chars * 0.65)
+        # 坐标契约增加少量说明后仍需显著小于完整领域联合。
+        self.assertLess(compact_chars, domain_chars * 0.7)
         self.assertLess(constraint_chars, domain_constraint_chars * 0.4)
+
+    def test_path_tool_schema_exposes_coordinate_and_direction_conventions(self) -> None:
+        properties = PathPatchInput.model_json_schema()["properties"]
+
+        self.assertIn("+Z", properties["plane_normal"]["description"])
+        self.assertIn("+X", properties["axis_direction"]["description"])
+        self.assertIn("+plane_normal", properties["direction"]["description"])
+        self.assertIn("右手 +Z-up", properties["space"]["description"])
 
     def test_tool_history_drops_text_but_keeps_thinking_and_calls(self) -> None:
         response = ModelResponse(

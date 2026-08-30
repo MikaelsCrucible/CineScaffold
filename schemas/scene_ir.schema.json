@@ -52,6 +52,7 @@
           "type": "string"
         },
         "size_xyz_m": {
+          "description": "沿规范 X/Y/Z 三轴的完整边长，单位米；不是半尺寸",
           "maxItems": 3,
           "minItems": 3,
           "prefixItems": [
@@ -286,17 +287,20 @@
           "type": "string"
         },
         "radius_m": {
+          "description": "两端半球半径，单位米",
           "exclusiveMinimum": 0,
           "title": "Radius M",
           "type": "number"
         },
         "segment_length_m": {
+          "description": "不含两端半球的中间线段长度，单位米",
           "exclusiveMinimum": 0,
           "title": "Segment Length M",
           "type": "number"
         },
         "axis": {
           "default": "+Z",
+          "description": "胶囊中轴在自身局部坐标中的正轴方向",
           "enum": [
             "+X",
             "+Y",
@@ -368,12 +372,14 @@
           "type": "number"
         },
         "depth_m": {
+          "description": "沿 axis 的完整高度，单位米",
           "exclusiveMinimum": 0,
           "title": "Depth M",
           "type": "number"
         },
         "axis": {
           "default": "+Z",
+          "description": "圆锥中轴在自身局部坐标中的正轴方向",
           "enum": [
             "+X",
             "+Y",
@@ -508,12 +514,14 @@
           "type": "number"
         },
         "depth_m": {
+          "description": "沿 axis 的完整高度，单位米",
           "exclusiveMinimum": 0,
           "title": "Depth M",
           "type": "number"
         },
         "axis": {
           "default": "+Z",
+          "description": "圆柱中轴在自身局部坐标中的正轴方向",
           "enum": [
             "+X",
             "+Y",
@@ -842,6 +850,7 @@
       "properties": {
         "mode": {
           "default": "must_be_above",
+          "description": "仅存在环境地面平面时参与验证；无地面场景保持缺省即可",
           "enum": [
             "must_be_above",
             "must_touch",
@@ -1299,6 +1308,7 @@
           "type": "string"
         },
         "size_xy_m": {
+          "description": "自身局部 XY 平面的完整宽高，单位米",
           "maxItems": 2,
           "minItems": 2,
           "prefixItems": [
@@ -1618,6 +1628,7 @@
           "type": "string"
         },
         "radius_m": {
+          "description": "球半径，单位米",
           "exclusiveMinimum": 0,
           "title": "Radius M",
           "type": "number"

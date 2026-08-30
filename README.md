@@ -40,6 +40,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
 - 支持世界、局部、目标相对和摄影机相对参考系。
 - 支持直线、圆、椭圆、平滑样条和 8 字等代理运动轨迹。
+- Agent 可见接口固定右手 Z-up、路径方向和屏幕坐标约定；推断机位下的解析轨道需通过投影可读性门禁。
 - 通过官方 Blender Lab MCP 调用固定 Blender Executor，不把任意 Blender Python 暴露给模型。
 - 输出 `.blend`、运行时验证、执行 manifest 和 H.264 白模视频。
 - CLI 实时显示 Agent 请求、工具调用、token、revision、验证和渲染进度。
