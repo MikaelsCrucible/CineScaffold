@@ -22,6 +22,7 @@ from cinescaffold.planning.domain import (
 from cinescaffold.planning.geometry import (
     dot,
     geometry_bounding_radius,
+    geometry_local_bounds_points,
     length,
     look_at_camera_quaternion,
     normalize,
@@ -38,7 +39,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.5"
+TOOLKIT_VERSION = "0.6"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -901,6 +902,54 @@ def _transform_violations(state: CandidateState) -> list[Violation]:
                     f"父级非均匀缩放无法无损编译：{entity.parent_id}",
                     entity_ids=[entity.parent_id, entity.entity_id],
                 ))
+    violations.extend(_below_ground_violations(state))
+    return violations
+
+
+def _below_ground_violations(state: CandidateState) -> list[Violation]:
+    ground_ids = [
+        entity.entity_id
+        for entity in state.entities.values()
+        if entity.proxy.type == "plane" and _is_environment_entity(entity)
+    ]
+    if not ground_ids:
+        return []
+    violations: list[Violation] = []
+    for time_seconds in _timeline_probe_times(state.timeline):
+        ground_levels: list[float] = []
+        for ground_id in ground_ids:
+            transform = _entity_transform_at(state, ground_id, time_seconds)
+            normal = rotate_vector(transform.rotation_quaternion_wxyz, (0.0, 0.0, 1.0))
+            if abs(normal[2]) >= 0.999:
+                ground_levels.append(transform.translation_m[2])
+        if not ground_levels:
+            continue
+        ground_z = max(ground_levels)
+        for entity in state.entities.values():
+            if entity.entity_id in ground_ids or _is_environment_entity(entity):
+                continue
+            transform = _entity_transform_at(state, entity.entity_id, time_seconds)
+            world_z_values: list[float] = []
+            for point in geometry_local_bounds_points(entity.proxy):
+                scaled = tuple(
+                    point[index] * transform.scale[index]
+                    for index in range(3)
+                )
+                rotated = rotate_vector(transform.rotation_quaternion_wxyz, scaled)
+                world_z_values.append(transform.translation_m[2] + rotated[2])
+            maximum_z = max(world_z_values)
+            if maximum_z < ground_z - 1e-4:
+                violations.append(
+                    _violation(
+                        "ENTITY_FULLY_BELOW_GROUND",
+                        f"Entity 整体位于水平地面以下：{entity.entity_id}",
+                        entity_ids=[entity.entity_id],
+                        time_range_seconds=(time_seconds, time_seconds),
+                        expected={"minimum_maximum_z": ground_z},
+                        actual={"maximum_z": maximum_z, "ground_z": ground_z},
+                        adjustable_variables=["entity transforms", "camera transform"],
+                    )
+                )
     return violations
 
 
