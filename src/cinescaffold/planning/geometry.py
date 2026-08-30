@@ -146,6 +146,140 @@ def projected_radius(
     return focal_length_mm * radius / (depth * sensor_width_mm)
 
 
+def project_geometry_bounds(
+    geometry: ProxyGeometry,
+    transform: TransformValue,
+    camera_position: Vec3,
+    camera_rotation: Quaternion,
+    focal_length_mm: float,
+    sensor_width_mm: float,
+    aspect_ratio: float,
+) -> tuple[float, float, float, float, float]:
+    """投影代理体的局部包围盒，返回屏幕矩形与中心深度。"""
+    center = transform.translation_m or (0.0, 0.0, 0.0)
+    rotation = transform.rotation_quaternion_wxyz or IDENTITY_QUATERNION
+    scale = transform.scale or UNIT_SCALE
+    projected: list[tuple[float, float, float]] = []
+    for point in geometry_local_bounds_points(geometry):
+        scaled = tuple(point[index] * scale[index] for index in range(3))
+        world = add(center, rotate_vector(rotation, scaled))
+        value = project_point(
+            world,
+            camera_position,
+            camera_rotation,
+            focal_length_mm,
+            sensor_width_mm,
+            aspect_ratio,
+        )
+        if not all(math.isfinite(item) for item in value) or value[2] <= 0:
+            return (math.nan, math.nan, math.nan, math.nan, value[2])
+        projected.append(value)
+    center_depth = project_point(
+        center,
+        camera_position,
+        camera_rotation,
+        focal_length_mm,
+        sensor_width_mm,
+        aspect_ratio,
+    )[2]
+    return (
+        min(item[0] for item in projected),
+        min(item[1] for item in projected),
+        max(item[0] for item in projected),
+        max(item[1] for item in projected),
+        center_depth,
+    )
+
+
+def projected_box_axis_lengths(
+    geometry: ProxyGeometry,
+    transform: TransformValue,
+    camera_position: Vec3,
+    camera_rotation: Quaternion,
+    focal_length_mm: float,
+    sensor_width_mm: float,
+    aspect_ratio: float,
+) -> tuple[float, float, float] | None:
+    """测量 box 三条局部轴在屏幕上的投影长度。"""
+    if geometry.type != "box":
+        return None
+    center = transform.translation_m or (0.0, 0.0, 0.0)
+    rotation = transform.rotation_quaternion_wxyz or IDENTITY_QUATERNION
+    scale = transform.scale or UNIT_SCALE
+    lengths: list[float] = []
+    for axis, size in enumerate(geometry.size_xyz_m):
+        half = size * scale[axis] / 2.0
+        local_start = [0.0, 0.0, 0.0]
+        local_end = [0.0, 0.0, 0.0]
+        local_start[axis] = -half
+        local_end[axis] = half
+        start = add(center, rotate_vector(rotation, tuple(local_start)))
+        end = add(center, rotate_vector(rotation, tuple(local_end)))
+        projected_start = project_point(
+            start,
+            camera_position,
+            camera_rotation,
+            focal_length_mm,
+            sensor_width_mm,
+            aspect_ratio,
+        )
+        projected_end = project_point(
+            end,
+            camera_position,
+            camera_rotation,
+            focal_length_mm,
+            sensor_width_mm,
+            aspect_ratio,
+        )
+        if projected_start[2] <= 0 or projected_end[2] <= 0:
+            return None
+        lengths.append(
+            math.hypot(
+                projected_end[0] - projected_start[0],
+                projected_end[1] - projected_start[1],
+            )
+        )
+    return tuple(lengths)  # type: ignore[return-value]
+
+
+def geometry_local_bounds_points(geometry: ProxyGeometry) -> list[Vec3]:
+    """返回能覆盖代理体的确定性局部包围盒顶点。"""
+    half = geometry_half_extents(geometry)
+    if geometry.type == "plane":
+        return [
+            (x * half[0], y * half[1], 0.0)
+            for x in (-1.0, 1.0)
+            for y in (-1.0, 1.0)
+        ]
+    return [
+        (x * half[0], y * half[1], z * half[2])
+        for x in (-1.0, 1.0)
+        for y in (-1.0, 1.0)
+        for z in (-1.0, 1.0)
+    ]
+
+
+def geometry_half_extents(geometry: ProxyGeometry) -> Vec3:
+    if geometry.type == "box":
+        return tuple(item / 2.0 for item in geometry.size_xyz_m)  # type: ignore[return-value]
+    if geometry.type == "sphere":
+        return (geometry.radius_m, geometry.radius_m, geometry.radius_m)
+    if geometry.type == "capsule":
+        values = [geometry.radius_m, geometry.radius_m, geometry.radius_m]
+        values[{"+X": 0, "+Y": 1, "+Z": 2}[geometry.axis]] += geometry.segment_length_m / 2.0
+        return tuple(values)  # type: ignore[return-value]
+    if geometry.type in {"cylinder", "cone"}:
+        radius = (
+            geometry.radius_m
+            if geometry.type == "cylinder"
+            else max(geometry.radius_bottom_m, geometry.radius_top_m)
+        )
+        values = [radius, radius, radius]
+        values[{"+X": 0, "+Y": 1, "+Z": 2}[geometry.axis]] = geometry.depth_m / 2.0
+        return tuple(values)  # type: ignore[return-value]
+    return (geometry.size_xy_m[0] / 2.0, geometry.size_xy_m[1] / 2.0, 0.0)
+
+
 def geometry_bounding_radius(geometry: ProxyGeometry) -> float:
     if geometry.type == "box":
         return 0.5 * math.sqrt(sum(item * item for item in geometry.size_xyz_m))
@@ -225,6 +359,10 @@ def matrix_to_quaternion(matrix: tuple[tuple[float, ...], ...]) -> Quaternion:
 
 def subtract(left: Vec3, right: Vec3) -> Vec3:
     return (left[0] - right[0], left[1] - right[1], left[2] - right[2])
+
+
+def add(left: Vec3, right: Vec3) -> Vec3:
+    return (left[0] + right[0], left[1] + right[1], left[2] + right[2])
 
 
 def multiply(value: Vec3, scalar: float) -> Vec3:

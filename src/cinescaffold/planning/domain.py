@@ -308,11 +308,19 @@ class MotionDirectionParameters(StrictModel):
 
 class CameraMotionDirectionParameters(StrictModel):
     camera_id: str = "camera_main"
+    target_id: str | None = None
     direction: Literal[
         "left", "right", "forward", "backward", "up", "down", "push_in", "pull_out"
     ]
     space: Literal["world", "camera", "target_relative"] = "world"
     minimum_displacement_m: float = Field(default=0.01, ge=0)
+
+
+class SpeedRangeParameters(StrictModel):
+    target_id: str
+    minimum_mps: float = Field(default=0.0, ge=0)
+    maximum_mps: float = Field(gt=0)
+    space: Literal["world", "camera", "target_relative"] = "world"
 
 
 class PositionAtTimeParameters(StrictModel):
@@ -345,6 +353,7 @@ ConstraintParameters = (
     | FocalLengthRangeParameters
     | MotionDirectionParameters
     | CameraMotionDirectionParameters
+    | SpeedRangeParameters
     | PositionAtTimeParameters
     | HoldParameters
     | UnsupportedConstraintParameters
@@ -379,6 +388,7 @@ class ConstraintSpec(StrictModel):
             "camera_distance": CameraDistanceParameters,
             "focal_length_range": FocalLengthRangeParameters,
             "camera_motion_direction": CameraMotionDirectionParameters,
+            "speed_range": SpeedRangeParameters,
             "position_at_time": PositionAtTimeParameters,
             "motion_direction": MotionDirectionParameters,
             "hold": HoldParameters,
@@ -463,6 +473,9 @@ class PlanningProfile(StrictModel):
     default_focal_length_mm: float = 35.0
     default_camera_distance_m: float = 12.0
     default_depth_gap_m: float = 12.0
+    numeric_tolerance: float = Field(default=1e-8, gt=0)
+    minimum_proxy_axis_projection_ratio: float = Field(default=0.30, gt=0, lt=1)
+    minimum_readability_projected_extent: float = Field(default=0.01, gt=0)
     random_seed: int = 0
 
 

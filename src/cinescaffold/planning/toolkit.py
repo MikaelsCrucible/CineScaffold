@@ -26,7 +26,9 @@ from cinescaffold.planning.geometry import (
     look_at_camera_quaternion,
     normalize,
     project_point,
-    projected_radius,
+    project_geometry_bounds,
+    projected_box_axis_lengths,
+    quaternion_conjugate,
     rotate_vector,
     sample_path_track,
     sample_scalar_track,
@@ -51,6 +53,7 @@ SUPPORTED_CONSTRAINTS = {
     "camera_distance",
     "focal_length_range",
     "camera_motion_direction",
+    "speed_range",
     "position_at_time",
     "motion_direction",
     "hold",
@@ -66,6 +69,7 @@ FULL_VALIDATION_CHECKS = [
     "visibility",
     "motion",
     "camera",
+    "proxy_readability",
     "hard_semantics",
     "rebuildability",
 ]
@@ -105,6 +109,16 @@ class ScenePlanningToolkit:
             "supported_geometry": ["box", "sphere", "capsule", "cylinder", "cone", "plane"],
             "supported_tracks": ["transform", "path_follow", "visibility", "look_at", "focal_length"],
             "supported_constraints": sorted(SUPPORTED_CONSTRAINTS),
+            "constraint_guidance": {
+                "camera_motion_direction": (
+                    "push_in/pull_out 按摄影机到 target_id（缺省为 focus target）的距离变化验证；"
+                    "不得按固定世界轴解释"
+                ),
+                "speed_range": (
+                    "用 target_id=camera_main 表达摄影机移动速度；缓慢/快速不能改写成摄影机距离"
+                ),
+                "keep_in_frame": "按旋转后代理体的投影包围盒面积比例验证，并使用数值容差",
+            },
             "validators": FULL_VALIDATION_CHECKS,
             "timeline": {
                 "fps_numerator": state.timeline.fps_numerator,
@@ -240,7 +254,9 @@ class ScenePlanningToolkit:
                     self.store.current_revision,
                     status="unsupported",
                     capability_gaps=[f"constraint:{name}" for name in unsupported],
-                    next_actions=["改用已列出的等价约束，或返回 UnsupportedResult"],
+                    next_actions=[
+                        "不得用语义无关约束替代；若 explicit requirement 没有等价能力，返回 UnsupportedResult"
+                    ],
                 )
             if set(item.constraint_id for item in parsed) & set(remove_ids):
                 return _rejected(self.store.current_revision, "同一 Constraint 不能同时 upsert 和删除")
@@ -412,6 +428,14 @@ class ScenePlanningToolkit:
                     camera.static.focal_length_mm = self.profile.default_focal_length_mm
                     changes.append({"operation": "solve", "path": "camera.static.focal_length_mm"})
 
+                for entity_id in _apply_proxy_readability_defaults(state, self.profile):
+                    changes.append(
+                        {
+                            "operation": "solve",
+                            "path": f"entities.{entity_id}.solved_transform.rotation_quaternion_wxyz",
+                        }
+                    )
+
             return changes, []
 
         try:
@@ -478,6 +502,10 @@ class ScenePlanningToolkit:
             violations.extend(_transform_violations(state))
         if "camera" in checks or "rebuildability" in checks:
             violations.extend(_camera_violations(state))
+        if "projection" in checks:
+            violations.extend(_projection_violations(state, self.profile))
+        if "proxy_readability" in checks:
+            violations.extend(_proxy_readability_violations(state, self.profile))
         if "hard_semantics" in checks:
             violations.extend(_hard_semantic_violations(state))
 
@@ -609,9 +637,19 @@ def _apply_layout_constraint(
         near = _complete_transform(state.entities[near_id].solved_transform)
         far = _complete_transform(state.entities[far_id].solved_transform)
         gap = float(params.get("minimum_depth_gap_meters") or profile.default_depth_gap_m)
-        # 世界 Y 间隔需给倾斜视线留出确定性余量。
+        volume_margin = (
+            geometry_bounding_radius(state.entities[near_id].proxy)
+            + geometry_bounding_radius(state.entities[far_id].proxy)
+        )
+        # 使用体积余量，避免只满足中心点关系却让巨型代理穿过摄影机。
         state.entities[far_id].solved_transform = far.model_copy(
-            update={"translation_m": (far.translation_m[0], near.translation_m[1] + gap * 1.1, far.translation_m[2])}
+            update={
+                "translation_m": (
+                    far.translation_m[0],
+                    near.translation_m[1] + gap + volume_margin,
+                    far.translation_m[2],
+                )
+            }
         )
         return True
     if constraint.type == "relative_position":
@@ -651,6 +689,74 @@ def _apply_layout_constraint(
         )
         return True
     return False
+
+
+def _apply_proxy_readability_defaults(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> list[str]:
+    """仅在朝向未被轨道指定时，为细长 box 补充可读的技术朝向。"""
+    if state.camera is None:
+        return []
+    probe_times = _timeline_probe_times(state.timeline)
+    time_seconds = probe_times[1]
+    camera = _camera_state_at(state, time_seconds, profile)
+    if camera is None:
+        return []
+    changed: list[str] = []
+    for entity_id, entity in state.entities.items():
+        if entity.proxy.type != "box" or _is_environment_entity(entity):
+            continue
+        dimensions = entity.proxy.size_xyz_m
+        longest_axis = max(range(3), key=lambda index: dimensions[index])
+        if longest_axis == 2 or max(dimensions) / min(dimensions) < 1.5:
+            continue
+        entity_tracks = [
+            track
+            for track in state.motion_tracks.values()
+            if track.target_entity_id == entity_id and track.type == "transform"
+        ]
+        if any(
+            isinstance(keyframe.value, TransformValue)
+            and keyframe.value.rotation_quaternion_wxyz is not None
+            for track in entity_tracks
+            for keyframe in track.keyframes
+        ):
+            continue
+        ratios: list[float] = []
+        for probe_time in probe_times:
+            probe_camera = _camera_state_at(state, probe_time, profile)
+            if probe_camera is None:
+                continue
+            probe_transform = _entity_transform_at(state, entity_id, probe_time)
+            lengths = projected_box_axis_lengths(
+                entity.proxy,
+                probe_transform,
+                probe_camera[0].translation_m,
+                probe_camera[0].rotation_quaternion_wxyz,
+                probe_camera[1],
+                state.camera.static.sensor_width_mm,
+                profile.resolution_x / profile.resolution_y,
+            )
+            if lengths is not None and max(lengths) > 0:
+                ratios.append(min(lengths) / max(lengths))
+        if not ratios:
+            continue
+        if min(ratios) >= profile.minimum_proxy_axis_projection_ratio:
+            continue
+        transform = _entity_transform_at(state, entity_id, time_seconds)
+        entity_position = transform.translation_m
+        view = subtract(camera[0].translation_m, entity_position)
+        view_azimuth = math.atan2(view[1], view[0])
+        local_axis_azimuth = 0.0 if longest_axis == 0 else math.pi / 2.0
+        yaw = view_azimuth + math.radians(35.0) - local_axis_azimuth
+        rotation = (math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0))
+        completed = _complete_transform(entity.solved_transform)
+        entity.solved_transform = completed.model_copy(
+            update={"rotation_quaternion_wxyz": rotation}
+        )
+        changed.append(entity_id)
+    return changed
 
 
 def _reference_violations(state: CandidateState) -> list[Violation]:
@@ -717,26 +823,193 @@ def _camera_violations(state: CandidateState) -> list[Violation]:
 
 
 def _hard_semantic_violations(state: CandidateState) -> list[Violation]:
-    mapped: set[str] = set(state.runner_mapped_source_refs)
+    locations: dict[str, set[str]] = {}
+    for source_ref in state.runner_mapped_source_refs:
+        locations.setdefault(source_ref, set()).add("runner")
     for entity in state.entities.values():
-        mapped.update(entity.source_refs)
+        for source_ref in entity.source_refs:
+            locations.setdefault(source_ref, set()).add("entity")
     for track in state.motion_tracks.values():
         if track.source_ref:
-            mapped.add(track.source_ref)
+            locations.setdefault(track.source_ref, set()).add("entity_track")
     for constraint in state.constraints.values():
-        mapped.add(constraint.source_ref)
+        locations.setdefault(constraint.source_ref, set()).add(f"constraint:{constraint.type}")
     if state.camera:
-        mapped.update(state.camera.static.source_refs)
-        mapped.update(track.source_ref for track in state.camera.tracks.values() if track.source_ref)
-    return [
-        _violation(
-            "UNMAPPED_EXPLICIT_REQUIREMENT",
-            f"明确客观要求未映射：{source_ref}",
-            expected={"source_ref": source_ref},
+        for source_ref in state.camera.static.source_refs:
+            locations.setdefault(source_ref, set()).add("camera_static")
+        for track in state.camera.tracks.values():
+            if track.source_ref:
+                locations.setdefault(track.source_ref, set()).add("camera_track")
+    violations: list[Violation] = []
+    for source_ref in state.required_source_refs:
+        actual = locations.get(source_ref, set())
+        if not actual:
+            violations.append(
+                _violation(
+                    "UNMAPPED_EXPLICIT_REQUIREMENT",
+                    f"明确客观要求未映射：{source_ref}",
+                    expected={"source_ref": source_ref},
+                )
+            )
+        elif not _source_mapping_is_compatible(source_ref, actual):
+            violations.append(
+                _violation(
+                    "EXPLICIT_REQUIREMENT_MAPPING_INCOMPATIBLE",
+                    f"明确客观要求被挂到无关字段：{source_ref}",
+                    expected={
+                        "source_ref": source_ref,
+                        "compatible_locations": sorted(_compatible_locations(source_ref)),
+                    },
+                    actual={"locations": sorted(actual)},
+                )
+            )
+    return violations
+
+
+def _source_mapping_is_compatible(source_ref: str, actual: set[str]) -> bool:
+    allowed = _compatible_locations(source_ref)
+    return any(
+        location in allowed or any(
+            prefix.endswith(":*") and location.startswith(prefix[:-1])
+            for prefix in allowed
         )
-        for source_ref in state.required_source_refs
-        if source_ref not in mapped
-    ]
+        for location in actual
+    )
+
+
+def _compatible_locations(source_ref: str) -> set[str]:
+    if source_ref == "content.timeline.duration_seconds":
+        return {"runner"}
+    if source_ref.startswith("content.subjects["):
+        return {"entity"}
+    if source_ref.startswith("content.subject_motion["):
+        return {"entity_track", "constraint:*"}
+    if source_ref.startswith("content.scene_design.relationships["):
+        return {"constraint:*", "entity_track"}
+    if source_ref.startswith("content.scene_design.environment"):
+        return {"entity"}
+    if source_ref.startswith("content.composition"):
+        return {"constraint:*", "camera_static", "camera_track"}
+    if source_ref == "content.camera.movement.speed":
+        return {"camera_track", "constraint:speed_range"}
+    if source_ref == "content.camera.movement.type":
+        return {"camera_track", "constraint:camera_motion_direction"}
+    if source_ref.startswith("content.camera"):
+        return {"camera_static", "camera_track", "constraint:*"}
+    return {"entity", "entity_track", "constraint:*", "camera_static", "camera_track", "runner"}
+
+
+def _projection_violations(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    if state.camera is None:
+        return []
+    violations: list[Violation] = []
+    for time_seconds in _timeline_probe_times(state.timeline):
+        camera = _camera_state_at(state, time_seconds, profile)
+        if camera is None:
+            continue
+        camera_transform, focal_length = camera
+        transforms = {
+            entity_id: _entity_transform_at(state, entity_id, time_seconds)
+            for entity_id in state.entities
+        }
+        for entity_id, entity in state.entities.items():
+            if entity.proxy.type == "plane" or _is_environment_entity(entity):
+                continue
+            bounds = _projection_bounds(
+                state,
+                entity_id,
+                transforms,
+                camera_transform,
+                focal_length,
+                profile,
+            )
+            if bounds[4] <= 0 or not all(math.isfinite(item) for item in bounds):
+                violations.append(
+                    _violation(
+                        "ENTITY_NOT_PROJECTABLE",
+                        f"Entity 在摄影机后方或跨越摄影机平面：{entity_id}",
+                        entity_ids=[entity_id],
+                        time_range_seconds=(time_seconds, min(time_seconds + 1e-6, state.timeline.duration_seconds)),
+                        actual={"projected_bounds": bounds},
+                    )
+                )
+                break
+    return violations
+
+
+def _proxy_readability_violations(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    """拒绝非环境长方体沿主轴退化成二维轮廓。"""
+    if state.camera is None:
+        return []
+    violations: list[Violation] = []
+    for entity_id, entity in state.entities.items():
+        if entity.proxy.type != "box" or _is_environment_entity(entity):
+            continue
+        dimensions = entity.proxy.size_xyz_m
+        if max(dimensions) / min(dimensions) < 1.5:
+            continue
+        worst_ratio = math.inf
+        worst_lengths: tuple[float, float, float] | None = None
+        worst_time = 0.0
+        visible_extent = 0.0
+        for time_seconds in _timeline_probe_times(state.timeline):
+            camera = _camera_state_at(state, time_seconds, profile)
+            if camera is None:
+                continue
+            transform = _entity_transform_at(state, entity_id, time_seconds)
+            lengths = projected_box_axis_lengths(
+                entity.proxy,
+                transform,
+                camera[0].translation_m,
+                camera[0].rotation_quaternion_wxyz,
+                camera[1],
+                state.camera.static.sensor_width_mm,
+                profile.resolution_x / profile.resolution_y,
+            )
+            if lengths is None:
+                continue
+            largest = max(lengths)
+            ratio = min(lengths) / largest if largest > 0 else 0.0
+            if ratio < worst_ratio:
+                worst_ratio = ratio
+                worst_lengths = lengths
+                worst_time = time_seconds
+                visible_extent = largest
+        if (
+            worst_lengths is not None
+            and visible_extent >= profile.minimum_readability_projected_extent
+            and worst_ratio + profile.numeric_tolerance
+            < profile.minimum_proxy_axis_projection_ratio
+        ):
+            violations.append(
+                _violation(
+                    "PROXY_DEPTH_CUE_DEGENERATE",
+                    f"长方体代理沿视线退化为近二维轮廓：{entity_id}",
+                    entity_ids=[entity_id],
+                    time_range_seconds=(
+                        worst_time,
+                        min(worst_time + 1e-6, state.timeline.duration_seconds),
+                    ),
+                    expected={
+                        "minimum_axis_projection_ratio": profile.minimum_proxy_axis_projection_ratio
+                    },
+                    actual={
+                        "axis_projected_lengths": worst_lengths,
+                        "minimum_to_maximum_ratio": worst_ratio,
+                    },
+                    adjustable_variables=[
+                        f"{entity_id}.rotation",
+                        "camera transform",
+                    ],
+                )
+            )
+    return violations
 
 
 def _constraint_violation(
@@ -764,7 +1037,7 @@ def _constraint_violation(
             near_depth = _projection(state, near_id, transforms, camera_transform, focal_length, profile)[2]
             far_depth = _projection(state, far_id, transforms, camera_transform, focal_length, profile)[2]
             gap = float(params.get("minimum_depth_gap_meters") or 0.0)
-            if not near_depth + gap <= far_depth:
+            if near_depth + gap > far_depth + profile.numeric_tolerance:
                 return _constraint_error(constraint, "DEPTH_ORDER_VIOLATED", {"near_depth": near_depth, "far_depth": far_depth})
 
         elif constraint.type == "relative_position":
@@ -792,39 +1065,86 @@ def _constraint_violation(
             if not isinstance(ids, (list, tuple)) or len(ids) != 2 or any(item not in transforms for item in ids):
                 return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
             actual = length(subtract(transforms[ids[0]].translation_m, transforms[ids[1]].translation_m))
-            if not float(params.get("minimum_meters", 0.0)) <= actual <= float(params.get("maximum_meters", math.inf)):
+            if not _within_range(
+                actual,
+                float(params.get("minimum_meters", 0.0)),
+                float(params.get("maximum_meters", math.inf)),
+                profile.numeric_tolerance,
+            ):
                 return _constraint_error(constraint, "DISTANCE_RANGE_VIOLATED", {"distance_m": actual})
 
         elif constraint.type in {"screen_region", "projected_size", "keep_in_frame"}:
             entity_id = params.get("entity_id")
             if entity_id not in transforms:
                 return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
-            x, y, depth = _projection(state, entity_id, transforms, camera_transform, focal_length, profile)
-            radius = projected_radius(state.entities[entity_id].proxy, transforms[entity_id].scale, depth, focal_length, state.camera.static.sensor_width_mm)
+            bounds = _projection_bounds(
+                state,
+                entity_id,
+                transforms,
+                camera_transform,
+                focal_length,
+                profile,
+            )
+            left, top, right, bottom, depth = bounds
+            if depth <= 0 or not all(math.isfinite(item) for item in bounds):
+                return _constraint_error(
+                    constraint,
+                    "ENTITY_NOT_PROJECTABLE",
+                    {"projected_bounds": bounds},
+                )
+            x = (left + right) / 2.0
+            y = (top + bottom) / 2.0
             if constraint.type == "screen_region":
                 region = params.get("region")
-                if not _valid_region(region) or not (region[0] <= x <= region[2] and region[1] <= y <= region[3]):
+                tolerance = profile.numeric_tolerance
+                if not _valid_region(region) or not (
+                    region[0] - tolerance <= x <= region[2] + tolerance
+                    and region[1] - tolerance <= y <= region[3] + tolerance
+                ):
                     return _constraint_error(constraint, "SCREEN_REGION_VIOLATED", {"screen_center": [x, y]})
             elif constraint.type == "projected_size":
-                size = radius * 2.0
-                if not float(params.get("minimum", 0.0)) <= size <= float(params.get("maximum", math.inf)):
+                width = right - left
+                height = bottom - top
+                measurement = params.get("measurement", "height")
+                size = {"width": width, "height": height, "diameter": max(width, height)}[measurement]
+                if not _within_range(
+                    size,
+                    float(params.get("minimum", 0.0)),
+                    float(params.get("maximum", math.inf)),
+                    profile.numeric_tolerance,
+                ):
                     return _constraint_error(constraint, "PROJECTED_SIZE_VIOLATED", {"projected_size": size})
             else:
-                inside = _inside_fraction(x, y, radius)
-                if inside < float(params.get("minimum_inside_fraction", 1.0)):
-                    return _constraint_error(constraint, "ENTITY_OUT_OF_FRAME", {"inside_fraction": inside})
+                inside = _bounds_inside_fraction(bounds)
+                minimum = float(params.get("minimum_inside_fraction", 1.0))
+                if inside + profile.numeric_tolerance < minimum:
+                    return _constraint_error(
+                        constraint,
+                        "ENTITY_OUT_OF_FRAME",
+                        {"inside_fraction": inside, "projected_bounds": bounds[:4]},
+                    )
 
         elif constraint.type == "projected_scale_ratio":
             first_id = params.get("numerator_entity_id") or params.get("subject_id")
             second_id = params.get("denominator_entity_id") or params.get("reference_id")
             if first_id not in transforms or second_id not in transforms:
                 return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
-            first_projection = _projection(state, first_id, transforms, camera_transform, focal_length, profile)
-            second_projection = _projection(state, second_id, transforms, camera_transform, focal_length, profile)
-            first_radius = projected_radius(state.entities[first_id].proxy, transforms[first_id].scale, first_projection[2], focal_length, state.camera.static.sensor_width_mm)
-            second_radius = projected_radius(state.entities[second_id].proxy, transforms[second_id].scale, second_projection[2], focal_length, state.camera.static.sensor_width_mm)
-            ratio = first_radius / second_radius if second_radius > 0 else math.inf
-            if not float(params.get("minimum_ratio", 0.0)) <= ratio <= float(params.get("maximum_ratio", math.inf)):
+            first_bounds = _projection_bounds(
+                state, first_id, transforms, camera_transform, focal_length, profile
+            )
+            second_bounds = _projection_bounds(
+                state, second_id, transforms, camera_transform, focal_length, profile
+            )
+            measurement = params.get("measurement", "height")
+            first_size = _projected_measurement(first_bounds, measurement)
+            second_size = _projected_measurement(second_bounds, measurement)
+            ratio = first_size / second_size if second_size > 0 else math.inf
+            if not _within_range(
+                ratio,
+                float(params.get("minimum_ratio", 0.0)),
+                float(params.get("maximum_ratio", math.inf)),
+                profile.numeric_tolerance,
+            ):
                 return _constraint_error(constraint, "PROJECTED_SCALE_RATIO_VIOLATED", {"ratio": ratio})
 
         elif constraint.type == "camera_distance":
@@ -832,11 +1152,21 @@ def _constraint_violation(
             if target_id not in transforms:
                 return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
             actual = length(subtract(camera_transform.translation_m, transforms[target_id].translation_m))
-            if not float(params.get("minimum_meters", 0.0)) <= actual <= float(params.get("maximum_meters", math.inf)):
+            if not _within_range(
+                actual,
+                float(params.get("minimum_meters", 0.0)),
+                float(params.get("maximum_meters", math.inf)),
+                profile.numeric_tolerance,
+            ):
                 return _constraint_error(constraint, "CAMERA_DISTANCE_VIOLATED", {"distance_m": actual})
 
         elif constraint.type == "focal_length_range":
-            if not float(params.get("minimum_mm", 0.0)) <= focal_length <= float(params.get("maximum_mm", math.inf)):
+            if not _within_range(
+                focal_length,
+                float(params.get("minimum_mm", 0.0)),
+                float(params.get("maximum_mm", math.inf)),
+                profile.numeric_tolerance,
+            ):
                 return _constraint_error(constraint, "FOCAL_LENGTH_RANGE_VIOLATED", {"focal_length_mm": focal_length})
 
         elif constraint.type == "look_at":
@@ -869,7 +1199,7 @@ def _constraint_violation(
             if length(subtract(actual, tuple(expected))) > tolerance:
                 return _constraint_error(constraint, "POSITION_AT_TIME_VIOLATED", {"position_m": actual})
 
-    if constraint.type in {"camera_motion_direction", "motion_direction", "hold"}:
+    if constraint.type in {"camera_motion_direction", "motion_direction", "speed_range", "hold"}:
         start, end = constraint.time_range_seconds
         end_sample = min(end - 1e-6, state.timeline.duration_seconds - 1e-6)
         if constraint.type == "camera_motion_direction":
@@ -877,7 +1207,83 @@ def _constraint_violation(
             end_state = _camera_state_at(state, end_sample, profile)
             if start_state is None or end_state is None:
                 return _constraint_error(constraint, "CAMERA_MISSING", None)
+            direction = params.get("direction")
+            minimum = float(params.get("minimum_displacement_m", 0.01))
+            if direction in {"push_in", "pull_out"}:
+                target_id = params.get("target_id") or state.camera.static.focus_target_id
+                if target_id not in state.entities:
+                    return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
+                start_target = _entity_transform_at(state, target_id, start).translation_m
+                end_target = _entity_transform_at(state, target_id, end_sample).translation_m
+                start_distance = length(subtract(start_state[0].translation_m, start_target))
+                end_distance = length(subtract(end_state[0].translation_m, end_target))
+                progress = (
+                    start_distance - end_distance
+                    if direction == "push_in"
+                    else end_distance - start_distance
+                )
+                if progress + profile.numeric_tolerance < minimum:
+                    return _constraint_error(
+                        constraint,
+                        "CAMERA_TARGET_DISTANCE_DIRECTION_VIOLATED",
+                        {
+                            "target_id": target_id,
+                            "start_distance_m": start_distance,
+                            "end_distance_m": end_distance,
+                            "distance_change_m": progress,
+                        },
+                    )
+                return None
             delta = subtract(end_state[0].translation_m, start_state[0].translation_m)
+            if params.get("space") == "camera":
+                delta = rotate_vector(
+                    quaternion_conjugate(start_state[0].rotation_quaternion_wxyz),
+                    delta,
+                )
+                space = "camera"
+            else:
+                space = "world"
+            if not _direction_matches(
+                delta,
+                direction,
+                minimum,
+                profile.numeric_tolerance,
+                space=space,
+            ):
+                return _constraint_error(
+                    constraint,
+                    "MOTION_DIRECTION_VIOLATED",
+                    {"delta_m": delta, "evaluated_space": space},
+                )
+            return None
+        if constraint.type == "speed_range":
+            target_id = params.get("target_id")
+            if target_id == "camera_main":
+                start_state = _camera_state_at(state, start, profile)
+                end_state = _camera_state_at(state, end_sample, profile)
+                if start_state is None or end_state is None:
+                    return _constraint_error(constraint, "CAMERA_MISSING", None)
+                delta = subtract(end_state[0].translation_m, start_state[0].translation_m)
+            elif target_id in state.entities:
+                start_transform = _entity_transform_at(state, target_id, start)
+                end_transform = _entity_transform_at(state, target_id, end_sample)
+                delta = subtract(end_transform.translation_m, start_transform.translation_m)
+            else:
+                return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
+            elapsed = end_sample - start
+            speed = length(delta) / elapsed if elapsed > 0 else math.inf
+            if not _within_range(
+                speed,
+                float(params.get("minimum_mps", 0.0)),
+                float(params.get("maximum_mps", math.inf)),
+                profile.numeric_tolerance,
+            ):
+                return _constraint_error(
+                    constraint,
+                    "SPEED_RANGE_VIOLATED",
+                    {"average_speed_mps": speed, "elapsed_seconds": elapsed},
+                )
+            return None
         else:
             target_id = params.get("target_id")
             if target_id not in state.entities:
@@ -892,7 +1298,13 @@ def _constraint_violation(
         else:
             direction = params.get("direction")
             minimum = float(params.get("minimum_displacement_m", 0.01))
-            if not _direction_matches(delta, direction, minimum):
+            if not _direction_matches(
+                delta,
+                direction,
+                minimum,
+                profile.numeric_tolerance,
+                space=params.get("space", "world"),
+            ):
                 return _constraint_error(constraint, "MOTION_DIRECTION_VIOLATED", {"delta_m": delta})
     return None
 
@@ -945,14 +1357,25 @@ def _camera_state_at(
 
 
 def _projection(state, entity_id, transforms, camera_transform, focal_length, profile):
-    del profile
     return project_point(
         transforms[entity_id].translation_m,
         camera_transform.translation_m,
         camera_transform.rotation_quaternion_wxyz,
         focal_length,
         state.camera.static.sensor_width_mm,
-        1280 / 720,
+        profile.resolution_x / profile.resolution_y,
+    )
+
+
+def _projection_bounds(state, entity_id, transforms, camera_transform, focal_length, profile):
+    return project_geometry_bounds(
+        state.entities[entity_id].proxy,
+        transforms[entity_id],
+        camera_transform.translation_m,
+        camera_transform.rotation_quaternion_wxyz,
+        focal_length,
+        state.camera.static.sensor_width_mm,
+        profile.resolution_x / profile.resolution_y,
     )
 
 
@@ -960,28 +1383,59 @@ def _valid_region(value: Any) -> bool:
     return isinstance(value, (list, tuple)) and len(value) == 4 and value[0] <= value[2] and value[1] <= value[3]
 
 
-def _inside_fraction(x: float, y: float, radius: float) -> float:
-    if not all(math.isfinite(item) for item in (x, y, radius)) or radius <= 0:
+def _bounds_inside_fraction(bounds: tuple[float, float, float, float, float]) -> float:
+    left, top, right, bottom, _ = bounds
+    if not all(math.isfinite(item) for item in bounds):
         return 0.0
-    left, right = x - radius, x + radius
-    top, bottom = y - radius, y + radius
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        return 0.0
     inside_width = max(0.0, min(1.0, right) - max(0.0, left))
     inside_height = max(0.0, min(1.0, bottom) - max(0.0, top))
-    return min(1.0, inside_width * inside_height / ((2 * radius) ** 2))
+    return min(1.0, inside_width * inside_height / (width * height))
 
 
-def _direction_matches(delta, direction, minimum):
-    mapping = {
-        "left": delta[0] <= -minimum,
-        "right": delta[0] >= minimum,
-        "forward": delta[1] >= minimum,
-        "backward": delta[1] <= -minimum,
-        "up": delta[2] >= minimum,
-        "down": delta[2] <= -minimum,
-        "push_in": delta[1] >= minimum,
-        "pull_out": delta[1] <= -minimum,
-    }
-    return mapping.get(direction, False)
+def _projected_measurement(bounds, measurement: str) -> float:
+    width = bounds[2] - bounds[0]
+    height = bounds[3] - bounds[1]
+    return {"width": width, "height": height, "diameter": max(width, height)}[measurement]
+
+
+def _direction_matches(delta, direction, minimum, tolerance, *, space: str):
+    if space == "camera":
+        mapping = {
+            "left": -delta[0],
+            "right": delta[0],
+            "forward": -delta[2],
+            "backward": delta[2],
+            "up": delta[1],
+            "down": -delta[1],
+        }
+    else:
+        mapping = {
+            "left": -delta[0],
+            "right": delta[0],
+            "forward": delta[1],
+            "backward": -delta[1],
+            "up": delta[2],
+            "down": -delta[2],
+        }
+    return mapping.get(direction, -math.inf) + tolerance >= minimum
+
+
+def _within_range(value: float, minimum: float, maximum: float, tolerance: float) -> bool:
+    return minimum - tolerance <= value <= maximum + tolerance
+
+
+def _timeline_probe_times(timeline: TimelineSpec) -> list[float]:
+    last = timeline.duration_seconds - timeline.fps_denominator / timeline.fps_numerator
+    return [0.0, max(0.0, last / 2.0), max(0.0, last)]
+
+
+def _is_environment_entity(entity: EntitySpec) -> bool:
+    values = {entity.role.lower(), *(item.lower() for item in entity.tags)}
+    return bool(values & {"environment", "ground", "terrain", "background_surface"})
 
 
 def _constraint_error(constraint: ConstraintSpec, code: str, actual: Any) -> Violation:

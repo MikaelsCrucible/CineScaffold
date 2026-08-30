@@ -235,7 +235,10 @@ def compile_scene_ir(
         camera=camera,
         acceptance=AcceptanceIR(
             constraint_plan_hash=constraint_plan_hash,
-            constraints=[item.model_dump(mode="json") for item in state.constraints.values()],
+            constraints=[
+                item.model_dump(mode="json", exclude_none=True)
+                for item in state.constraints.values()
+            ],
             required_validators=FULL_VALIDATION_CHECKS,
             sampling_profile_id=profile.profile_id,
             minimum_soft_score=profile.minimum_soft_score,

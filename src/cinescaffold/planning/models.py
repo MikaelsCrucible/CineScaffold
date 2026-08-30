@@ -197,7 +197,11 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
         for item in objective.explicit_requirements
         if item.path.startswith("content.camera")
     ]
+    focus_target = _annotated_value(objective.camera.get("focus_target_id"))
+    if not focus_target and entities:
+        focus_target = entities[0]["entity_id"]
     movement = _annotated_value(objective.camera.get("movement", {}).get("type")) or ""
+    movement_speed = _annotated_value(objective.camera.get("movement", {}).get("speed")) or ""
     camera_tracks: list[dict[str, Any]] = []
     if any(marker in movement.lower() for marker in ("推近", "push", "dolly in")):
         movement_ref = "content.camera.movement.type"
@@ -228,8 +232,9 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                 "time_range_seconds": [0.0, _duration(objective)],
                 "parameters": {
                     "camera_id": "camera_main",
+                    "target_id": focus_target,
                     "direction": "push_in",
-                    "space": "world",
+                    "space": "target_relative",
                     "minimum_displacement_m": 3.0,
                 },
                 "source_status": "explicit",
@@ -239,9 +244,33 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
         # 摄影机约束必须在先前约束 Patch 之后单独提交。
         actions.append(("apply_constraint_patch", {"upserts": [constraints[-1]], "remove_ids": []}))
 
-    focus_target = _annotated_value(objective.camera.get("focus_target_id"))
-    if not focus_target and entities:
-        focus_target = entities[0]["entity_id"]
+    if any(marker in movement_speed.lower() for marker in ("慢", "slow")):
+        actions.append(
+            (
+                "apply_constraint_patch",
+                {
+                    "upserts": [
+                        {
+                            "constraint_id": "camera_slow_speed",
+                            "type": "speed_range",
+                            "strength": "hard",
+                            "weight": 1.0,
+                            "subjects": [],
+                            "time_range_seconds": [0.0, _duration(objective)],
+                            "parameters": {
+                                "target_id": "camera_main",
+                                "minimum_mps": 0.01,
+                                "maximum_mps": 2.0,
+                                "space": "world",
+                            },
+                            "source_status": "explicit",
+                            "source_ref": "content.camera.movement.speed",
+                        }
+                    ],
+                    "remove_ids": [],
+                },
+            )
+        )
     actions.append(
         (
             "apply_camera_patch",

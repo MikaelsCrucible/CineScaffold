@@ -61,6 +61,8 @@
 
 Agent 1 的客观语义投影、Candidate revision store、九个 Planning Toolkit 接口、确定性启发式 Solver、结构化 Validator 和 Scene IR Commit Gate 已经实现。模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文；Commit Gate 会把规划轨迹烘焙为完整逐帧 Scene IR。当前确定性约束能力以 `get_capabilities` 返回为准，尚未实现的约束会产生明确 capability gap；同一响应会提供冻结的 FPS、时长、半开时间域和最后一帧时间，避免 Agent 通过失败调用猜测时间边界。Transform Keyframe 使用关闭额外字段的类型化 Schema，错误字段会在工具调用边界被拒绝。
 
+真实 Agent 回归暴露的规划缺陷已经进入确定性门禁：`push_in/pull_out` 按摄影机到目标的距离变化验证，不绑定世界轴；`speed_range` 独立表达移动速度，来源兼容性检查会拒绝用摄影机距离冒充“缓慢”；屏幕构图按旋转后代理体包围盒计算并使用冻结数值容差。`proxy_readability` 会阻止细长 box 沿视线退化成二维轮廓，Solver 只在没有显式朝向轨道时补充可复现的技术朝向。
+
 无 Agent 2 的执行基线也已实现：`cinescaffold execute` 在修改 Blender 前验证 IR，创建 factory template，经官方 Blender MCP 的 `execute_blender_code_for_cli` 调用固定 Executor，从空场景生成代理几何、逐帧实体/摄影机状态、白模材质和灯光，回读 Runtime Snapshot 并渲染 H.264。两次相同 IR 重建得到字节一致的规范化 Runtime Snapshot；两实体、144 帧黄金场景已在 Blender 5.2.1 LTS 上完成 0 violation 构建和视频渲染。
 
 ## 使用

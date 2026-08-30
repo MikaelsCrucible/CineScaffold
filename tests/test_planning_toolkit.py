@@ -133,6 +133,170 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             any(item["code"] == "UNMAPPED_EXPLICIT_REQUIREMENT" for item in validation["violations"])
         )
 
+    def test_push_in_uses_target_distance_instead_of_world_axis(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "push_in_x_axis",
+                    "type": "camera_motion_direction",
+                    "strength": "hard",
+                    "weight": 1.0,
+                    "subjects": [],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "camera_id": "camera_main",
+                        "target_id": "man_01",
+                        "direction": "push_in",
+                        "space": "camera",
+                        "minimum_displacement_m": 5.0,
+                    },
+                    "source_status": "explicit",
+                    "source_ref": "content.camera.movement.type",
+                }
+            ],
+            [],
+        )
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={
+                "focal_length_mm": 50.0,
+                "sensor_width_mm": 36.0,
+                "focus_target_id": "man_01",
+            },
+            tracks=[
+                {
+                    "track_id": "camera_move_x",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {"time_seconds": 0.0, "value": {"translation_m": [-120.0, 2.0, 6.0]}},
+                        {"time_seconds": 143 / 24, "value": {"translation_m": [-60.0, 2.0, 6.0]}},
+                    ],
+                }
+            ],
+        )
+        toolkit.solve_candidate()
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
+
+    def test_projection_tolerance_accepts_numerically_full_visibility(self) -> None:
+        toolkit = _solved_toolkit()
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "man_fully_visible",
+                    "type": "keep_in_frame",
+                    "strength": "hard",
+                    "weight": 1.0,
+                    "subjects": ["man_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "entity_id": "man_01",
+                        "minimum_inside_fraction": 1.0,
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "content.composition",
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["visibility"])
+
+        codes = {item["code"] for item in validation["violations"]}
+        self.assertNotIn("ENTITY_OUT_OF_FRAME", codes)
+
+    def test_solver_rotates_elongated_box_out_of_axis_aligned_silhouette(self) -> None:
+        toolkit = _toolkit()
+        man = _man_entity() | {
+            "solved_transform": {
+                "translation_m": [0.0, 0.0, 0.9],
+                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+            }
+        }
+        ship = _ship_entity() | {
+            "solved_transform": {
+                "translation_m": [120.0, 0.0, 20.0],
+                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+            }
+        }
+        toolkit.apply_entity_patch([man, ship], [])
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={
+                "focal_length_mm": 50.0,
+                "sensor_width_mm": 36.0,
+                "focus_target_id": "man_01",
+            },
+            tracks=[
+                {
+                    "track_id": "camera_move_x",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {"time_seconds": 0.0, "value": {"translation_m": [-120.0, 2.0, 6.0]}},
+                        {"time_seconds": 143 / 24, "value": {"translation_m": [-60.0, 2.0, 6.0]}},
+                    ],
+                }
+            ],
+        )
+
+        toolkit.solve_candidate()
+        validation = toolkit.validate_candidate(checks=["proxy_readability"])
+        ship_rotation = toolkit.store.get().entities["ship_01"].solved_transform.rotation_quaternion_wxyz
+
+        self.assertNotEqual(ship_rotation, (1.0, 0.0, 0.0, 0.0))
+        self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
+
+    def test_speed_requirement_rejects_unrelated_camera_distance_mapping(self) -> None:
+        toolkit = _toolkit()
+
+        def add_speed_requirement(state):
+            state.required_source_refs.append("content.camera.movement.speed")
+            return ([{"operation": "test", "path": "required_source_refs"}], [])
+
+        toolkit.store.apply(add_speed_requirement)
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "wrong_slow_mapping",
+                    "type": "camera_distance",
+                    "strength": "soft",
+                    "weight": 1.0,
+                    "subjects": ["man_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "camera_id": "camera_main",
+                        "target_id": "man_01",
+                        "minimum_meters": 90.0,
+                        "maximum_meters": 200.0,
+                    },
+                    "source_status": "explicit",
+                    "source_ref": "content.camera.movement.speed",
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["hard_semantics"])
+
+        self.assertTrue(
+            any(
+                item["code"] == "EXPLICIT_REQUIREMENT_MAPPING_INCOMPATIBLE"
+                for item in validation["violations"]
+            )
+        )
+
 
 def _solved_toolkit() -> ScenePlanningToolkit:
     toolkit = _toolkit()

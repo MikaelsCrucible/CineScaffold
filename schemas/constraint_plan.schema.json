@@ -108,6 +108,18 @@
           "title": "Camera Id",
           "type": "string"
         },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
         "direction": {
           "enum": [
             "left",
@@ -386,6 +398,9 @@
             },
             {
               "$ref": "#/$defs/CameraMotionDirectionParameters"
+            },
+            {
+              "$ref": "#/$defs/SpeedRangeParameters"
             },
             {
               "$ref": "#/$defs/PositionAtTimeParameters"
@@ -1133,6 +1148,42 @@
         "region"
       ],
       "title": "ScreenRegionParameters",
+      "type": "object"
+    },
+    "SpeedRangeParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "minimum_mps": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Minimum Mps",
+          "type": "number"
+        },
+        "maximum_mps": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Mps",
+          "type": "number"
+        },
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_id",
+        "maximum_mps"
+      ],
+      "title": "SpeedRangeParameters",
       "type": "object"
     },
     "SphereGeometry": {
