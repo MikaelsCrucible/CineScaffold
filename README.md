@@ -111,7 +111,16 @@ api_key = 填写 API KEY
 
 ### 一键运行
 
-缺省会自动读取当前目录的 `.cinescaffold.conf`：
+先在项目根目录激活虚拟环境。终端提示符通常会出现 `(.venv)`：
+
+```bash
+source .venv/bin/activate
+cinescaffold --version
+```
+
+如果不想激活，也可以把下列命令中的 `cinescaffold` 替换为 `.venv/bin/cinescaffold`。
+
+`run` 缺省会自动读取当前目录的 `.cinescaffold.conf`：
 
 ```bash
 # 从自然语言开始
@@ -138,26 +147,10 @@ cinescaffold run \
 
 #### 1. 自然语言转 Cinematic Brief
 
-OpenAI：
+Provider、模型和 API Key 直接复用 `.cinescaffold.conf`：
 
 ```bash
-export OPENAI_API_KEY="..."
-export CINESCOFFOLD_MODEL_ID="..."
 cinescaffold parse \
-  --provider openai \
-  --model "$CINESCOFFOLD_MODEL_ID" \
-  --text "一个男人站在荒漠里，远处有巨大的飞船，镜头慢慢推近。" \
-  --output runs/example/cinematic_brief.json
-```
-
-DeepSeek：
-
-```bash
-export DEEPSEEK_API_KEY="..."
-export CINESCOFFOLD_MODEL_ID="..."
-cinescaffold parse \
-  --provider deepseek \
-  --model "$CINESCOFFOLD_MODEL_ID" \
   --text "一个男人站在荒漠里，远处有巨大的飞船，镜头慢慢推近。" \
   --output runs/example/cinematic_brief.json
 ```
@@ -170,12 +163,11 @@ Mock Provider 不理解文本，只返回指定的模拟响应。未传入 `--mo
 
 ```bash
 cinescaffold plan \
-  --provider mock \
   --brief runs/example/cinematic_brief.json \
   --output-dir runs/example/planning
 ```
 
-Mock 规划不需要 `--model`。使用真实 Provider 时必须显式指定模型 ID，避免模型别名变化导致实验条件漂移。
+规划阶段同样读取 `.cinescaffold.conf`。如需临时实验覆盖，可以额外传入 `--provider` 和 `--model`，但不会修改配置文件。
 
 #### 3. Scene IR 转 Blender 白模视频
 
