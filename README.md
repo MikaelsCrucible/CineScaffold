@@ -71,6 +71,8 @@ Agent 协议由 Runner 确定性约束：闭集参数直接进入 Tool Schema �
 
 普通 `orbit_around` 还必须使用解析式 `circle` 或 `ellipse`，不能再用若干直线控制点冒充圆形公转；只有六维明确给出 S、∞、折线或其他异形轨迹时，才允许 `catmull_rom`、`lemniscate` 或 `polyline`。圆形在任意冻结帧直接用三角函数求值并保持恒定半径；椭圆、双纽线和样条可通过固定密度弧长表获得确定性近似匀速。旧 Path 未写 `representation` 时仍按 `polyline` 读取，保证 checkpoint 兼容。
 
+解析圆的确定性端到端回归复用上一轮已审核 Candidate 的实体、摄影机和约束，仅通过新版 Path API 将地球/太阳与月球/地球半径分别设为 11.5 m 和 2.45 m、循环次数设为 1:3。240 个冻结帧中两条半径的最大波动分别只有 `3.553e-15 m` 与 `1.776e-15 m`；Commit Gate hard pass、soft score `1.0`，Blender Runtime Validation 为 0 violation，10 秒 Workbench preview 执行耗时约 6.58 秒。该回归不调用模型，只验证曲线采样、IR 编译与执行链；真实 Agent 的类型选择应在后续正式样本中单独统计。
+
 第一次太阳—地球—月亮真实回归虽然在旧门禁下 hard pass，却让两层轨道都在 10 秒内循环一次，形成肉眼近似刚性编队的 1:1 相位锁定。该产物保留为 Validator 反例：Toolkit v0.10 会稳定报告 `NESTED_ORBIT_PHASE_LOCKED`，不再把“数值相对位置变化”误当成“控制视频中可辨识的相对运动”。
 
 修复后使用同一六维稿从 revision 0 重跑，DeepSeek 在首次 Motion Patch 就采用地球 `cycle_count=1`、月球 `cycle_count=3`，最终于 revision 11 提交，hard pass、soft score `1.0`。月球相对地球在每 20 帧依次经过右、上、左、下，10 秒内完成三圈；全帧地球—太阳距离为 11.086–12.000 m，月球—地球距离为 2.310–2.500 m。官方 Blender MCP 构建与 Runtime Validation 为 0 violation，Workbench preview 输出 120 帧、640×360、12 fps 的 10 秒视频，执行耗时约 4.65 秒。本次规划使用 15 requests、12 tool calls、319,263 aggregate input tokens（270,208 cache read、49,055 uncached）和 3,695 output tokens；供应商响应 `cost=0.025533079`，未返回币种或价格快照。
