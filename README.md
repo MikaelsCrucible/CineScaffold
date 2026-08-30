@@ -98,6 +98,27 @@ source .venv/bin/activate
 
 运行时依赖采用最小化的 `pydantic-ai-slim[openai,mcp]==2.36.0`，同时覆盖 OpenAI、DeepSeek 与 MCP stdio Client，不安装 UI、Logfire 或其他未使用组件。
 
+### 面向演示的 CLI
+
+CLI 默认显示带耗时的中文阶段进度，并在结束时给出简短摘要和下一步命令。规划阶段会显示模型请求、token、工具用途、Candidate revision、Commit Gate 和最终 IR；执行阶段会显示 Scene IR 校验、运行目录、Blender 模板、MCP 构建、Runtime Validation、渲染参数和视频路径。进度写入 `stderr`，最终摘要写入 `stdout`，因此两者仍可被终端或脚本分别处理。
+
+```text
+[00:00] ◆ 场景规划  启动 mock/mock-scene-planner-v0.1，准备 Agent 工具循环
+[00:00] … 模型思考  第 1 次请求，上下文 1 条消息
+[00:00] → Agent 工具  读取工具能力
+[00:00] ✓ 工具结果  读取工具能力：成功 · revision 0 → 0 · 0.00s
+[00:00] ✓ Commit Gate  成功 · hard pass=True · soft score=1.000 · violations=0
+```
+
+三个命令均支持以下展示选项：
+
+- 默认：显示过程和适合协作者阅读的最终摘要。
+- `--no-color`：关闭交互终端中的颜色。
+- `--quiet`：隐藏过程，只保留最终结果。
+- `--json --quiet`：只在 `stdout` 输出完整 JSON，供测试、批处理和其他程序调用。
+
+可运行 `cinescaffold --help` 查看三阶段示例，或运行 `cinescaffold <命令> --help` 查看阶段参数。当前仍保留 `parse`、`plan`、`execute` 三个显式步骤，让论文实验可以检查和替换每个阶段的产物；一键批量入口仍属于后续里程碑。
+
 ### Blender 与 Blender MCP
 
 原型环境要求：
@@ -126,6 +147,8 @@ cinescaffold parse \
   --text "一个男人站在荒漠里，远处有飞船。" \
   --output runs/example/cinematic_brief.json
 ```
+
+未指定 `--mock-response` 时，Mock 会返回用于检查接口的空格式骨架，不会自行理解文本或推断时长，因此 CLI 会提示先完成 Semantic Parser 时长。演示完整 Mock 管线时，应通过 `--mock-response <json>` 提供一份已经过 Schema 校验、且包含正数 `timeline.duration_seconds` 的模拟模型内容。
 
 将 Cinematic Brief 通过 Agent 1 转换为 Scene IR：
 
