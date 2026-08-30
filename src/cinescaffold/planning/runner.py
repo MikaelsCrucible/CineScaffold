@@ -53,9 +53,10 @@ class InterpreterRunConfig(BaseModel):
     run_id: str | None = None
     max_requests: int = Field(default=12, ge=1)
     max_tool_calls: int = Field(default=40, ge=1)
-    max_input_tokens: int | None = Field(default=120_000, ge=1)
+    max_input_tokens: int | None = Field(default=None, ge=1)
+    max_context_tokens: int | None = Field(default=32_000, ge=1)
     max_output_tokens: int | None = Field(default=30_000, ge=1)
-    max_total_tokens: int | None = Field(default=150_000, ge=1)
+    max_total_tokens: int | None = Field(default=None, ge=1)
     max_seconds: float = Field(default=300.0, gt=0)
     max_commit_attempts: int = Field(default=3, ge=1)
     thinking_mode: Literal["enabled", "disabled"] | None = None
@@ -100,6 +101,7 @@ class InterpreterRunner:
         status = "failed"
         error_payload: dict[str, str] | None = None
         model_label = self.config.model or "mock-scene-planner-v0.1"
+        tracing_model: TracingModel | None = None
 
         try:
             projection = project_objective_brief(cinematic_brief)
@@ -119,6 +121,7 @@ class InterpreterRunner:
                     "max_requests": self.config.max_requests,
                     "max_tool_calls": self.config.max_tool_calls,
                     "max_input_tokens": self.config.max_input_tokens,
+                    "max_context_tokens": self.config.max_context_tokens,
                     "max_output_tokens": self.config.max_output_tokens,
                     "max_total_tokens": self.config.max_total_tokens,
                     "max_seconds": self.config.max_seconds,
@@ -186,7 +189,8 @@ class InterpreterRunner:
                 base_url=self.config.base_url,
             )
             model_label = raw_model.model_name
-            agent = create_planning_agent(TracingModel(raw_model, trace), system_prompt)
+            tracing_model = TracingModel(raw_model, trace)
+            agent = create_planning_agent(tracing_model, system_prompt)
             deps = PlanningDeps(
                 toolkit=toolkit,
                 trace=trace,
@@ -197,6 +201,7 @@ class InterpreterRunner:
                 request_limit=self.config.max_requests,
                 tool_calls_limit=self.config.max_tool_calls,
                 input_tokens_limit=self.config.max_input_tokens,
+                per_request_input_tokens_limit=self.config.max_context_tokens,
                 output_tokens_limit=self.config.max_output_tokens,
                 total_tokens_limit=self.config.max_total_tokens,
             )
@@ -205,6 +210,9 @@ class InterpreterRunner:
                 projection,
                 current_revision=toolkit.store.current_revision,
                 resumed=resumed_checkpoint is not None,
+                resume_summary=(
+                    _resume_summary(toolkit) if resumed_checkpoint is not None else None
+                ),
             )
 
             async with asyncio.timeout(self.config.max_seconds):
@@ -231,7 +239,11 @@ class InterpreterRunner:
                         "agent_terminal_received",
                         attempt=attempt,
                         terminal=terminal.model_dump(mode="json"),
-                        aggregate_usage=usage_summary(usage, None)["tokens"],
+                        aggregate_usage=usage_summary(
+                            usage,
+                            None,
+                            tracing_model.request_metrics,
+                        ),
                     )
                     if isinstance(terminal, UnsupportedResult):
                         status = "unsupported"
@@ -267,7 +279,11 @@ class InterpreterRunner:
             trace.record("run_failed", status=status, error=error_payload)
         except UsageLimitExceeded as error:
             status = "budget_exhausted"
-            error_payload = {"type": type(error).__name__, "message": str(error)}
+            error_payload = {
+                "type": type(error).__name__,
+                "limit_type": _usage_limit_type(str(error)),
+                "message": str(error),
+            }
             trace.record("run_failed", status=status, error=error_payload)
         except Exception as error:
             status = "failed"
@@ -279,7 +295,11 @@ class InterpreterRunner:
             toolkit,
             commit_result,
         )
-        usage_data = usage_summary(usage, self.config.cost_rates)
+        usage_data = usage_summary(
+            usage,
+            self.config.cost_rates,
+            tracing_model.request_metrics if tracing_model is not None else None,
+        )
         final_revision = (
             toolkit.store.committed_revision
             if toolkit and toolkit.store.committed_revision is not None
@@ -317,11 +337,11 @@ def _initial_agent_prompt(
     *,
     current_revision: int,
     resumed: bool,
+    resume_summary: dict[str, Any] | None = None,
 ) -> str:
     payload = projection.objective_brief.model_dump(mode="json")
     continuation = (
-        f"已从可信 checkpoint 恢复 Candidate revision {current_revision}；先 inspect 当前状态并继续修复，"
-        "不要从头重建。"
+        f"已从可信 checkpoint 恢复 Candidate revision {current_revision}；不要从头重建。"
         if resumed
         else f"当前 Candidate revision 为 {current_revision}。"
     )
@@ -329,9 +349,55 @@ def _initial_agent_prompt(
         "请根据以下只含客观内容的 Objective Planning Brief 建立并验证 Candidate。"
         "先检查能力，再通过工具构造；不要处理或猜测已剥离的主观字段。"
         + continuation
+        + (
+            "恢复摘要如下；不得重复读取 summary，只在修复需要时读取更具体的枚举视图。\n"
+            + json.dumps(resume_summary, ensure_ascii=False, separators=(",", ":"))
+            if resume_summary is not None
+            else ""
+        )
         + "\n\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
+
+
+def _resume_summary(toolkit: ScenePlanningToolkit) -> dict[str, Any]:
+    state = toolkit.store.get()
+    validation = state.validation
+    return {
+        "revision": state.revision,
+        "entity_ids": sorted(state.entities),
+        "motion_track_ids": sorted(state.motion_tracks),
+        "camera_track_ids": sorted(state.camera.tracks) if state.camera else [],
+        "constraint_ids": sorted(state.constraints),
+        "validation": (
+            {
+                "hard_pass": validation.hard_pass,
+                "soft_score": validation.soft_score,
+                "commit_ready": (
+                    validation.hard_pass
+                    and validation.soft_score >= toolkit.profile.minimum_soft_score
+                ),
+                "violation_codes": [item.code for item in validation.violations],
+            }
+            if validation is not None
+            else None
+        ),
+    }
+
+
+def _usage_limit_type(message: str) -> str:
+    for name in (
+        "per_request_input_tokens_limit",
+        "input_tokens_limit",
+        "output_tokens_limit",
+        "total_tokens_limit",
+        "request_limit",
+        "tool_calls_limit",
+        "cost_limit",
+    ):
+        if name in message:
+            return name
+    return "unknown_usage_limit"
 
 
 def _repair_prompt(result: CommitGateResult, current_revision: int) -> str:

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-EXECUTOR_VERSION = "0.1"
+EXECUTOR_VERSION = "0.2"
 FLOAT_TOLERANCE = 1e-5
 BLENDER_ENGINE_MAP = {"BLENDER_EEVEE_NEXT": "BLENDER_EEVEE"}
 NEUTRAL_CAMERA_RIG_SPECS = (
@@ -457,7 +457,7 @@ def _runtime_snapshot(scene, scene_ir, entities, camera) -> dict[str, Any]:
         if obj.type == "MESH" and obj.get("cinescaffold_kind") != "entity" and not obj.hide_render
     )
     return {
-        "snapshot_version": "0.1",
+        "snapshot_version": "0.2",
         "scene_ir_hash": scene.get("cinescaffold_scene_ir_hash", ""),
         "blender_version": bpy.app.version_string,
         "timeline": {
@@ -593,7 +593,7 @@ def _validate_runtime(scene_ir: dict[str, Any], snapshot: dict[str, Any]) -> dic
             violations.append(_violation(f"camera.intrinsics.{key}", expected, actual))
 
     return {
-        "validation_version": "0.1",
+        "validation_version": "0.2",
         "passed": not violations,
         "float_tolerance": FLOAT_TOLERANCE,
         "violations": violations,

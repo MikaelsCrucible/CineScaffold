@@ -11,6 +11,7 @@ from cinescaffold.planning.runner import (
     InterpreterRunConfig,
     InterpreterRunner,
     _planning_model_settings,
+    _usage_limit_type,
 )
 from cinescaffold.planning.models import create_planning_model
 from cinescaffold.planning.objective import project_objective_brief
@@ -81,6 +82,8 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertEqual(result.status, "success", result.error)
         self.assertEqual(result.terminal_type, "commit_request")
         self.assertGreater(result.usage["tokens"]["input_tokens"], 0)
+        self.assertGreater(result.usage["context"]["max_request_input_tokens"], 0)
+        self.assertGreaterEqual(result.usage["context"]["cache_hit_ratio"], 0.0)
         self.assertEqual(result.usage["pricing_snapshot"]["source"], "test_snapshot")
         self.assertGreater(Decimal(result.usage["estimated_cost"]["amount"]), 0)
         self.assertTrue(all(len(line.encode("utf-8")) <= 8_192 for line in trace_lines))
@@ -123,7 +126,7 @@ class InterpreterRunnerTest(unittest.TestCase):
 
         self.assertEqual(first.status, "success")
         self.assertEqual(second.status, "success", second.error)
-        self.assertGreater(second.final_revision, first.final_revision)
+        self.assertEqual(second.final_revision, first.final_revision)
         self.assertIn("candidate_checkpoint_loaded", trace)
 
     def test_commit_repair_attempts_use_distinct_agent_run_ids(self) -> None:
@@ -145,6 +148,17 @@ class InterpreterRunnerTest(unittest.TestCase):
 
         self.assertEqual(result.status, "commit_rejected")
         self.assertIsNone(result.error)
+
+    def test_default_limits_distinguish_context_from_cumulative_usage(self) -> None:
+        config = InterpreterRunConfig(run_dir=Path("unused"))
+
+        self.assertIsNone(config.max_input_tokens)
+        self.assertEqual(config.max_context_tokens, 32_000)
+        self.assertIsNone(config.max_total_tokens)
+        self.assertEqual(
+            _usage_limit_type("Exceeded the per_request_input_tokens_limit of 32000"),
+            "per_request_input_tokens_limit",
+        )
 
 
 if __name__ == "__main__":

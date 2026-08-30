@@ -97,9 +97,20 @@ def _build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--run-id")
     plan_parser.add_argument("--max-requests", type=int, default=12)
     plan_parser.add_argument("--max-tool-calls", type=int, default=40)
-    plan_parser.add_argument("--max-input-tokens", type=int, default=120_000)
+    plan_parser.add_argument(
+        "--max-input-tokens",
+        type=int,
+        default=None,
+        help="累计输入 token 上限；包含每次请求重复发送及缓存命中的上下文",
+    )
+    plan_parser.add_argument(
+        "--max-context-tokens",
+        type=int,
+        default=32_000,
+        help="单次模型请求的上下文 token 上限",
+    )
     plan_parser.add_argument("--max-output-tokens", type=int, default=30_000)
-    plan_parser.add_argument("--max-total-tokens", type=int, default=150_000)
+    plan_parser.add_argument("--max-total-tokens", type=int, default=None)
     plan_parser.add_argument("--max-seconds", type=float, default=300.0)
     plan_parser.add_argument("--max-commit-attempts", type=int, default=3)
     plan_parser.add_argument(
@@ -206,6 +217,7 @@ def _run_plan(args: argparse.Namespace) -> int:
         max_requests=args.max_requests,
         max_tool_calls=args.max_tool_calls,
         max_input_tokens=args.max_input_tokens,
+        max_context_tokens=args.max_context_tokens,
         max_output_tokens=args.max_output_tokens,
         max_total_tokens=args.max_total_tokens,
         max_seconds=args.max_seconds,

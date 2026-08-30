@@ -74,6 +74,7 @@ class TracingModel(WrapperModel):
         super().__init__(wrapped)
         self.trace = trace
         self._request_index = 0
+        self.request_metrics: list[dict[str, int]] = []
 
     async def request(
         self,
@@ -107,11 +108,28 @@ class TracingModel(WrapperModel):
                 error=str(error),
             )
             raise
+        usage_values = _usage_dict(response.usage)
+        input_tokens = int(usage_values.get("input_tokens", 0))
+        cache_read_tokens = int(usage_values.get("cache_read_tokens", 0))
+        cache_write_tokens = int(usage_values.get("cache_write_tokens", 0))
+        self.request_metrics.append(
+            {
+                "request_index": self._request_index,
+                "message_count": len(messages),
+                "input_tokens": input_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
+                "uncached_input_tokens": max(
+                    0, input_tokens - cache_read_tokens - cache_write_tokens
+                ),
+                "output_tokens": int(usage_values.get("output_tokens", 0)),
+            }
+        )
         self.trace.record(
             "model_request_completed",
             request_index=self._request_index,
             duration_ms=round((time.monotonic() - started) * 1000, 3),
-            usage=_usage_dict(response.usage),
+            usage=usage_values,
             response_parts=_response_part_summary(response),
             provider_response_id=response.provider_response_id,
             finish_reason=response.finish_reason,
@@ -119,9 +137,38 @@ class TracingModel(WrapperModel):
         return response
 
 
-def usage_summary(usage: RunUsage, rates: CostRates | None) -> dict[str, Any]:
+def usage_summary(
+    usage: RunUsage,
+    rates: CostRates | None,
+    request_metrics: list[dict[str, int]] | None = None,
+) -> dict[str, Any]:
     values = _usage_dict(usage)
-    result: dict[str, Any] = {"tokens": values, "pricing_snapshot": None, "estimated_cost": None}
+    metrics = request_metrics or []
+    result: dict[str, Any] = {
+        "tokens": values,
+        "context": {
+            "semantics": (
+                "aggregate_input_tokens sums every request and includes cache reads; "
+                "max_request_input_tokens is the largest single model context"
+            ),
+            "max_request_input_tokens": max(
+                (item["input_tokens"] for item in metrics), default=0
+            ),
+            "max_request_message_count": max(
+                (item["message_count"] for item in metrics), default=0
+            ),
+            "aggregate_uncached_input_tokens": sum(
+                item["uncached_input_tokens"] for item in metrics
+            ),
+            "cache_hit_ratio": (
+                values.get("cache_read_tokens", 0) / values.get("input_tokens", 1)
+                if values.get("input_tokens", 0)
+                else 0.0
+            ),
+        },
+        "pricing_snapshot": None,
+        "estimated_cost": None,
+    }
     if rates is None:
         return result
     input_tokens = Decimal(values.get("input_tokens", 0))

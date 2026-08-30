@@ -61,6 +61,8 @@
 
 Agent 1 的客观语义投影、Candidate revision store、九个 Planning Toolkit 接口、确定性启发式 Solver、结构化 Validator 和 Scene IR Commit Gate 已经实现。模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文；Commit Gate 会把规划轨迹烘焙为完整逐帧 Scene IR。当前确定性约束能力以 `get_capabilities` 返回为准，尚未实现的约束会产生明确 capability gap；同一响应会提供冻结的 FPS、时长、半开时间域和最后一帧时间，避免 Agent 通过失败调用猜测时间边界。Transform Keyframe 使用关闭额外字段的类型化 Schema，错误字段会在工具调用边界被拒绝。
 
+Agent 协议由 Runner 确定性约束：闭集参数直接进入 Tool Schema 枚举；每个上下文只能读取一次能力清单，同一 revision 的相同 inspect 会被拒绝；实体和摄影机的每个状态通道最多存在一条 Track；`commit_ready=true` 后不再允许继续调用工具。Checkpoint 只在当前 Candidate revision 真正变化时写入，读取历史 revision 不会制造伪 checkpoint。Toolkit v0.2 会拒绝载入旧 Toolkit checkpoint，避免把旧验证语义静默带入新实验。
+
 真实 Agent 回归暴露的规划缺陷已经进入确定性门禁：`push_in/pull_out` 按摄影机到目标的距离变化验证，不绑定世界轴；`speed_range` 独立表达移动速度，来源兼容性检查会拒绝用摄影机距离冒充“缓慢”；屏幕构图按旋转后代理体包围盒计算并使用冻结数值容差。Solver 不会为了制造侧面可见性而擅自旋转实体；三维代理是否真实构建由 Blender Runtime Validator 读取实际 mesh 拓扑和局部包围盒验证，与摄影机投影视角解耦。
 
 无 Agent 2 的执行基线也已实现：`cinescaffold execute` 在修改 Blender 前验证 IR，创建 factory template，经官方 Blender MCP 的 `execute_blender_code_for_cli` 调用固定 Executor，从空场景生成代理几何、逐帧实体/摄影机状态、白模材质和灯光，回读 Runtime Snapshot 并渲染 H.264。未给定灯光语义时，Compiler 使用版本化的摄影机相对对称无影灯组，不推断世界光源方向；Runtime Validator 会核对灯组用途、模式、父级、旋转、能量和阴影开关。两次相同 IR 重建得到字节一致的规范化 Runtime Snapshot；两实体、144 帧黄金场景已在 Blender 5.2.1 LTS 上完成 0 violation 构建和视频渲染。
@@ -139,7 +141,7 @@ cinescaffold plan \
   --output-dir runs/example/deepseek-planning
 ```
 
-每次规划都会写出 `planning_agent_tool_trace.jsonl`、`constraint_plan.json`、`planning_validation.json`、`planning_summary.json`；成功时额外写出 `final_scene_ir.json`。Trace 记录每轮模型请求、模型设置、工具参数/结果、revision、验证错误和耗时，但不保存模型 thinking/reasoning 内容。`planning_summary.json` 记录输入、输出、缓存、请求和工具调用用量。DeepSeek 的单次输出上限会通过其 Chat Completions 所需的 `max_tokens` 字段发送；其他兼容 Provider 使用 PydanticAI 的通用设置。
+每次规划都会写出 `planning_agent_tool_trace.jsonl`、`constraint_plan.json`、`planning_validation.json`、`planning_summary.json`；成功时额外写出 `final_scene_ir.json`。Trace 记录每轮模型请求、模型设置、工具参数/结果、revision、验证错误和耗时，但不保存模型 thinking/reasoning 内容。`planning_summary.json` 分开记录累计输入 token、缓存命中、未缓存输入和最大单次上下文；累计输入会把每轮重复上下文相加，不能解释为模型上下文窗口大小。DeepSeek 的单次输出上限会通过其 Chat Completions 所需的 `max_tokens` 字段发送；其他兼容 Provider 使用 PydanticAI 的通用设置。
 
 每个成功 Mutation 还会写入 `checkpoints/revision_NNNN.json` 并更新 `checkpoint_latest.json`。预算或网络中断后，应使用同一份 Brief 在新的输出目录建立短上下文续跑；Checkpoint 会校验 Brief、Toolkit、Profile 与 Candidate hash：
 
