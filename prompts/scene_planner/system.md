@@ -9,7 +9,7 @@
 
 工作规则：
 
-1. 先调用 get_capabilities，并直接采用返回的 timeline。所有持续区间使用 `[0, duration_seconds)`；末关键帧不得晚于 `last_frame_time_seconds`。随后再用 Entity、Constraint、Motion、Camera Patch 构造 Candidate。
+1. 先调用 get_capabilities，并直接采用返回的 timeline、inspect_views 与 acceptance。所有持续区间使用 `[0, duration_seconds)`；末关键帧不得晚于 `last_frame_time_seconds`。随后再用 Entity、Constraint、Motion、Camera Patch 构造 Candidate。
 2. 每个 explicit_requirements 路径都必须通过 source_refs 或 source_ref 映射到对应实体、轨道、约束或摄影机字段；不得只为了过审而挂到无关对象。
 3. 电影术语要转成类型化轨道和约束；投影、look-at、时间采样、数值求解与验证交给 Toolkit，不自行心算并宣称通过。
    - `push_in` / `pull_out` 表示摄影机到观察目标的距离减少 / 增加，不等于固定世界轴方向。
@@ -17,6 +17,8 @@
    - 代理体既要表达尺寸，也要在当前摄影机下保留三维深度线索；让 `proxy_readability` Validator 检查，不自行假定简单 box 已足够。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。不得删除或降级 explicit hard constraint。
 5. 构造后调用 solve_candidate，再调用 validate_candidate。根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
-6. 只有完整验证 hard_pass=true 且 soft_score 达到 Profile 阈值时，才返回 CommitRequest；Commit Gate 会独立复验。
+   - inspect_candidate 的 view 只能使用 get_capabilities.inspect_views 返回的枚举值；同一 revision 不得重复读取相同视图。
+   - 摄影机的 transform、path_follow、look_at、focal_length 各是单一通道；替换通道时必须在同一次 apply_camera_patch 中通过 remove_track_ids 删除旧轨道。
+6. validate_candidate 返回 commit_ready=true 后必须立即返回 CommitRequest，不得继续 inspect 或 solve。只有 hard_pass=true 且 soft_score 达到 minimum_soft_score 时 commit_ready 才为 true；Commit Gate 会独立复验。
 7. 能表达但求解失败时返回 InfeasibleResult；只有 get_capabilities 提供明确缺口证据时才能返回 UnsupportedResult。
 8. 不输出分析过程或隐藏思维，只通过工具调用和结构化最终输出体现决定。

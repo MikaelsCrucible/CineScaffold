@@ -25,6 +25,73 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 "last_frame_time_seconds": 143 / 24,
             },
         )
+        self.assertIn("camera", result["data"]["inspect_views"])
+        self.assertEqual(result["data"]["acceptance"]["minimum_soft_score"], 0.75)
+        self.assertFalse(result["data"]["acceptance"]["commit_ready"])
+
+    def test_camera_patch_rejects_overlapping_singleton_tracks_atomically(self) -> None:
+        toolkit = _toolkit()
+        result = toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0},
+            tracks=[
+                {
+                    "track_id": "camera_fast",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [],
+                },
+                {
+                    "track_id": "camera_slow",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [],
+                },
+            ],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["revision_after"], 0)
+        self.assertIn("remove_track_ids", result["warnings"][0])
+        self.assertIsNone(toolkit.store.get().camera)
+
+    def test_validator_rejects_ambiguous_tracks_from_legacy_checkpoint(self) -> None:
+        toolkit = _toolkit()
+        accepted = toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0},
+            tracks=[
+                {
+                    "track_id": "camera_fast",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [],
+                }
+            ],
+        )
+        self.assertEqual(accepted["status"], "ok")
+
+        def inject_legacy_track(state):
+            original = state.camera.tracks["camera_fast"]
+            state.camera.tracks["camera_slow"] = original.model_copy(
+                update={"track_id": "camera_slow"}
+            )
+            return ([{"operation": "inject", "path": "camera.tracks.camera_slow"}], [])
+
+        toolkit.store.apply(inject_legacy_track)
+        validation = toolkit.validate_candidate(checks=["camera"])
+
+        self.assertFalse(validation["data"]["hard_pass"])
+        self.assertTrue(
+            any(
+                item["code"] == "AMBIGUOUS_CAMERA_TRACKS"
+                for item in validation["violations"]
+            )
+        )
 
     def test_transform_keyframe_rejects_unknown_position_alias(self) -> None:
         toolkit = _toolkit()

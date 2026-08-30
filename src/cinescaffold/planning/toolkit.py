@@ -73,6 +73,50 @@ FULL_VALIDATION_CHECKS = [
     "hard_semantics",
     "rebuildability",
 ]
+INSPECT_VIEWS = [
+    "summary",
+    "entities",
+    "camera",
+    "constraints",
+    "violations",
+    "timeline",
+    "diff",
+    "full_ir",
+]
+CAMERA_SINGLETON_TRACK_TYPES = {"transform", "path_follow", "look_at", "focal_length"}
+
+
+def _commit_ready(report: ValidationReport | None, profile: PlanningProfile) -> bool:
+    return bool(
+        report
+        and report.hard_pass
+        and report.soft_score >= profile.minimum_soft_score
+    )
+
+
+def _duplicate_camera_track_ids(tracks: dict[str, TrackSpec]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for track in tracks.values():
+        if track.type in CAMERA_SINGLETON_TRACK_TYPES:
+            grouped.setdefault(track.type, []).append(track.track_id)
+    return {
+        track_type: sorted(track_ids)
+        for track_type, track_ids in grouped.items()
+        if len(track_ids) > 1
+    }
+
+
+def _validate_singleton_camera_tracks(tracks: dict[str, TrackSpec]) -> None:
+    duplicates = _duplicate_camera_track_ids(tracks)
+    if not duplicates:
+        return
+    details = "; ".join(
+        f"{track_type}={','.join(track_ids)}"
+        for track_type, track_ids in sorted(duplicates.items())
+    )
+    raise ValueError(
+        f"Camera 单一通道存在重叠轨道：{details}；请用 remove_track_ids 删除旧轨道"
+    )
 
 
 class ScenePlanningToolkit:
@@ -111,6 +155,12 @@ class ScenePlanningToolkit:
             "sections": requested,
             "supported_geometry": ["box", "sphere", "capsule", "cylinder", "cone", "plane"],
             "supported_tracks": ["transform", "path_follow", "visibility", "look_at", "focal_length"],
+            "inspect_views": INSPECT_VIEWS,
+            "acceptance": {
+                "minimum_soft_score": self.profile.minimum_soft_score,
+                "requires_hard_pass": True,
+                "commit_ready": _commit_ready(state.validation, self.profile),
+            },
             "supported_constraints": sorted(SUPPORTED_CONSTRAINTS),
             "constraint_guidance": {
                 "camera_motion_direction": (
@@ -141,6 +191,7 @@ class ScenePlanningToolkit:
                 "tracks": len(state.motion_tracks),
                 "constraints": len(state.constraints),
                 "revision": state.revision,
+                "camera_track_ids": sorted(state.camera.tracks) if state.camera else [],
             },
         }
         gaps = [
@@ -341,6 +392,13 @@ class ScenePlanningToolkit:
                 )
             parsed_static = CameraStatic.model_validate(static)
             parsed_tracks = [TrackSpec.model_validate(item) for item in tracks]
+            unsupported = sorted(
+                track.track_id
+                for track in parsed_tracks
+                if track.type not in CAMERA_SINGLETON_TRACK_TYPES
+            )
+            if unsupported:
+                raise ValueError(f"Camera Track 类型不受支持：{', '.join(unsupported)}")
 
             def mutate(state: CandidateState):
                 current_tracks = deepcopy(state.camera.tracks) if state.camera else {}
@@ -351,6 +409,7 @@ class ScenePlanningToolkit:
                         raise ValueError("Camera Track 不应填写 target_entity_id")
                     _validate_track_time(track, state.timeline.duration_seconds)
                     current_tracks[track.track_id] = track
+                _validate_singleton_camera_tracks(current_tracks)
                 previous = state.camera
                 state.camera = CameraCandidate(
                     camera_id=camera_id,
@@ -454,6 +513,8 @@ class ScenePlanningToolkit:
             "random_seed": self.profile.random_seed,
             "hard_pass": report.hard_pass,
             "soft_score": report.soft_score,
+            "minimum_soft_score": self.profile.minimum_soft_score,
+            "commit_ready": _commit_ready(report, self.profile),
         }
         return _mutation_envelope(
             mutation,
@@ -480,7 +541,11 @@ class ScenePlanningToolkit:
         return _envelope(
             state.revision,
             state.revision,
-            data=report.model_dump(mode="json"),
+            data=report.model_dump(mode="json")
+            | {
+                "minimum_soft_score": self.profile.minimum_soft_score,
+                "commit_ready": _commit_ready(report, self.profile),
+            },
             violations=[item.model_dump(mode="json") for item in report.violations],
             capability_gaps=report.capability_gaps,
         )
@@ -833,6 +898,16 @@ def _camera_violations(state: CandidateState) -> list[Violation]:
         violations.append(_violation("UNRESOLVED_FOCAL_LENGTH", "摄影机焦距尚未求解"))
     if state.camera.static.focus_target_id and state.camera.static.focus_target_id not in state.entities:
         violations.append(_violation("CAMERA_TARGET_MISSING", "摄影机观察目标不存在"))
+    for track_type, track_ids in _duplicate_camera_track_ids(state.camera.tracks).items():
+        violations.append(
+            _violation(
+                "AMBIGUOUS_CAMERA_TRACKS",
+                f"摄影机 {track_type} 通道存在重叠轨道：{', '.join(track_ids)}",
+                expected={"track_type": track_type, "maximum_count": 1},
+                actual={"track_ids": track_ids},
+                adjustable_variables=["camera tracks", "remove_track_ids"],
+            )
+        )
     return violations
 
 

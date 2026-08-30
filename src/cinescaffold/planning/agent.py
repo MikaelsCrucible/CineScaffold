@@ -4,7 +4,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 from pydantic_ai import Agent, RunContext
@@ -112,7 +112,16 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
     @agent.tool(sequential=True)
     async def inspect_candidate(
         ctx: RunContext[PlanningDeps],
-        view: str = "summary",
+        view: Literal[
+            "summary",
+            "entities",
+            "camera",
+            "constraints",
+            "violations",
+            "timeline",
+            "diff",
+            "full_ir",
+        ] = "summary",
         revision: int | None = None,
         entity_ids: list[str] | None = None,
         camera_ids: list[str] | None = None,
@@ -120,7 +129,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         time_range_seconds: tuple[float, float] | None = None,
         compare_to_revision: int | None = None,
     ) -> dict[str, Any]:
-        """读取当前或历史 Candidate 的紧凑视图，不修改状态。"""
+        """按枚举视图读取当前或历史 Candidate，不修改状态。"""
         arguments = {
             "view": view,
             "revision": revision,
