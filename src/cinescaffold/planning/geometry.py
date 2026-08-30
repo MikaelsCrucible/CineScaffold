@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Callable
 
 from cinescaffold.planning.domain import (
     ProxyGeometry,
@@ -63,16 +63,12 @@ def sample_path_track(
         return _complete_transform(fallback)
     start, end = track.time_range_seconds
     ratio = min(1.0, max(0.0, (time_seconds - start) / (end - start)))
-    points = list(track.path.control_points)
-    if track.path.closed and points[-1] != points[0]:
-        points.append(points[0])
+    if track.interpolation == "smooth":
+        ratio = ratio * ratio * (3.0 - 2.0 * ratio)
     if track.path.closed:
         # 闭合路径可在同一 Track 时间段内重复或只走部分圈数。
         ratio = (ratio * track.path.cycle_count) % 1.0
-    if track.path.parameterization == "arc_length":
-        position = _sample_arc_length(points, ratio)
-    else:
-        position = _sample_polyline(points, ratio)
+    position = _sample_path_position(track.path, ratio)
     completed = _complete_transform(fallback)
     return TransformValue(
         translation_m=position,
@@ -81,6 +77,104 @@ def sample_path_track(
         space=track.path.space,
         target_id=track.path.target_id,
     )
+
+
+def _sample_path_position(path: Any, ratio: float) -> Vec3:
+    if path.representation in {"polyline", "sampled"}:
+        points = list(path.control_points)
+        if path.closed and points[-1] != points[0]:
+            points.append(points[0])
+        if path.parameterization == "arc_length":
+            return _sample_arc_length(points, ratio)
+        return _sample_polyline(points, ratio)
+
+    if path.representation == "catmull_rom":
+        evaluator = lambda value: _sample_catmull_rom(
+            list(path.control_points),
+            value,
+            closed=path.closed,
+        )
+    else:
+        evaluator = lambda value: _sample_analytic_path(path, value)
+    if path.representation == "circle":
+        # 圆的参数角天然等弧长，直接求值以保持精确半径。
+        return evaluator(ratio)
+    if path.parameterization == "arc_length":
+        return _sample_parametric_arc_length(evaluator, ratio)
+    return evaluator(ratio)
+
+
+def _sample_analytic_path(path: Any, ratio: float) -> Vec3:
+    axis_u, axis_v = _path_plane_basis(path.plane_normal, path.axis_direction)
+    sign = 1.0 if path.direction == "counterclockwise" else -1.0
+    angle = math.radians(path.initial_phase_degrees) + sign * math.tau * ratio
+    if path.representation == "circle":
+        local_u = path.radius_m * math.cos(angle)
+        local_v = path.radius_m * math.sin(angle)
+    elif path.representation == "ellipse":
+        local_u = path.semi_major_axis_m * math.cos(angle)
+        local_v = path.semi_minor_axis_m * math.sin(angle)
+    else:
+        # Gerono 双纽线使用完整 width/height 作为包围盒尺寸。
+        local_u = path.width_m * 0.5 * math.sin(angle)
+        local_v = path.height_m * math.sin(angle) * math.cos(angle)
+    return add(
+        path.center_offset_m,
+        add(multiply(axis_u, local_u), multiply(axis_v, local_v)),
+    )
+
+
+def _path_plane_basis(plane_normal: Vec3, axis_direction: Vec3) -> tuple[Vec3, Vec3]:
+    normal = normalize(plane_normal)
+    projected = subtract(axis_direction, multiply(normal, dot(axis_direction, normal)))
+    axis_u = normalize(projected)
+    axis_v = normalize(cross(normal, axis_u))
+    return axis_u, axis_v
+
+
+def _sample_catmull_rom(points: list[Vec3], ratio: float, *, closed: bool) -> Vec3:
+    if closed:
+        ratio %= 1.0
+        segment_count = len(points)
+        position = ratio * segment_count
+        index = int(position) % segment_count
+        local_ratio = position - math.floor(position)
+        p0 = points[(index - 1) % segment_count]
+        p1 = points[index]
+        p2 = points[(index + 1) % segment_count]
+        p3 = points[(index + 2) % segment_count]
+    else:
+        if ratio >= 1.0:
+            return points[-1]
+        segment_count = len(points) - 1
+        position = max(0.0, ratio) * segment_count
+        index = min(segment_count - 1, int(position))
+        local_ratio = position - index
+        p0 = points[max(0, index - 1)]
+        p1 = points[index]
+        p2 = points[index + 1]
+        p3 = points[min(len(points) - 1, index + 2)]
+    t2 = local_ratio * local_ratio
+    t3 = t2 * local_ratio
+    values = []
+    for axis in range(3):
+        value = 0.5 * (
+            2.0 * p1[axis]
+            + (-p0[axis] + p2[axis]) * local_ratio
+            + (2.0 * p0[axis] - 5.0 * p1[axis] + 4.0 * p2[axis] - p3[axis]) * t2
+            + (-p0[axis] + 3.0 * p1[axis] - 3.0 * p2[axis] + p3[axis]) * t3
+        )
+        values.append(value)
+    return tuple(values)  # type: ignore[return-value]
+
+
+def _sample_parametric_arc_length(
+    evaluator: Callable[[float], Vec3],
+    ratio: float,
+) -> Vec3:
+    # 固定采样密度保证曲线重参数化可复现。
+    points = [evaluator(index / 512.0) for index in range(513)]
+    return _sample_arc_length(points, ratio)
 
 
 def sample_scalar_track(track: TrackSpec | None, time_seconds: float, fallback: float) -> float:

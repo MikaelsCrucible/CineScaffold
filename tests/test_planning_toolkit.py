@@ -778,7 +778,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertAlmostEqual(moon_quarter.translation_m[1], 8.0, places=8)
         earth_frame = entities["earth"].local_state_track.samples[36].value
         moon_frame = entities["moon"].local_state_track.samples[36].value
-        self.assertEqual(earth_frame.translation_m, (0.0, 10.0, 0.0))
+        self.assertAlmostEqual(earth_frame.translation_m[0], 0.0, places=8)
+        self.assertAlmostEqual(earth_frame.translation_m[1], 10.0, places=8)
+        self.assertEqual(earth_frame.translation_m[2], 0.0)
         self.assertAlmostEqual(moon_frame.translation_m[0], 0.0, places=8)
         self.assertAlmostEqual(moon_frame.translation_m[1], -2.0, places=8)
         self.assertEqual(moon_frame.translation_m[2], 0.0)
@@ -803,6 +805,55 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         validation = toolkit.validate_candidate(checks=["motion"])
 
         self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
+
+    def test_polygon_cannot_masquerade_as_default_orbit(self) -> None:
+        toolkit = _relative_motion_toolkit(earth_radius_m=20.0)
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertIn(
+            "ORBIT_TRAJECTORY_NOT_ANALYTIC",
+            {item["code"] for item in validation["violations"]},
+        )
+
+    def test_explicit_figure_eight_orbit_may_use_lemniscate(self) -> None:
+        toolkit = _relative_motion_toolkit()
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "subject_motion": [
+                    {
+                        "subject_id": "earth",
+                        "trajectory": {
+                            "value": "∞形",
+                            "source_status": "explicit",
+                            "source_text": "沿∞形运动",
+                        },
+                    }
+                ]
+            }
+        )
+        replacement = {
+            "track_id": "earth_orbit",
+            "target_entity_id": "earth",
+            "type": "path_follow",
+            "time_range_seconds": [0.0, 6.0],
+            "path": {
+                "representation": "lemniscate",
+                "space": "target_relative",
+                "target_id": "sun",
+                "width_m": 20.0,
+                "height_m": 10.0,
+            },
+            "source_ref": "content.subject_motion[0].trajectory",
+        }
+        toolkit.apply_motion_patch([replacement], ["earth_orbit"])
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertNotIn(
+            "ORBIT_TRAJECTORY_NOT_ANALYTIC",
+            {item["code"] for item in validation["violations"]},
+        )
 
     def test_relative_motion_cycle_is_rejected_atomically(self) -> None:
         toolkit = _toolkit()
@@ -1140,16 +1191,10 @@ def _orbit_track(
         "type": "path_follow",
         "time_range_seconds": [0.0, 6.0],
         "path": {
-            "representation": "polyline",
+            "representation": "circle",
             "space": "target_relative",
             "target_id": target_id,
-            "control_points": [
-                [radius_m, 0.0, 0.0],
-                [0.0, radius_m, 0.0],
-                [-radius_m, 0.0, 0.0],
-                [0.0, -radius_m, 0.0],
-            ],
-            "closed": True,
+            "radius_m": radius_m,
             "cycle_count": cycle_count,
             "parameterization": "arc_length",
             "orientation_mode": "keep",
@@ -1192,13 +1237,19 @@ def _relative_motion_toolkit(
     )
     earth_track = _orbit_track("earth_orbit", "earth", "sun", 10.0)
     if earth_radius_m != 10.0:
-        earth_track["path"]["control_points"] = [
-            [10.0, 0.0, 0.0],
-            [earth_radius_m, 0.0, 0.0],
-            [-10.0, 0.0, 0.0],
-            [0.0, -10.0, 0.0],
-        ]
-        earth_track["path"]["parameterization"] = "normalized_time"
+        earth_track["path"] = {
+            "representation": "polyline",
+            "space": "target_relative",
+            "target_id": "sun",
+            "control_points": [
+                [10.0, 0.0, 0.0],
+                [earth_radius_m, 0.0, 0.0],
+                [-10.0, 0.0, 0.0],
+                [0.0, -10.0, 0.0],
+            ],
+            "closed": True,
+            "parameterization": "normalized_time",
+        }
     motion_result = toolkit.apply_motion_patch(
         [
             earth_track,

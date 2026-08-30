@@ -112,18 +112,16 @@ class TransformValue(StrictModel):
         return self
 
 
-class PathSpec(StrictModel):
-    representation: Literal["polyline", "sampled"] = "polyline"
+class BasePathSpec(StrictModel):
     space: Literal["world", "local", "camera", "target_relative"] = "world"
     target_id: str | None = None
-    control_points: list[Vec3] = Field(min_length=2)
     closed: bool = False
     cycle_count: float = Field(default=1.0, gt=0)
     parameterization: Literal["normalized_time", "arc_length"] = "normalized_time"
     orientation_mode: Literal["keep"] = "keep"
 
     @model_validator(mode="after")
-    def validate_reference_frame(self) -> PathSpec:
+    def validate_reference_frame(self) -> BasePathSpec:
         if self.space == "target_relative" and not self.target_id:
             raise ValueError("target_relative Path 必须提供 target_id")
         if self.space != "target_relative" and self.target_id is not None:
@@ -133,6 +131,90 @@ class PathSpec(StrictModel):
         if not self.closed and abs(self.cycle_count - 1.0) > 1e-9:
             raise ValueError("只有闭合 Path 可以使用非 1 的 cycle_count")
         return self
+
+
+class PolylinePathSpec(BasePathSpec):
+    representation: Literal["polyline"] = "polyline"
+    control_points: list[Vec3] = Field(min_length=2)
+
+
+class SampledPathSpec(BasePathSpec):
+    representation: Literal["sampled"]
+    control_points: list[Vec3] = Field(min_length=2)
+
+
+class CatmullRomPathSpec(BasePathSpec):
+    representation: Literal["catmull_rom"]
+    control_points: list[Vec3] = Field(min_length=4)
+
+
+class AnalyticPathSpec(BasePathSpec):
+    center_offset_m: Vec3 = (0.0, 0.0, 0.0)
+    plane_normal: Vec3 = (0.0, 0.0, 1.0)
+    axis_direction: Vec3 = (1.0, 0.0, 0.0)
+    initial_phase_degrees: float = 0.0
+    direction: Literal["counterclockwise", "clockwise"] = "counterclockwise"
+    closed: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_basis(self) -> AnalyticPathSpec:
+        vectors = {
+            "center_offset_m": self.center_offset_m,
+            "plane_normal": self.plane_normal,
+            "axis_direction": self.axis_direction,
+        }
+        if not all(math.isfinite(item) for value in vectors.values() for item in value):
+            raise ValueError("解析 Path 的向量必须为有限数")
+        normal_length = math.sqrt(sum(item * item for item in self.plane_normal))
+        axis_length = math.sqrt(sum(item * item for item in self.axis_direction))
+        if normal_length <= 1e-9 or axis_length <= 1e-9:
+            raise ValueError("plane_normal 与 axis_direction 不得为零向量")
+        cosine = abs(
+            sum(
+                self.plane_normal[index] * self.axis_direction[index]
+                for index in range(3)
+            )
+            / (normal_length * axis_length)
+        )
+        if cosine >= 1.0 - 1e-6:
+            raise ValueError("axis_direction 不得与 plane_normal 平行")
+        if not math.isfinite(self.initial_phase_degrees):
+            raise ValueError("initial_phase_degrees 必须为有限数")
+        return self
+
+
+class CirclePathSpec(AnalyticPathSpec):
+    representation: Literal["circle"]
+    radius_m: float = Field(gt=0)
+
+
+class EllipsePathSpec(AnalyticPathSpec):
+    representation: Literal["ellipse"]
+    semi_major_axis_m: float = Field(gt=0)
+    semi_minor_axis_m: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_axes(self) -> EllipsePathSpec:
+        if self.semi_major_axis_m < self.semi_minor_axis_m:
+            raise ValueError("ellipse semi_major_axis_m 不得小于 semi_minor_axis_m")
+        return self
+
+
+class LemniscatePathSpec(AnalyticPathSpec):
+    representation: Literal["lemniscate"]
+    width_m: float = Field(gt=0)
+    height_m: float = Field(gt=0)
+
+
+PathSpec = Annotated[
+    PolylinePathSpec
+    | SampledPathSpec
+    | CatmullRomPathSpec
+    | CirclePathSpec
+    | EllipsePathSpec
+    | LemniscatePathSpec,
+    Field(discriminator="representation"),
+]
 
 
 class TrackKeyframe(StrictModel):
@@ -155,6 +237,14 @@ class TrackSpec(StrictModel):
     interpolation: Literal["step", "linear", "smooth"] = "linear"
     locked_components: list[str] = Field(default_factory=list)
     source_ref: str | None = None
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def preserve_legacy_polyline_default(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "representation" not in value:
+            # v0.10 以前的 Path 省略类型时固定解释为 polyline。
+            return value | {"representation": "polyline"}
+        return value
 
     @model_validator(mode="after")
     def validate_track_shape(self) -> TrackSpec:

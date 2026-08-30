@@ -40,8 +40,8 @@ from cinescaffold.planning.toolkit import (
 )
 
 
-COMPILER_VERSION = "0.9"
-COMMIT_GATE_VERSION = "0.9"
+COMPILER_VERSION = "0.10"
+COMMIT_GATE_VERSION = "0.10"
 
 
 @dataclass(frozen=True)

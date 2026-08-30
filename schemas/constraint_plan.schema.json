@@ -270,6 +270,243 @@
       "title": "CapsuleGeometry",
       "type": "object"
     },
+    "CatmullRomPathSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "local",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "closed": {
+          "default": false,
+          "title": "Closed",
+          "type": "boolean"
+        },
+        "cycle_count": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Cycle Count",
+          "type": "number"
+        },
+        "parameterization": {
+          "default": "normalized_time",
+          "enum": [
+            "normalized_time",
+            "arc_length"
+          ],
+          "title": "Parameterization",
+          "type": "string"
+        },
+        "orientation_mode": {
+          "const": "keep",
+          "default": "keep",
+          "title": "Orientation Mode",
+          "type": "string"
+        },
+        "representation": {
+          "const": "catmull_rom",
+          "title": "Representation",
+          "type": "string"
+        },
+        "control_points": {
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "minItems": 4,
+          "title": "Control Points",
+          "type": "array"
+        }
+      },
+      "required": [
+        "representation",
+        "control_points"
+      ],
+      "title": "CatmullRomPathSpec",
+      "type": "object"
+    },
+    "CirclePathSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "local",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "closed": {
+          "const": true,
+          "default": true,
+          "title": "Closed",
+          "type": "boolean"
+        },
+        "cycle_count": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Cycle Count",
+          "type": "number"
+        },
+        "parameterization": {
+          "default": "normalized_time",
+          "enum": [
+            "normalized_time",
+            "arc_length"
+          ],
+          "title": "Parameterization",
+          "type": "string"
+        },
+        "orientation_mode": {
+          "const": "keep",
+          "default": "keep",
+          "title": "Orientation Mode",
+          "type": "string"
+        },
+        "center_offset_m": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Center Offset M",
+          "type": "array"
+        },
+        "plane_normal": {
+          "default": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Plane Normal",
+          "type": "array"
+        },
+        "axis_direction": {
+          "default": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Axis Direction",
+          "type": "array"
+        },
+        "initial_phase_degrees": {
+          "default": 0.0,
+          "title": "Initial Phase Degrees",
+          "type": "number"
+        },
+        "direction": {
+          "default": "counterclockwise",
+          "enum": [
+            "counterclockwise",
+            "clockwise"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "representation": {
+          "const": "circle",
+          "title": "Representation",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0,
+          "title": "Radius M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "representation",
+        "radius_m"
+      ],
+      "title": "CirclePathSpec",
+      "type": "object"
+    },
     "ConeGeometry": {
       "additionalProperties": false,
       "properties": {
@@ -660,6 +897,163 @@
       "title": "DurationResolution",
       "type": "object"
     },
+    "EllipsePathSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "local",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "closed": {
+          "const": true,
+          "default": true,
+          "title": "Closed",
+          "type": "boolean"
+        },
+        "cycle_count": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Cycle Count",
+          "type": "number"
+        },
+        "parameterization": {
+          "default": "normalized_time",
+          "enum": [
+            "normalized_time",
+            "arc_length"
+          ],
+          "title": "Parameterization",
+          "type": "string"
+        },
+        "orientation_mode": {
+          "const": "keep",
+          "default": "keep",
+          "title": "Orientation Mode",
+          "type": "string"
+        },
+        "center_offset_m": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Center Offset M",
+          "type": "array"
+        },
+        "plane_normal": {
+          "default": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Plane Normal",
+          "type": "array"
+        },
+        "axis_direction": {
+          "default": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Axis Direction",
+          "type": "array"
+        },
+        "initial_phase_degrees": {
+          "default": 0.0,
+          "title": "Initial Phase Degrees",
+          "type": "number"
+        },
+        "direction": {
+          "default": "counterclockwise",
+          "enum": [
+            "counterclockwise",
+            "clockwise"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "representation": {
+          "const": "ellipse",
+          "title": "Representation",
+          "type": "string"
+        },
+        "semi_major_axis_m": {
+          "exclusiveMinimum": 0,
+          "title": "Semi Major Axis M",
+          "type": "number"
+        },
+        "semi_minor_axis_m": {
+          "exclusiveMinimum": 0,
+          "title": "Semi Minor Axis M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "representation",
+        "semi_major_axis_m",
+        "semi_minor_axis_m"
+      ],
+      "title": "EllipsePathSpec",
+      "type": "object"
+    },
     "EntitySpec": {
       "additionalProperties": false,
       "properties": {
@@ -984,6 +1378,163 @@
       "title": "LegacyDurationRequest",
       "type": "object"
     },
+    "LemniscatePathSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "local",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "closed": {
+          "const": true,
+          "default": true,
+          "title": "Closed",
+          "type": "boolean"
+        },
+        "cycle_count": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Cycle Count",
+          "type": "number"
+        },
+        "parameterization": {
+          "default": "normalized_time",
+          "enum": [
+            "normalized_time",
+            "arc_length"
+          ],
+          "title": "Parameterization",
+          "type": "string"
+        },
+        "orientation_mode": {
+          "const": "keep",
+          "default": "keep",
+          "title": "Orientation Mode",
+          "type": "string"
+        },
+        "center_offset_m": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Center Offset M",
+          "type": "array"
+        },
+        "plane_normal": {
+          "default": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Plane Normal",
+          "type": "array"
+        },
+        "axis_direction": {
+          "default": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Axis Direction",
+          "type": "array"
+        },
+        "initial_phase_degrees": {
+          "default": 0.0,
+          "title": "Initial Phase Degrees",
+          "type": "number"
+        },
+        "direction": {
+          "default": "counterclockwise",
+          "enum": [
+            "counterclockwise",
+            "clockwise"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "representation": {
+          "const": "lemniscate",
+          "title": "Representation",
+          "type": "string"
+        },
+        "width_m": {
+          "exclusiveMinimum": 0,
+          "title": "Width M",
+          "type": "number"
+        },
+        "height_m": {
+          "exclusiveMinimum": 0,
+          "title": "Height M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "representation",
+        "width_m",
+        "height_m"
+      ],
+      "title": "LemniscatePathSpec",
+      "type": "object"
+    },
     "LookAtParameters": {
       "additionalProperties": false,
       "properties": {
@@ -1052,95 +1603,6 @@
       "title": "MotionDirectionParameters",
       "type": "object"
     },
-    "PathSpec": {
-      "additionalProperties": false,
-      "properties": {
-        "representation": {
-          "default": "polyline",
-          "enum": [
-            "polyline",
-            "sampled"
-          ],
-          "title": "Representation",
-          "type": "string"
-        },
-        "space": {
-          "default": "world",
-          "enum": [
-            "world",
-            "local",
-            "camera",
-            "target_relative"
-          ],
-          "title": "Space",
-          "type": "string"
-        },
-        "target_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Target Id"
-        },
-        "control_points": {
-          "items": {
-            "maxItems": 3,
-            "minItems": 3,
-            "prefixItems": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "type": "array"
-          },
-          "minItems": 2,
-          "title": "Control Points",
-          "type": "array"
-        },
-        "closed": {
-          "default": false,
-          "title": "Closed",
-          "type": "boolean"
-        },
-        "cycle_count": {
-          "default": 1.0,
-          "exclusiveMinimum": 0,
-          "title": "Cycle Count",
-          "type": "number"
-        },
-        "parameterization": {
-          "default": "normalized_time",
-          "enum": [
-            "normalized_time",
-            "arc_length"
-          ],
-          "title": "Parameterization",
-          "type": "string"
-        },
-        "orientation_mode": {
-          "const": "keep",
-          "default": "keep",
-          "title": "Orientation Mode",
-          "type": "string"
-        }
-      },
-      "required": [
-        "control_points"
-      ],
-      "title": "PathSpec",
-      "type": "object"
-    },
     "PlaneGeometry": {
       "additionalProperties": false,
       "properties": {
@@ -1169,6 +1631,92 @@
         "size_xy_m"
       ],
       "title": "PlaneGeometry",
+      "type": "object"
+    },
+    "PolylinePathSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "local",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "closed": {
+          "default": false,
+          "title": "Closed",
+          "type": "boolean"
+        },
+        "cycle_count": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Cycle Count",
+          "type": "number"
+        },
+        "parameterization": {
+          "default": "normalized_time",
+          "enum": [
+            "normalized_time",
+            "arc_length"
+          ],
+          "title": "Parameterization",
+          "type": "string"
+        },
+        "orientation_mode": {
+          "const": "keep",
+          "default": "keep",
+          "title": "Orientation Mode",
+          "type": "string"
+        },
+        "representation": {
+          "const": "polyline",
+          "default": "polyline",
+          "title": "Representation",
+          "type": "string"
+        },
+        "control_points": {
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "minItems": 2,
+          "title": "Control Points",
+          "type": "array"
+        }
+      },
+      "required": [
+        "control_points"
+      ],
+      "title": "PolylinePathSpec",
       "type": "object"
     },
     "PositionAtTimeParameters": {
@@ -1389,6 +1937,92 @@
         "relation"
       ],
       "title": "RelativePositionParameters",
+      "type": "object"
+    },
+    "SampledPathSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "space": {
+          "default": "world",
+          "enum": [
+            "world",
+            "local",
+            "camera",
+            "target_relative"
+          ],
+          "title": "Space",
+          "type": "string"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
+        },
+        "closed": {
+          "default": false,
+          "title": "Closed",
+          "type": "boolean"
+        },
+        "cycle_count": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Cycle Count",
+          "type": "number"
+        },
+        "parameterization": {
+          "default": "normalized_time",
+          "enum": [
+            "normalized_time",
+            "arc_length"
+          ],
+          "title": "Parameterization",
+          "type": "string"
+        },
+        "orientation_mode": {
+          "const": "keep",
+          "default": "keep",
+          "title": "Orientation Mode",
+          "type": "string"
+        },
+        "representation": {
+          "const": "sampled",
+          "title": "Representation",
+          "type": "string"
+        },
+        "control_points": {
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "minItems": 2,
+          "title": "Control Points",
+          "type": "array"
+        }
+      },
+      "required": [
+        "representation",
+        "control_points"
+      ],
+      "title": "SampledPathSpec",
       "type": "object"
     },
     "ScreenRegionParameters": {
@@ -1620,13 +2254,44 @@
         "path": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PathSpec"
+              "discriminator": {
+                "mapping": {
+                  "catmull_rom": "#/$defs/CatmullRomPathSpec",
+                  "circle": "#/$defs/CirclePathSpec",
+                  "ellipse": "#/$defs/EllipsePathSpec",
+                  "lemniscate": "#/$defs/LemniscatePathSpec",
+                  "polyline": "#/$defs/PolylinePathSpec",
+                  "sampled": "#/$defs/SampledPathSpec"
+                },
+                "propertyName": "representation"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/PolylinePathSpec"
+                },
+                {
+                  "$ref": "#/$defs/SampledPathSpec"
+                },
+                {
+                  "$ref": "#/$defs/CatmullRomPathSpec"
+                },
+                {
+                  "$ref": "#/$defs/CirclePathSpec"
+                },
+                {
+                  "$ref": "#/$defs/EllipsePathSpec"
+                },
+                {
+                  "$ref": "#/$defs/LemniscatePathSpec"
+                }
+              ]
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "title": "Path"
         },
         "target_id": {
           "anyOf": [

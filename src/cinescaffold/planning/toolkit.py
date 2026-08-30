@@ -43,7 +43,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.10"
+TOOLKIT_VERSION = "0.11"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -203,6 +203,14 @@ class ScenePlanningToolkit:
                 ),
             },
             "supported_tracks": ["transform", "path_follow", "visibility", "look_at", "focal_length"],
+            "supported_path_representations": [
+                "polyline",
+                "sampled",
+                "circle",
+                "ellipse",
+                "catmull_rom",
+                "lemniscate",
+            ],
             "reference_frames": {
                 "world": "坐标直接位于规范世界空间",
                 "local": "坐标相对实体 parent_id；无父级时等同 world",
@@ -212,6 +220,10 @@ class ScenePlanningToolkit:
                 "cycle_count": "闭合路径在 Track 时间段内的循环次数，可为正小数",
                 "nested_orbit_readability": (
                     "嵌套 orbit_around 不得同相锁定；未指定周期时应让子轨道具有可辨识节奏"
+                ),
+                "trajectory_selection": (
+                    "普通 orbit_around 使用 circle/ellipse；S 形使用 catmull_rom；"
+                    "∞ 形使用 lemniscate；polyline 只用于明确折线路径"
                 ),
             },
             "inspect_views": INSPECT_VIEWS,
@@ -675,6 +687,12 @@ class ScenePlanningToolkit:
             violations.extend(_projection_violations(state, self.profile))
         if "motion" in checks:
             violations.extend(
+                _orbit_trajectory_violations(
+                    state,
+                    self.objective_brief,
+                )
+            )
+            violations.extend(
                 _motion_readability_violations(
                     state,
                     self.objective_brief,
@@ -988,14 +1006,7 @@ def _motion_readability_violations(
     profile: PlanningProfile,
 ) -> list[Violation]:
     """拒绝会把嵌套公转看成刚性编队的同相轨迹。"""
-    orbit_pairs: set[tuple[str, str]] = set()
-    for item in objective_brief.scene_design.get("relationships", []):
-        if not isinstance(item, dict) or item.get("type") != "orbit_around":
-            continue
-        subject_id = item.get("subject_id")
-        reference_id = item.get("reference_id")
-        if isinstance(subject_id, str) and isinstance(reference_id, str):
-            orbit_pairs.add((subject_id, reference_id))
+    orbit_pairs = _objective_orbit_pairs(objective_brief)
     path_tracks = {
         (track.target_entity_id, track.path.target_id): track
         for track in state.motion_tracks.values()
@@ -1061,6 +1072,96 @@ def _motion_readability_violations(
                     )
                 )
     return violations
+
+
+def _orbit_trajectory_violations(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+) -> list[Violation]:
+    """要求普通公转使用解析轨迹，明确的异形轨迹除外。"""
+    path_tracks = {
+        track.target_entity_id: track
+        for track in state.motion_tracks.values()
+        if track.type == "path_follow" and track.path is not None and track.target_entity_id
+    }
+    violations: list[Violation] = []
+    for subject_id, reference_id in sorted(_objective_orbit_pairs(objective_brief)):
+        track = path_tracks.get(subject_id)
+        if track is None:
+            violations.append(
+                _violation(
+                    "ORBIT_PATH_REQUIRED",
+                    f"orbit_around 必须使用 path_follow：{subject_id} -> {reference_id}",
+                    entity_ids=[subject_id, reference_id],
+                    expected={"track_type": "path_follow"},
+                    actual={"track_type": None},
+                    adjustable_variables=[f"motion_tracks.{subject_id}"],
+                )
+            )
+            continue
+        path = track.path
+        if path.space != "target_relative" or path.target_id != reference_id:
+            violations.append(
+                _violation(
+                    "ORBIT_REFERENCE_FRAME_INVALID",
+                    f"orbit_around 必须相对被环绕主体求值：{subject_id} -> {reference_id}",
+                    entity_ids=[subject_id, reference_id],
+                    expected={"space": "target_relative", "target_id": reference_id},
+                    actual={"space": path.space, "target_id": path.target_id},
+                    adjustable_variables=[f"motion_tracks.{track.track_id}.path"],
+                )
+            )
+        if (
+            path.representation not in {"circle", "ellipse"}
+            and not _has_explicit_custom_trajectory(objective_brief, subject_id)
+        ):
+            violations.append(
+                _violation(
+                    "ORBIT_TRAJECTORY_NOT_ANALYTIC",
+                    (
+                        f"普通 orbit_around 不得用 {path.representation} 近似："
+                        f"{subject_id} -> {reference_id}"
+                    ),
+                    entity_ids=[subject_id, reference_id],
+                    expected={"representation": ["circle", "ellipse"]},
+                    actual={"representation": path.representation},
+                    adjustable_variables=[f"motion_tracks.{track.track_id}.path"],
+                )
+            )
+    return violations
+
+
+def _objective_orbit_pairs(
+    objective_brief: ObjectivePlanningBrief,
+) -> set[tuple[str, str]]:
+    pairs: set[tuple[str, str]] = set()
+    for item in objective_brief.scene_design.get("relationships", []):
+        if not isinstance(item, dict) or item.get("type") != "orbit_around":
+            continue
+        subject_id = item.get("subject_id")
+        reference_id = item.get("reference_id")
+        if isinstance(subject_id, str) and isinstance(reference_id, str):
+            pairs.add((subject_id, reference_id))
+    return pairs
+
+
+def _has_explicit_custom_trajectory(
+    objective_brief: ObjectivePlanningBrief,
+    subject_id: str,
+) -> bool:
+    analytic_names = {"circle", "circular", "ellipse", "elliptical", "圆", "圆形", "椭圆"}
+    for motion in objective_brief.subject_motion:
+        if not isinstance(motion, dict) or motion.get("subject_id") != subject_id:
+            continue
+        trajectory = motion.get("trajectory")
+        if not isinstance(trajectory, dict) or trajectory.get("source_status") != "explicit":
+            continue
+        value = trajectory.get("value")
+        if value is None:
+            continue
+        normalized = str(value).strip().lower()
+        return not any(name in normalized for name in analytic_names)
+    return False
 
 
 def _nested_orbits_are_phase_locked(
