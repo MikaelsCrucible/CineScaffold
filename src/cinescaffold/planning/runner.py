@@ -49,6 +49,7 @@ class InterpreterRunConfig(BaseModel):
     provider: str = "mock"
     model: str | None = None
     base_url: str | None = None
+    api_key: str | None = Field(default=None, exclude=True)
     system_prompt_path: Path = Path("prompts/scene_planner/system.md")
     run_dir: Path
     resume_from: Path | None = None
@@ -188,7 +189,7 @@ class InterpreterRunner:
                     resolution=resolution.model_dump(mode="json"),
                 )
             _write_json(run_dir / "objective_planning_brief.json", projection.model_dump(mode="json"))
-            api_key = _provider_api_key(self.config.provider)
+            api_key = _provider_api_key(self.config.provider, self.config.api_key)
             raw_model = create_planning_model(
                 self.config.provider,
                 self.config.model,
@@ -501,7 +502,9 @@ def _write_json(path: Path, value: Any) -> None:
     )
 
 
-def _provider_api_key(provider: str) -> str | None:
+def _provider_api_key(provider: str, configured: str | None = None) -> str | None:
+    if configured:
+        return configured
     if provider == "openai":
         return os.environ.get("OPENAI_API_KEY")
     if provider == "deepseek":

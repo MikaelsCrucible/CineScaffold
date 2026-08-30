@@ -332,6 +332,42 @@ def print_parse_summary(brief: dict[str, Any], output_path: Path | None, *, stre
             print("下一步    先在 Semantic Parser 阶段解析并确认正数时长", file=stream)
 
 
+def print_pipeline_summary(summary: dict[str, Any], *, stream: TextIO | None = None) -> None:
+    output = stream or sys.stdout
+    stages = summary.get("stages", {})
+    planning = stages.get("planning") or {}
+    execution = stages.get("execution") or {}
+    tokens = planning.get("usage", {}).get("tokens", {})
+    render = execution.get("render") or {}
+    print("\nCineScaffold 一键管线结果", file=output)
+    print("=" * 34, file=output)
+    print(f"状态      {_status_label(str(summary.get('status')))}", file=output)
+    print(f"起点      {_start_label(summary.get('started_from'))}", file=output)
+    print(f"总耗时    {_seconds(summary.get('elapsed_seconds'))}", file=output)
+    if planning:
+        print(
+            f"规划      {_status_label(str(planning.get('status')))} · "
+            f"{tokens.get('requests', 0)} requests · {tokens.get('tool_calls', 0)} tools",
+            file=output,
+        )
+        print(
+            f"Tokens    输入 {_integer(tokens.get('input_tokens'))} · "
+            f"输出 {_integer(tokens.get('output_tokens'))}",
+            file=output,
+        )
+    if execution:
+        print(
+            f"执行      {_status_label(str(execution.get('status')))} · "
+            f"{_seconds(execution.get('elapsed_seconds'))}",
+            file=output,
+        )
+    if render.get("artifact"):
+        print(f"打开视频  {render['artifact']}", file=output)
+    print(f"输出目录  {summary.get('output_dir', '?')}", file=output)
+    if summary.get("error"):
+        print(f"错误      {summary['error']}", file=output)
+
+
 def _format_elapsed(seconds: float) -> str:
     minutes, remainder = divmod(max(0, int(seconds)), 60)
     return f"{minutes:02d}:{remainder:02d}"
@@ -379,6 +415,8 @@ def _status_label(status: str) -> str:
         "execution_failed": "构建失败",
         "runtime_mismatch": "Runtime 不一致",
         "render_failed": "渲染失败",
+        "planning_failed": "规划失败",
+        "running": "运行中",
     }.get(status, status)
 
 
@@ -388,6 +426,14 @@ def _terminal_label(value: Any) -> str:
         "unsupported": "能力缺口",
         "infeasible": "不可行结论",
     }.get(str(value), str(value or "未知结论"))
+
+
+def _start_label(value: Any) -> str:
+    return {
+        "text": "自然语言",
+        "brief": "Cinematic Brief",
+        "scene_ir": "Scene IR",
+    }.get(str(value), str(value or "未知"))
 
 
 def _color_code(color: str) -> str:

@@ -6,12 +6,77 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from cinescaffold.cli import main
+from cinescaffold.execution.runner import ExecutionResult
 from tests.helpers import ROOT, valid_planning_brief
 
 
+class _PipelineExecutionRunner:
+    def __init__(self, config, *, progress_callback=None) -> None:
+        self.config = config
+        self.progress_callback = progress_callback
+
+    async def run(self, payload):
+        self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        video = self.config.output_dir / "diagnostic_preview.mp4"
+        video.write_bytes(b"fake-video")
+        if self.progress_callback:
+            self.progress_callback(
+                "execution_finished",
+                {"status": "success", "elapsed_seconds": 0.01},
+            )
+        return ExecutionResult(
+            status="success",
+            scene_ir_hash="sha256:test",
+            build={"status": "ok", "blender_version": "test", "violation_count": 0},
+            render={
+                "status": "ok",
+                "artifact": str(video),
+                "rendered_frame_count": 72,
+                "resolution_x": 640,
+                "resolution_y": 360,
+                "fps": 12,
+            },
+            artifacts={"diagnostic_preview": video.name},
+            elapsed_seconds=0.01,
+        )
+
+
 class CliTest(unittest.TestCase):
+    def test_parse_uses_simple_config_without_exposing_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / ".cinescaffold.conf"
+            output = root / "brief.json"
+            config_path.write_text(
+                "provider = mock\nmodel = local-model\napi_key = must-not-appear\n",
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                status = main(
+                    [
+                        "parse",
+                        "--config",
+                        str(config_path),
+                        "--text",
+                        "测试描述",
+                        "--output",
+                        str(output),
+                        "--no-color",
+                    ]
+                )
+            result = json.loads(output.read_text(encoding="utf-8"))
+
+        rendered = stdout.getvalue() + stderr.getvalue() + str(result)
+        self.assertEqual(status, 0)
+        self.assertEqual(result["provenance"]["provider"], "mock")
+        self.assertIn("已读取", stderr.getvalue())
+        self.assertNotIn("must-not-appear", rendered)
+
     def test_mock_parse_writes_brief(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "brief.json"
@@ -139,6 +204,117 @@ class CliTest(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(result["status"], "success")
         self.assertEqual(stderr.getvalue(), "")
+
+    def test_run_from_text_completes_all_three_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mock_response = root / "mock_response.json"
+            mock_response.write_text(
+                json.dumps(valid_planning_brief()["content"], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with patch("cinescaffold.cli.ExecutionRunner", _PipelineExecutionRunner):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    status = main(
+                        [
+                            "run",
+                            "--text",
+                            "测试描述",
+                            "--provider",
+                            "mock",
+                            "--mock-response",
+                            str(mock_response),
+                            "--output-dir",
+                            str(root / "run"),
+                            "--json",
+                            "--quiet",
+                        ]
+                    )
+            result = json.loads(stdout.getvalue())
+
+        self.assertEqual(status, 0)
+        self.assertEqual(result["status"], "success")
+        self.assertIn("semantic", result["stages"])
+        self.assertIn("planning", result["stages"])
+        self.assertIn("execution", result["stages"])
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_run_from_brief_skips_semantic_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            brief_path = root / "brief.json"
+            brief_path.write_text(
+                json.dumps(valid_planning_brief(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            with patch("cinescaffold.cli.ExecutionRunner", _PipelineExecutionRunner):
+                with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                    status = main(
+                        [
+                            "run",
+                            "--brief",
+                            str(brief_path),
+                            "--provider",
+                            "mock",
+                            "--output-dir",
+                            str(root / "run"),
+                            "--json",
+                            "--quiet",
+                        ]
+                    )
+            result = json.loads(stdout.getvalue())
+
+        self.assertEqual(status, 0)
+        self.assertNotIn("semantic", result["stages"])
+        self.assertIn("planning", result["stages"])
+        self.assertIn("execution", result["stages"])
+
+    def test_run_from_ir_skips_llm_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            brief_path = root / "brief.json"
+            planning_dir = root / "planning-source"
+            brief_path.write_text(
+                json.dumps(valid_planning_brief(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                plan_status = main(
+                    [
+                        "plan",
+                        "--brief",
+                        str(brief_path),
+                        "--provider",
+                        "mock",
+                        "--output-dir",
+                        str(planning_dir),
+                        "--quiet",
+                    ]
+                )
+            stdout = io.StringIO()
+            with patch("cinescaffold.cli.ExecutionRunner", _PipelineExecutionRunner):
+                with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                    status = main(
+                        [
+                            "run",
+                            "--ir",
+                            str(planning_dir / "final_scene_ir.json"),
+                            "--output-dir",
+                            str(root / "run"),
+                            "--json",
+                            "--quiet",
+                        ]
+                    )
+            result = json.loads(stdout.getvalue())
+
+        self.assertEqual(plan_status, 0)
+        self.assertEqual(status, 0)
+        self.assertNotIn("semantic", result["stages"])
+        self.assertNotIn("planning", result["stages"])
+        self.assertIn("execution", result["stages"])
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,15 @@ from cinescaffold.cli_ui import (
     TerminalReporter,
     print_execution_summary,
     print_parse_summary,
+    print_pipeline_summary,
     print_planning_summary,
+)
+from cinescaffold.config import (
+    LoadedConfig,
+    ModelSettings,
+    load_config,
+    resolve_model_settings,
+    resolve_stage_option,
 )
 from cinescaffold.errors import CineScaffoldError, ConfigurationError
 from cinescaffold.execution.runner import ExecutionConfig, ExecutionRunner
@@ -28,12 +37,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        loaded_config = load_config(getattr(args, "config", None))
+        _apply_config(args, loaded_config)
         if args.command == "parse":
             return _run_parse(args)
         if args.command == "plan":
             return _run_plan(args)
         if args.command == "execute":
             return _run_execute(args)
+        if args.command == "run":
+            return _run_pipeline(args)
         parser.print_help()
         return 2
     except (CineScaffoldError, OSError, ValueError, json.JSONDecodeError) as error:
@@ -50,7 +63,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "  cinescaffold parse --provider mock --text \"...\" --output brief.json\n"
             "  cinescaffold plan --provider mock --brief brief.json --output-dir planning\n"
             "  cinescaffold execute --scene-ir planning/final_scene_ir.json "
-            "--output-dir execution\n\n"
+            "--output-dir execution\n"
+            "  cinescaffold run --brief brief.json --output-dir complete-run\n\n"
             "默认显示适合人工阅读的进度和摘要；自动化脚本请使用 --json --quiet。"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -63,32 +77,9 @@ def _build_parser() -> argparse.ArgumentParser:
     source.add_argument("--text", help="直接提供自然语言")
     source.add_argument("--input", type=Path, help="从 UTF-8 文本文件读取自然语言")
 
-    parse_parser.add_argument(
-        "--provider",
-        choices=("mock", "openai", "deepseek"),
-        default="mock",
-    )
-    parse_parser.add_argument("--model", help="真实 Provider 的模型名称")
-    parse_parser.add_argument("--base-url", help="覆盖 Provider 官方基础地址")
-    parse_parser.add_argument("--timeout", type=float, default=60.0)
-    parse_parser.add_argument("--max-tokens", type=int, default=8192)
-    parse_parser.add_argument("--rules", type=Path, default=Path("prompts/semantic_parser/rules.md"))
-    parse_parser.add_argument(
-        "--system-template",
-        type=Path,
-        default=Path("prompts/semantic_parser/system.md"),
-    )
-    parse_parser.add_argument(
-        "--format-example",
-        type=Path,
-        default=Path("prompts/semantic_parser/format_example.json"),
-    )
-    parse_parser.add_argument(
-        "--schema",
-        type=Path,
-        default=Path("schemas/cinematic_brief_model_output.schema.json"),
-    )
-    parse_parser.add_argument("--mock-response", type=Path)
+    _add_config_argument(parse_parser)
+    _add_model_arguments(parse_parser)
+    _add_semantic_arguments(parse_parser)
     parse_parser.add_argument("--output", type=Path)
     _add_display_arguments(parse_parser)
 
@@ -98,65 +89,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     plan_parser.add_argument("--brief", type=Path, required=True)
     plan_parser.add_argument("--output-dir", type=Path, required=True)
-    plan_parser.add_argument(
-        "--resume-from",
-        type=Path,
-        help="从先前运行的 checkpoint_latest.json 恢复 Candidate",
-    )
-    plan_parser.add_argument(
-        "--provider",
-        choices=("mock", "openai", "deepseek"),
-        default="mock",
-    )
-    plan_parser.add_argument("--model", help="真实 Provider 的模型名称")
-    plan_parser.add_argument("--base-url", help="覆盖 Provider 官方基础地址")
-    plan_parser.add_argument(
-        "--system-prompt",
-        type=Path,
-        default=Path("prompts/scene_planner/system.md"),
-    )
-    plan_parser.add_argument("--run-id")
-    plan_parser.add_argument("--max-requests", type=int, default=24)
-    plan_parser.add_argument("--max-tool-calls", type=int, default=40)
-    plan_parser.add_argument(
-        "--max-input-tokens",
-        type=int,
-        default=None,
-        help="累计输入 token 上限；包含每次请求重复发送及缓存命中的上下文",
-    )
-    plan_parser.add_argument(
-        "--max-context-tokens",
-        type=int,
-        default=32_000,
-        help="单次模型请求的上下文 token 上限",
-    )
-    plan_parser.add_argument("--max-output-tokens", type=int, default=30_000)
-    plan_parser.add_argument("--max-total-tokens", type=int, default=None)
-    plan_parser.add_argument("--max-seconds", type=float, default=300.0)
-    plan_parser.add_argument("--max-commit-attempts", type=int, default=3)
-    plan_parser.add_argument(
-        "--thinking-mode",
-        choices=("enabled", "disabled"),
-        help="显式设置 DeepSeek 思考模式",
-    )
-    plan_parser.add_argument(
-        "--reasoning-effort",
-        choices=("low", "high", "max"),
-        help="固定模型推理强度",
-    )
-    plan_parser.add_argument(
-        "--model-max-tokens",
-        type=int,
-        help="限制单次模型响应 token 数",
-    )
-    plan_parser.add_argument("--trace-max-event-bytes", type=int, default=32_768)
-    plan_parser.add_argument("--trace-max-string-chars", type=int, default=4_096)
-    plan_parser.add_argument("--input-cost-per-million")
-    plan_parser.add_argument("--output-cost-per-million")
-    plan_parser.add_argument("--cache-read-cost-per-million")
-    plan_parser.add_argument("--cache-write-cost-per-million")
-    plan_parser.add_argument("--cost-currency", default="USD")
-    plan_parser.add_argument("--price-source", default="user_supplied")
+    _add_config_argument(plan_parser)
+    _add_model_arguments(plan_parser)
+    _add_planning_arguments(plan_parser)
     _add_display_arguments(plan_parser)
 
     execute_parser = subparsers.add_parser(
@@ -165,32 +100,136 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     execute_parser.add_argument("--scene-ir", type=Path, required=True)
     execute_parser.add_argument("--output-dir", type=Path, required=True)
-    execute_parser.add_argument(
-        "--blender-path",
-        type=Path,
-        default=Path("/opt/homebrew/bin/blender"),
+    _add_config_argument(execute_parser)
+    _add_execution_arguments(execute_parser)
+    _add_display_arguments(execute_parser)
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="从自然语言、Cinematic Brief 或 Scene IR 一键运行到白模视频",
     )
-    execute_parser.add_argument(
+    run_source = run_parser.add_mutually_exclusive_group(required=True)
+    run_source.add_argument("--text", help="从自然语言开始完整运行")
+    run_source.add_argument("--brief", type=Path, help="从 Cinematic Brief 开始运行")
+    run_source.add_argument("--scene-ir", "--ir", dest="scene_ir", type=Path, help="从 Scene IR 开始运行")
+    run_parser.add_argument("--output-dir", type=Path, required=True)
+    _add_config_argument(run_parser)
+    _add_model_arguments(run_parser)
+    _add_semantic_arguments(run_parser)
+    _add_planning_arguments(run_parser)
+    _add_execution_arguments(run_parser)
+    _add_display_arguments(run_parser)
+    return parser
+
+
+def _add_config_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="配置文件路径；缺省时自动读取当前目录 .cinescaffold.conf",
+    )
+
+
+def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--provider", choices=("mock", "openai", "deepseek"))
+    parser.add_argument("--model", help="覆盖配置文件中的模型名称")
+    parser.add_argument("--base-url", help="覆盖 Provider 基础地址")
+
+
+def _add_semantic_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--max-tokens", type=int, default=8192)
+    parser.add_argument("--rules", type=Path, default=Path("prompts/semantic_parser/rules.md"))
+    parser.add_argument(
+        "--system-template",
+        type=Path,
+        default=Path("prompts/semantic_parser/system.md"),
+    )
+    parser.add_argument(
+        "--format-example",
+        type=Path,
+        default=Path("prompts/semantic_parser/format_example.json"),
+    )
+    parser.add_argument(
+        "--schema",
+        type=Path,
+        default=Path("schemas/cinematic_brief_model_output.schema.json"),
+    )
+    parser.add_argument("--mock-response", type=Path)
+
+
+def _add_planning_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--system-prompt",
+        type=Path,
+        default=Path("prompts/scene_planner/system.md"),
+    )
+    parser.add_argument(
+        "--resume-from",
+        type=Path,
+        help="从先前运行的 checkpoint_latest.json 恢复 Candidate",
+    )
+    parser.add_argument("--run-id")
+    parser.add_argument("--max-requests", type=int, default=24)
+    parser.add_argument("--max-tool-calls", type=int, default=40)
+    parser.add_argument(
+        "--max-input-tokens",
+        type=int,
+        default=None,
+        help="累计输入 token 上限；包含每次请求重复发送及缓存命中的上下文",
+    )
+    parser.add_argument(
+        "--max-context-tokens",
+        type=int,
+        default=32_000,
+        help="单次模型请求的上下文 token 上限",
+    )
+    parser.add_argument("--max-output-tokens", type=int, default=30_000)
+    parser.add_argument("--max-total-tokens", type=int, default=None)
+    parser.add_argument("--max-seconds", type=float, default=300.0)
+    parser.add_argument("--max-commit-attempts", type=int, default=3)
+    parser.add_argument(
+        "--thinking-mode",
+        choices=("enabled", "disabled"),
+        help="显式设置 DeepSeek 思考模式",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=("low", "high", "max"),
+        help="固定模型推理强度",
+    )
+    parser.add_argument("--model-max-tokens", type=int, help="限制单次模型响应 token 数")
+    parser.add_argument("--trace-max-event-bytes", type=int, default=32_768)
+    parser.add_argument("--trace-max-string-chars", type=int, default=4_096)
+    parser.add_argument("--input-cost-per-million")
+    parser.add_argument("--output-cost-per-million")
+    parser.add_argument("--cache-read-cost-per-million")
+    parser.add_argument("--cache-write-cost-per-million")
+    parser.add_argument("--cost-currency", default="USD")
+    parser.add_argument("--price-source", default="user_supplied")
+
+
+def _add_execution_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--blender-path", type=Path, default=Path("/opt/homebrew/bin/blender"))
+    parser.add_argument(
         "--mcp-command",
         type=Path,
         default=Path.home() / ".local/bin/blender-mcp",
     )
-    execute_parser.add_argument("--overwrite", action="store_true")
-    execute_parser.add_argument(
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
         "--render-backend",
         choices=("background", "mcp"),
         default="background",
         help="默认用无 MCP 调用时限的后台 Blender 渲染；构建仍经官方 MCP",
     )
-    execute_parser.add_argument(
+    parser.add_argument(
         "--render-profile",
         choices=("preview", "control"),
         default="preview",
         help="preview 为半分辨率/半采样率诊断视频；control 保持 Scene IR 正式设置",
     )
-    execute_parser.add_argument("--render-timeout-seconds", type=float, default=600.0)
-    _add_display_arguments(execute_parser)
-    return parser
+    parser.add_argument("--render-timeout-seconds", type=float, default=600.0)
 
 
 def _add_display_arguments(parser: argparse.ArgumentParser) -> None:
@@ -199,13 +238,104 @@ def _add_display_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-color", action="store_true", help="关闭 ANSI 颜色")
 
 
+def _apply_config(args: argparse.Namespace, config: LoadedConfig) -> None:
+    args.loaded_config = config
+    if args.command == "parse":
+        settings = resolve_model_settings(
+            config,
+            "semantic",
+            cli_provider=args.provider,
+            cli_model=args.model,
+            cli_base_url=args.base_url,
+        )
+        _assign_model_settings(args, settings)
+    elif args.command == "plan":
+        settings = resolve_model_settings(
+            config,
+            "planning",
+            cli_provider=args.provider,
+            cli_model=args.model,
+            cli_base_url=args.base_url,
+        )
+        _assign_model_settings(args, settings)
+        _apply_planning_config(args, config)
+    elif args.command == "run":
+        args.semantic_settings = resolve_model_settings(
+            config,
+            "semantic",
+            cli_provider=args.provider,
+            cli_model=args.model,
+            cli_base_url=args.base_url,
+        )
+        args.planning_settings = resolve_model_settings(
+            config,
+            "planning",
+            cli_provider=args.provider,
+            cli_model=args.model,
+            cli_base_url=args.base_url,
+        )
+        _apply_planning_config(args, config)
+
+
+def _assign_model_settings(args: argparse.Namespace, settings: ModelSettings) -> None:
+    args.provider = settings.provider
+    args.model = settings.model
+    args.base_url = settings.base_url
+    args.api_key = settings.api_key
+
+
+def _apply_planning_config(args: argparse.Namespace, config: LoadedConfig) -> None:
+    args.thinking_mode = resolve_stage_option(
+        config,
+        "planning",
+        "thinking_mode",
+        args.thinking_mode,
+    )
+    args.reasoning_effort = resolve_stage_option(
+        config,
+        "planning",
+        "reasoning_effort",
+        args.reasoning_effort,
+    )
+    args.model_max_tokens = resolve_stage_option(
+        config,
+        "planning",
+        "model_max_tokens",
+        args.model_max_tokens,
+    )
+
+
 def _reporter(args: argparse.Namespace) -> TerminalReporter:
-    return TerminalReporter(quiet=args.quiet, color=not args.no_color)
+    reporter = TerminalReporter(quiet=args.quiet, color=not args.no_color)
+    config = getattr(args, "loaded_config", None)
+    if config is not None and config.path is not None:
+        reporter.success("配置", f"已读取 {config.path}")
+    return reporter
 
 
 def _run_parse(args: argparse.Namespace) -> int:
     reporter = _reporter(args)
     description = args.text if args.text is not None else args.input.read_text(encoding="utf-8")
+    brief = _parse_description(args, reporter, description, args.output)
+    rendered = json.dumps(brief, ensure_ascii=False, indent=2) + "\n"
+    if args.output:
+        if args.json:
+            print(rendered, end="")
+        else:
+            print_parse_summary(brief, args.output, stream=sys.stdout)
+    else:
+        print(rendered, end="")
+        if not args.json:
+            print_parse_summary(brief, None, stream=sys.stderr)
+    return 0
+
+
+def _parse_description(
+    args: argparse.Namespace,
+    reporter: TerminalReporter,
+    description: str,
+    output_path: Path | None,
+) -> dict[str, Any]:
     provider = _create_provider(args)
     reporter.stage(
         "自然语言解析",
@@ -219,20 +349,14 @@ def _run_parse(args: argparse.Namespace) -> int:
     )
     brief = parse_cinematic_brief(description, provider, config)
     reporter.success("结构化校验", "Cinematic Brief 已通过关闭 Schema 校验")
-    rendered = json.dumps(brief, ensure_ascii=False, indent=2) + "\n"
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered, encoding="utf-8")
-        reporter.success("保存结果", str(args.output.resolve()))
-        if args.json:
-            print(rendered, end="")
-        else:
-            print_parse_summary(brief, args.output, stream=sys.stdout)
-    else:
-        print(rendered, end="")
-        if not args.json:
-            print_parse_summary(brief, None, stream=sys.stderr)
-    return 0
+    if output_path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(brief, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        reporter.success("保存结果", str(output_path.resolve()))
+    return brief
 
 
 def _create_provider(args: argparse.Namespace) -> Any:
@@ -246,14 +370,14 @@ def _create_provider(args: argparse.Namespace) -> Any:
 
     if args.provider == "openai":
         return OpenAIProvider(
-            api_key=os.environ.get("OPENAI_API_KEY", ""),
+            api_key=args.api_key or os.environ.get("OPENAI_API_KEY", ""),
             model=args.model,
             base_url=args.base_url or "https://api.openai.com/v1",
             timeout=args.timeout,
         )
 
     return DeepSeekProvider(
-        api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+        api_key=args.api_key or os.environ.get("DEEPSEEK_API_KEY", ""),
         model=args.model,
         base_url=args.base_url or "https://api.deepseek.com",
         timeout=args.timeout,
@@ -266,12 +390,27 @@ def _run_plan(args: argparse.Namespace) -> int:
     brief = json.loads(args.brief.read_text(encoding="utf-8"))
     if not isinstance(brief, dict):
         raise ValueError("Cinematic Brief 根节点必须是对象")
+    result = _plan_brief(args, reporter, brief, args.output_dir)
+    if args.json:
+        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    else:
+        print_planning_summary(result, args.output_dir)
+    return 0 if result.status == "success" else 1
+
+
+def _plan_brief(
+    args: argparse.Namespace,
+    reporter: TerminalReporter,
+    brief: dict[str, Any],
+    output_dir: Path,
+) -> Any:
     config = InterpreterRunConfig(
         provider=args.provider,
         model=args.model,
         base_url=args.base_url,
+        api_key=args.api_key,
         system_prompt_path=args.system_prompt,
-        run_dir=args.output_dir,
+        run_dir=output_dir,
         resume_from=args.resume_from,
         run_id=args.run_id,
         max_requests=args.max_requests,
@@ -294,11 +433,7 @@ def _run_plan(args: argparse.Namespace) -> int:
     result = asyncio.run(
         InterpreterRunner(config, progress_callback=reporter.event).run(brief)
     )
-    if args.json:
-        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
-    else:
-        print_planning_summary(result, args.output_dir)
-    return 0 if result.status == "success" else 1
+    return result
 
 
 def _run_execute(args: argparse.Namespace) -> int:
@@ -306,8 +441,22 @@ def _run_execute(args: argparse.Namespace) -> int:
     payload = json.loads(args.scene_ir.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Scene IR 根节点必须是对象")
+    result = _execute_scene_ir(args, reporter, payload, args.output_dir)
+    if args.json:
+        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    else:
+        print_execution_summary(result)
+    return 0 if result.status == "success" else 1
+
+
+def _execute_scene_ir(
+    args: argparse.Namespace,
+    reporter: TerminalReporter,
+    payload: dict[str, Any],
+    output_dir: Path,
+) -> Any:
     config = ExecutionConfig(
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         blender_path=args.blender_path,
         mcp_command=args.mcp_command,
         overwrite=args.overwrite,
@@ -318,11 +467,124 @@ def _run_execute(args: argparse.Namespace) -> int:
     result = asyncio.run(
         ExecutionRunner(config, progress_callback=reporter.event).run(payload)
     )
-    if args.json:
-        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    return result
+
+
+def _run_pipeline(args: argparse.Namespace) -> int:
+    reporter = _reporter(args)
+    started = time.monotonic()
+    output_dir = args.output_dir.resolve()
+    summary_path = output_dir / "pipeline_summary.json"
+    if summary_path.exists() and not args.overwrite:
+        raise ValueError(f"一键运行记录已存在；请换输出目录或显式使用 --overwrite：{summary_path}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    started_from = "text" if args.text is not None else "brief" if args.brief else "scene_ir"
+    reporter.stage("一键管线", f"从 {started_from} 开始，目标是生成白模视频")
+    summary: dict[str, Any] = {
+        "schema_version": "0.1",
+        "status": "running",
+        "started_from": started_from,
+        "output_dir": str(output_dir),
+        "elapsed_seconds": 0.0,
+        "stages": {},
+        "artifacts": {},
+        "error": None,
+    }
+
+    brief: dict[str, Any] | None = None
+    scene_ir_payload: dict[str, Any] | None = None
+    if args.text is not None:
+        semantic_args = _stage_args(args, args.semantic_settings)
+        brief_path = output_dir / "cinematic_brief.json"
+        brief = _parse_description(semantic_args, reporter, args.text, brief_path)
+        summary["stages"]["semantic"] = {
+            "status": "success",
+            "provider": semantic_args.provider,
+            "model": semantic_args.model or "mock-cinematic-brief-v0.1",
+        }
+        summary["artifacts"]["cinematic_brief"] = str(brief_path)
+    elif args.brief is not None:
+        brief = _read_json_object(args.brief, "Cinematic Brief")
+        summary["artifacts"]["cinematic_brief"] = str(args.brief.resolve())
+        reporter.success("输入就绪", f"已读取 Cinematic Brief：{args.brief.resolve()}")
     else:
-        print_execution_summary(result)
-    return 0 if result.status == "success" else 1
+        scene_ir_payload = _read_json_object(args.scene_ir, "Scene IR")
+        summary["artifacts"]["scene_ir"] = str(args.scene_ir.resolve())
+        reporter.success("输入就绪", f"已读取 Scene IR：{args.scene_ir.resolve()}")
+
+    if brief is not None:
+        reporter.stage("场景规划", "将 Cinematic Brief 转换为可提交 Scene IR")
+        planning_args = _stage_args(args, args.planning_settings)
+        planning_dir = output_dir / "planning"
+        planning_result = _plan_brief(planning_args, reporter, brief, planning_dir)
+        planning_payload = planning_result.model_dump(mode="json")
+        summary["stages"]["planning"] = planning_payload
+        if planning_result.status != "success":
+            summary["status"] = "planning_failed"
+            summary["error"] = _planning_error(planning_result.error)
+            return _finish_pipeline(args, reporter, summary, summary_path, started)
+        scene_ir_name = planning_result.artifacts.get("scene_ir")
+        if not scene_ir_name:
+            raise ValueError("规划成功但没有生成 final_scene_ir.json")
+        scene_ir_path = planning_dir / scene_ir_name
+        scene_ir_payload = _read_json_object(scene_ir_path, "Scene IR")
+        summary["artifacts"]["scene_ir"] = str(scene_ir_path)
+
+    if scene_ir_payload is None:
+        raise ValueError("一键管线没有获得可执行 Scene IR")
+    reporter.stage("Blender 执行", "构建场景、运行验证并渲染白模视频")
+    execution_dir = output_dir / "execution"
+    execution_result = _execute_scene_ir(args, reporter, scene_ir_payload, execution_dir)
+    execution_payload = execution_result.model_dump(mode="json")
+    summary["stages"]["execution"] = execution_payload
+    summary["status"] = execution_result.status
+    summary["error"] = execution_result.error
+    if execution_result.render and execution_result.render.get("artifact"):
+        summary["artifacts"]["video"] = execution_result.render["artifact"]
+    return _finish_pipeline(args, reporter, summary, summary_path, started)
+
+
+def _stage_args(args: argparse.Namespace, settings: ModelSettings) -> argparse.Namespace:
+    stage_args = argparse.Namespace(**vars(args))
+    _assign_model_settings(stage_args, settings)
+    return stage_args
+
+
+def _read_json_object(path: Path, label: str) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} 根节点必须是对象")
+    return value
+
+
+def _planning_error(error: dict[str, str] | None) -> str:
+    if not error:
+        return "场景规划未成功提交 Scene IR"
+    return error.get("message", str(error))
+
+
+def _finish_pipeline(
+    args: argparse.Namespace,
+    reporter: TerminalReporter,
+    summary: dict[str, Any],
+    summary_path: Path,
+    started: float,
+) -> int:
+    summary["elapsed_seconds"] = round(time.monotonic() - started, 6)
+    summary["artifacts"]["pipeline_summary"] = str(summary_path)
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    if summary["status"] == "success":
+        reporter.success("一键管线", f"全部完成；记录已写入 {summary_path}")
+    else:
+        reporter.warning("一键管线", f"在状态 {summary['status']} 停止")
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print_pipeline_summary(summary)
+    return 0 if summary["status"] == "success" else 1
 
 
 def _cost_rates(args: argparse.Namespace) -> CostRates | None:

@@ -9,6 +9,8 @@
 .env
 .env.*
 !.env.example
+.cinescaffold.conf
+cinescaffold.local.conf
 
 # Python
 __pycache__/
