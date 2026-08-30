@@ -726,6 +726,9 @@
           },
           "title": "Tags",
           "type": "array"
+        },
+        "ground_interaction": {
+          "$ref": "#/$defs/GroundInteractionSpec"
         }
       },
       "required": [
@@ -832,6 +835,92 @@
         "seconds"
       ],
       "title": "ExactDurationRequest",
+      "type": "object"
+    },
+    "GroundInteractionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "default": "must_be_above",
+          "enum": [
+            "must_be_above",
+            "must_touch",
+            "may_intersect",
+            "embedded",
+            "unconstrained"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "ground_entity_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ground Entity Id"
+        },
+        "tolerance_m": {
+          "default": 0.001,
+          "minimum": 0,
+          "title": "Tolerance M",
+          "type": "number"
+        },
+        "minimum_penetration_m": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum Penetration M"
+        },
+        "maximum_penetration_m": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Penetration M"
+        },
+        "source_status": {
+          "default": "default",
+          "enum": [
+            "explicit",
+            "inferred",
+            "default",
+            "agent_selected"
+          ],
+          "title": "Source Status",
+          "type": "string"
+        },
+        "source_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Ref"
+        }
+      },
+      "title": "GroundInteractionSpec",
       "type": "object"
     },
     "IRTimeline": {

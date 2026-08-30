@@ -321,6 +321,76 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             {item["code"] for item in validation["violations"]},
         )
 
+    def test_explicit_embedded_entity_may_cross_ground_without_being_cut(self) -> None:
+        toolkit = _toolkit()
+        ground = _ground_entity()
+        ship = _ship_entity() | {
+            "ground_interaction": {
+                "mode": "embedded",
+                "ground_entity_id": "desert_ground",
+                "minimum_penetration_m": 4.0,
+                "maximum_penetration_m": 6.0,
+                "source_status": "explicit",
+                "source_ref": "content.scene_design.relationships[0]",
+            },
+            "solved_transform": {
+                "translation_m": [0.0, 20.0, 2.5],
+                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+            },
+        }
+        toolkit.apply_entity_patch([ground, ship], [])
+
+        validation = toolkit.validate_candidate(checks=["transforms"])
+
+        self.assertNotIn(
+            "ENTITY_INTERSECTS_GROUND",
+            {item["code"] for item in validation["violations"]},
+        )
+        self.assertNotIn(
+            "ENTITY_EMBEDDING_RANGE_VIOLATED",
+            {item["code"] for item in validation["violations"]},
+        )
+        stored = toolkit.store.get().entities["ship_01"]
+        self.assertEqual(stored.proxy.size_xyz_m, (80.0, 30.0, 15.0))
+
+    def test_agent_selected_ground_exception_is_rejected(self) -> None:
+        toolkit = _toolkit()
+        ship = _ship_entity() | {
+            "ground_interaction": {
+                "mode": "may_intersect",
+                "maximum_penetration_m": 5.0,
+                "source_status": "agent_selected",
+            }
+        }
+
+        result = toolkit.apply_entity_patch([_ground_entity(), ship], [])
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("只能来自 Brief 的明确地面交互要求", result["warnings"][0])
+
+    def test_must_touch_rejects_floating_entity(self) -> None:
+        toolkit = _toolkit()
+        man = _man_entity() | {
+            "ground_interaction": {
+                "mode": "must_touch",
+                "source_status": "agent_selected",
+            },
+            "solved_transform": {
+                "translation_m": [0.0, 0.0, 2.0],
+                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+            },
+        }
+        toolkit.apply_entity_patch([_ground_entity(), man], [])
+
+        validation = toolkit.validate_candidate(checks=["transforms"])
+
+        self.assertIn(
+            "ENTITY_GROUND_CONTACT_VIOLATED",
+            {item["code"] for item in validation["violations"]},
+        )
+
     def test_camera_subject_is_not_reported_as_missing_entity(self) -> None:
         toolkit = _toolkit()
         toolkit.apply_camera_patch(
@@ -507,6 +577,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(scene_ir.lighting.rig_id, "neutral_camera_rig_v0.1")
         self.assertFalse(scene_ir.lighting.cast_shadows)
         self.assertEqual(scene_ir.lighting.lights, [])
+        self.assertEqual(scene_ir.entities[0].ground_interaction.mode, "must_be_above")
 
     def test_unmapped_explicit_requirement_blocks_commit(self) -> None:
         toolkit = _toolkit()
@@ -837,6 +908,24 @@ def _ship_entity() -> dict:
         "locked_fields": [],
         "source_refs": ["content.subjects[1].category"],
         "solved_transform": {},
+    }
+
+
+def _ground_entity() -> dict:
+    return {
+        "entity_id": "desert_ground",
+        "label": "荒漠地面",
+        "role": "environment",
+        "proxy": {"type": "plane", "size_xy_m": [400.0, 400.0]},
+        "parent_id": None,
+        "tags": ["environment", "ground"],
+        "locked_fields": [],
+        "source_refs": [],
+        "solved_transform": {
+            "translation_m": [0.0, 0.0, 0.0],
+            "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+        },
     }
 
 

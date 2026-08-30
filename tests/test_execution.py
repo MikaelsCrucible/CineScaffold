@@ -90,9 +90,11 @@ class ExecutionTest(unittest.TestCase):
     def test_execution_validation_accepts_committed_ir(self) -> None:
         validate_scene_ir_for_execution(self.scene_ir)
 
-    def test_runner_upgrades_legacy_frozen_timeline(self) -> None:
+    def test_runner_upgrades_legacy_timeline_and_ground_defaults(self) -> None:
         payload = self.scene_ir.model_dump(mode="json")
         del payload["timeline"]["duration_resolution"]
+        for entity in payload["entities"]:
+            del entity["ground_interaction"]
         with tempfile.TemporaryDirectory() as directory:
             runner = _FakeExecutionRunner(
                 ExecutionConfig(output_dir=Path(directory), render_backend="mcp"),

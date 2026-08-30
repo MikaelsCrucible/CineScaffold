@@ -41,8 +41,8 @@ from cinescaffold.planning.toolkit import (
 )
 
 
-COMPILER_VERSION = "0.6"
-COMMIT_GATE_VERSION = "0.6"
+COMPILER_VERSION = "0.7"
+COMMIT_GATE_VERSION = "0.7"
 
 
 @dataclass(frozen=True)
@@ -158,6 +158,7 @@ def compile_scene_ir(
                 material_id="clay_default",
                 object_index=object_index,
                 tags=entity.tags,
+                ground_interaction=entity.ground_interaction,
             )
         )
 
@@ -319,8 +320,18 @@ def _validate_compiled_scene_ir(scene_ir: SceneIR) -> None:
 
 def _reject_null_or_non_finite(value: Any, path: str) -> None:
     if value is None:
-        # 仅允许协议中明确可空的父级和输出路径。
-        if not path.endswith(".parent_id") and not path.endswith(".relative_directory") and not path.endswith(".relative_path") and not path.endswith(".size_m"):
+        # 仅允许协议中明确可空的字段。
+        nullable_suffixes = (
+            ".parent_id",
+            ".relative_directory",
+            ".relative_path",
+            ".size_m",
+            ".ground_entity_id",
+            ".minimum_penetration_m",
+            ".maximum_penetration_m",
+            ".source_ref",
+        )
+        if not path.endswith(nullable_suffixes):
             raise ValueError(f"Scene IR 含未解析 null：{path}")
         return
     if isinstance(value, float) and not math.isfinite(value):

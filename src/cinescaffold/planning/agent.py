@@ -17,6 +17,7 @@ from cinescaffold.planning.domain import (
     CameraStatic,
     CandidateState,
     ConstraintSpec,
+    GroundInteractionSpec,
     ProxyGeometry,
     StrictModel,
     TrackSpec,
@@ -34,6 +35,7 @@ class EntityPatchInput(StrictModel):
     tags: list[str] = Field(default_factory=list)
     locked_fields: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
+    ground_interaction: GroundInteractionSpec = Field(default_factory=GroundInteractionSpec)
 
 
 @dataclass

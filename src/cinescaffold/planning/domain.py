@@ -155,6 +155,42 @@ class TrackSpec(StrictModel):
         return self
 
 
+class GroundInteractionSpec(StrictModel):
+    mode: Literal[
+        "must_be_above",
+        "must_touch",
+        "may_intersect",
+        "embedded",
+        "unconstrained",
+    ] = "must_be_above"
+    ground_entity_id: str | None = None
+    tolerance_m: float = Field(default=1e-3, ge=0)
+    minimum_penetration_m: float | None = Field(default=None, ge=0)
+    maximum_penetration_m: float | None = Field(default=None, ge=0)
+    source_status: Literal["explicit", "inferred", "default", "agent_selected"] = "default"
+    source_ref: str | None = None
+
+    @model_validator(mode="after")
+    def validate_penetration_range(self) -> GroundInteractionSpec:
+        if self.mode == "may_intersect":
+            if self.maximum_penetration_m is None or self.maximum_penetration_m <= 0:
+                raise ValueError("may_intersect 必须提供正数 maximum_penetration_m")
+            if self.minimum_penetration_m is not None:
+                raise ValueError("may_intersect 不接受 minimum_penetration_m")
+        elif self.mode == "embedded":
+            if self.minimum_penetration_m is None or self.minimum_penetration_m <= 0:
+                raise ValueError("embedded 必须提供正数 minimum_penetration_m")
+            if self.maximum_penetration_m is None:
+                raise ValueError("embedded 必须提供 maximum_penetration_m")
+            if self.maximum_penetration_m < self.minimum_penetration_m:
+                raise ValueError("embedded 穿入范围上下界颠倒")
+        elif self.minimum_penetration_m is not None or self.maximum_penetration_m is not None:
+            raise ValueError(f"{self.mode} 不接受穿入深度范围")
+        if self.source_status == "explicit" and not self.source_ref:
+            raise ValueError("explicit 地面交互必须提供 source_ref")
+        return self
+
+
 class EntitySpec(StrictModel):
     entity_id: str = Field(min_length=1)
     label: str | None = None
@@ -164,6 +200,7 @@ class EntitySpec(StrictModel):
     tags: list[str] = Field(default_factory=list)
     locked_fields: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
+    ground_interaction: GroundInteractionSpec = Field(default_factory=GroundInteractionSpec)
     solved_transform: TransformValue = Field(default_factory=TransformValue)
 
 

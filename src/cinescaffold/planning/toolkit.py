@@ -40,7 +40,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.7"
+TOOLKIT_VERSION = "0.8"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -182,6 +182,23 @@ class ScenePlanningToolkit:
             },
             "sections": requested,
             "supported_geometry": ["box", "sphere", "capsule", "cylinder", "cone", "plane"],
+            "supported_ground_interactions": [
+                "must_be_above",
+                "must_touch",
+                "may_intersect",
+                "embedded",
+                "unconstrained",
+            ],
+            "ground_interaction_guidance": {
+                "must_be_above": "缺省；允许贴地或悬空，不允许穿入",
+                "must_touch": "最低点必须在 tolerance_m 内接触地面",
+                "may_intersect": "允许不超过 maximum_penetration_m 的部分穿入",
+                "embedded": "穿入深度必须位于最小/最大范围，保留完整代理几何",
+                "unconstrained": "仅用于 Brief 明确的地下或地面不适用语义",
+                "exception_provenance": (
+                    "may_intersect/embedded/unconstrained 必须引用 Brief explicit requirement"
+                ),
+            },
             "supported_tracks": ["transform", "path_follow", "visibility", "look_at", "focal_length"],
             "inspect_views": INSPECT_VIEWS,
             "acceptance": {
@@ -321,6 +338,7 @@ class ScenePlanningToolkit:
                     state.entities[entity.entity_id] = entity
                     changes.append({"operation": operation, "path": f"entities.{entity.entity_id}"})
                 _validate_parent_references(state)
+                _validate_ground_interaction_references(state, self.objective_brief)
                 return changes, []
 
             return _mutation_envelope(self.store.apply(mutate))
@@ -709,6 +727,11 @@ def _validate_initial_candidate(actual: CandidateState, expected: CandidateState
 def _referenced_entity_ids(state: CandidateState) -> set[str]:
     result = {entity.parent_id for entity in state.entities.values() if entity.parent_id}
     result.update(
+        entity.ground_interaction.ground_entity_id
+        for entity in state.entities.values()
+        if entity.ground_interaction.ground_entity_id
+    )
+    result.update(
         track.target_entity_id for track in state.motion_tracks.values() if track.target_entity_id
     )
     for constraint in state.constraints.values():
@@ -732,6 +755,35 @@ def _validate_parent_references(state: CandidateState) -> None:
             seen.add(current)
             parent = state.entities.get(current)
             current = parent.parent_id if parent else None
+
+
+def _validate_ground_interaction_references(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+) -> None:
+    explicit_refs = {item.path for item in objective_brief.explicit_requirements}
+    exception_modes = {"may_intersect", "embedded", "unconstrained"}
+    for entity in state.entities.values():
+        interaction = entity.ground_interaction
+        if interaction.ground_entity_id and interaction.ground_entity_id not in state.entities:
+            raise ValueError(
+                f"Entity ground_entity_id 不存在：{entity.entity_id} -> "
+                f"{interaction.ground_entity_id}"
+            )
+        if interaction.ground_entity_id:
+            ground = state.entities[interaction.ground_entity_id]
+            if ground.proxy.type != "plane" or not _is_environment_entity(ground):
+                raise ValueError(
+                    f"ground_entity_id 必须指向环境地面平面：{entity.entity_id} -> "
+                    f"{interaction.ground_entity_id}"
+                )
+        if interaction.mode in exception_modes and (
+            interaction.source_status != "explicit"
+            or interaction.source_ref not in explicit_refs
+        ):
+            raise ValueError(
+                f"{interaction.mode} 只能来自 Brief 的明确地面交互要求：{entity.entity_id}"
+            )
 
 
 def _validate_constraint_time(constraint: ConstraintSpec, duration: float) -> None:
@@ -919,18 +971,30 @@ def _ground_penetration_violations(state: CandidateState) -> list[Violation]:
         return []
     violations: list[Violation] = []
     for time_seconds in _timeline_probe_times(state.timeline):
-        ground_levels: list[float] = []
+        ground_levels: dict[str, float] = {}
         for ground_id in ground_ids:
             transform = _entity_transform_at(state, ground_id, time_seconds)
             normal = rotate_vector(transform.rotation_quaternion_wxyz, (0.0, 0.0, 1.0))
             if abs(normal[2]) >= 0.999:
-                ground_levels.append(transform.translation_m[2])
+                ground_levels[ground_id] = transform.translation_m[2]
         if not ground_levels:
             continue
-        ground_z = max(ground_levels)
         for entity in state.entities.values():
-            if entity.entity_id in ground_ids or _is_environment_entity(entity):
+            if entity.entity_id in ground_ids:
                 continue
+            interaction = entity.ground_interaction
+            if interaction.mode == "unconstrained":
+                continue
+            if interaction.ground_entity_id:
+                ground_z = ground_levels.get(interaction.ground_entity_id)
+                if ground_z is None:
+                    continue
+                active_ground_id = interaction.ground_entity_id
+            else:
+                active_ground_id, ground_z = max(
+                    ground_levels.items(),
+                    key=lambda item: item[1],
+                )
             transform = _entity_transform_at(state, entity.entity_id, time_seconds)
             world_z_values: list[float] = []
             for point in geometry_local_bounds_points(entity.proxy):
@@ -942,31 +1006,99 @@ def _ground_penetration_violations(state: CandidateState) -> list[Violation]:
                 world_z_values.append(transform.translation_m[2] + rotated[2])
             maximum_z = max(world_z_values)
             minimum_z = min(world_z_values)
-            if maximum_z < ground_z - 1e-4:
+            penetration_m = max(0.0, ground_z - minimum_z)
+            clearance_m = minimum_z - ground_z
+            tolerance_m = interaction.tolerance_m
+            if maximum_z < ground_z - tolerance_m:
                 violations.append(
                     _violation(
                         "ENTITY_FULLY_BELOW_GROUND",
                         f"Entity 整体位于水平地面以下：{entity.entity_id}",
                         entity_ids=[entity.entity_id],
                         time_range_seconds=(time_seconds, time_seconds),
-                        expected={"minimum_maximum_z": ground_z},
-                        actual={"maximum_z": maximum_z, "ground_z": ground_z},
-                        adjustable_variables=["entity transforms", "camera transform"],
+                        expected={"surface_crossing_or_above_z": ground_z},
+                        actual={
+                            "maximum_z": maximum_z,
+                            "ground_z": ground_z,
+                            "ground_entity_id": active_ground_id,
+                            "mode": interaction.mode,
+                        },
+                        adjustable_variables=["entity transforms", "ground_interaction"],
                     )
                 )
-            elif minimum_z < ground_z - 1e-3:
-                violations.append(
-                    _violation(
-                        "ENTITY_INTERSECTS_GROUND",
-                        f"Entity 包围盒穿入水平地面：{entity.entity_id}",
-                        entity_ids=[entity.entity_id],
-                        time_range_seconds=(time_seconds, time_seconds),
-                        expected={"minimum_z": ground_z},
-                        actual={"minimum_z": minimum_z, "ground_z": ground_z},
-                        adjustable_variables=["entity transforms"],
-                    )
-                )
+                continue
+            violation = _ground_interaction_violation(
+                entity,
+                interaction.mode,
+                penetration_m,
+                clearance_m,
+                ground_z,
+                active_ground_id,
+                time_seconds,
+            )
+            if violation is not None:
+                violations.append(violation)
     return violations
+
+
+def _ground_interaction_violation(
+    entity: EntitySpec,
+    mode: str,
+    penetration_m: float,
+    clearance_m: float,
+    ground_z: float,
+    ground_entity_id: str,
+    time_seconds: float,
+) -> Violation | None:
+    interaction = entity.ground_interaction
+    tolerance_m = interaction.tolerance_m
+    if mode == "must_be_above" and penetration_m > tolerance_m:
+        code = "ENTITY_INTERSECTS_GROUND"
+        expected = {"maximum_penetration_m": tolerance_m}
+    elif mode == "must_touch" and (
+        penetration_m > tolerance_m or clearance_m > tolerance_m
+    ):
+        code = "ENTITY_GROUND_CONTACT_VIOLATED"
+        expected = {"absolute_surface_distance_m": tolerance_m}
+    elif (
+        mode == "may_intersect"
+        and interaction.maximum_penetration_m is not None
+        and penetration_m > interaction.maximum_penetration_m + tolerance_m
+    ):
+        code = "ENTITY_GROUND_PENETRATION_EXCEEDED"
+        expected = {"maximum_penetration_m": interaction.maximum_penetration_m}
+    elif (
+        mode == "embedded"
+        and interaction.minimum_penetration_m is not None
+        and interaction.maximum_penetration_m is not None
+        and not (
+            interaction.minimum_penetration_m - tolerance_m
+            <= penetration_m
+            <= interaction.maximum_penetration_m + tolerance_m
+        )
+    ):
+        code = "ENTITY_EMBEDDING_RANGE_VIOLATED"
+        expected = {
+            "minimum_penetration_m": interaction.minimum_penetration_m,
+            "maximum_penetration_m": interaction.maximum_penetration_m,
+        }
+    else:
+        return None
+    return _violation(
+        code,
+        f"Entity 地面交互不符合 {mode}：{entity.entity_id}",
+        entity_ids=[entity.entity_id, ground_entity_id],
+        time_range_seconds=(time_seconds, time_seconds),
+        expected=expected,
+        actual={
+            "penetration_m": penetration_m,
+            "clearance_m": clearance_m,
+            "ground_z": ground_z,
+            "ground_entity_id": ground_entity_id,
+            "mode": mode,
+        },
+        adjustable_variables=["entity transforms", "ground_interaction"],
+    )
 
 
 def _camera_violations(state: CandidateState) -> list[Violation]:

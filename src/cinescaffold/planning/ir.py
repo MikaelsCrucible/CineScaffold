@@ -6,6 +6,7 @@ from pydantic import Field, field_validator, model_validator
 
 from cinescaffold.planning.domain import (
     DurationResolution,
+    GroundInteractionSpec,
     ProxyGeometry,
     Quaternion,
     StrictModel,
@@ -118,6 +119,7 @@ class EntityIR(StrictModel):
     object_index: int = Field(ge=1, le=32767)
     semantic_forward_axis: Literal["+Y"] = "+Y"
     tags: list[str]
+    ground_interaction: GroundInteractionSpec = Field(default_factory=GroundInteractionSpec)
 
 
 class CameraIntrinsics(StrictModel):
