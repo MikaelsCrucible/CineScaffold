@@ -7,6 +7,30 @@ from cinescaffold.cli_ui import TerminalReporter
 
 
 class TerminalReporterTest(unittest.TestCase):
+    def test_model_request_uses_neutral_label(self) -> None:
+        stream = io.StringIO()
+        reporter = TerminalReporter(color=False, stream=stream)
+
+        reporter.event("model_request_started", {"request_index": 2, "message_count": 3})
+
+        rendered = stream.getvalue()
+        self.assertIn("模型请求", rendered)
+        self.assertNotIn("模型思考", rendered)
+
+    def test_non_tool_text_compaction_is_visible(self) -> None:
+        stream = io.StringIO()
+        reporter = TerminalReporter(color=False, stream=stream)
+
+        reporter.event(
+            "model_non_tool_text_compacted",
+            {"omitted_chars": 29026, "authoritative_revision": 6},
+        )
+
+        rendered = stream.getvalue()
+        self.assertIn("异常正文", rendered)
+        self.assertIn("29026 字符", rendered)
+        self.assertIn("revision 6", rendered)
+
     def test_model_event_renders_compact_token_statistics(self) -> None:
         stream = io.StringIO()
         reporter = TerminalReporter(color=False, stream=stream)

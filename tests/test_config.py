@@ -71,6 +71,14 @@ class ConfigTest(unittest.TestCase):
             with self.assertRaisesRegex(ConfigurationError, "未知字段"):
                 load_config(path)
 
+    def test_low_effort_is_not_accepted_as_thinking_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.conf"
+            path.write_text("planning_thinking_mode = low\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ConfigurationError, "planning_reasoning_effort"):
+                load_config(path)
+
     def test_explicit_missing_config_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ConfigurationError, "不存在"):

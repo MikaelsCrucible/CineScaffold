@@ -114,6 +114,7 @@ class TrackPatchInput(StrictModel):
 
 
 MAX_AGENT_HISTORY_MESSAGES = 13
+NON_TOOL_TEXT_MARKER = "[已省略不符合协议的无工具正文；请按重试指令调用工具。]"
 
 
 def _compact_tool_call_history(
@@ -124,15 +125,29 @@ def _compact_tool_call_history(
 
     compacted: list[ModelMessage] = []
     for message in messages:
-        if isinstance(message, ModelResponse) and any(
-            isinstance(part, ToolCallPart) for part in message.parts
-        ):
-            parts = [
-                part
-                for part in message.parts
-                if not isinstance(part, (TextPart, ThinkingPart))
-            ]
-            message = replace(message, parts=parts)
+        if isinstance(message, ModelResponse):
+            has_tool_call = any(isinstance(part, ToolCallPart) for part in message.parts)
+            text_parts = [part for part in message.parts if isinstance(part, TextPart)]
+            if has_tool_call:
+                parts = [
+                    part
+                    for part in message.parts
+                    if not isinstance(part, (TextPart, ThinkingPart))
+                ]
+                message = replace(message, parts=parts)
+            elif text_parts:
+                omitted_chars = sum(len(part.content) for part in text_parts)
+                parts = [part for part in message.parts if not isinstance(part, TextPart)]
+                parts.append(TextPart(NON_TOOL_TEXT_MARKER))
+                message = replace(message, parts=parts)
+                response_key = message.provider_response_id or str(message.timestamp)
+                if response_key not in ctx.deps.compacted_non_tool_responses:
+                    ctx.deps.compacted_non_tool_responses.add(response_key)
+                    ctx.deps.trace.record(
+                        "model_non_tool_text_compacted",
+                        omitted_chars=omitted_chars,
+                        authoritative_revision=ctx.deps.toolkit.store.current_revision,
+                    )
         compacted.append(message)
     if len(compacted) <= MAX_AGENT_HISTORY_MESSAGES:
         return compacted
@@ -164,6 +179,7 @@ class PlanningDeps:
     checkpoint_writer: Callable[[CandidateState], Path] | None = None
     capabilities_read: bool = False
     inspected_calls: set[str] = field(default_factory=set)
+    compacted_non_tool_responses: set[str] = field(default_factory=set)
 
     def call_tool(self, name: str, arguments: dict[str, Any], operation) -> dict[str, Any]:
         if time.monotonic() >= self.deadline_monotonic:

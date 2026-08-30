@@ -18,6 +18,7 @@ from pydantic_ai.messages import (
 
 from cinescaffold.planning.agent import (
     ConstraintPatchInput,
+    NON_TOOL_TEXT_MARKER,
     PlanningDeps,
     TrackPatchInput,
     _compact_tool_call_history,
@@ -52,6 +53,30 @@ class PlanningProtocolTest(unittest.TestCase):
 
         self.assertEqual(len(compacted[0].parts), 1)
         self.assertIsInstance(compacted[0].parts[0], ToolCallPart)
+
+    def test_tool_history_compacts_pure_text_response_once(self) -> None:
+        response = ModelResponse(
+            parts=[TextPart("无工具正文" * 2_000)],
+            provider_response_id="response_long_text",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), _toolkit())
+            first = _compact_tool_call_history(_context(deps), [response])
+            second = _compact_tool_call_history(_context(deps), [response])
+            events = [
+                json.loads(line)
+                for line in (Path(directory) / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(first[0].parts[0].content, NON_TOOL_TEXT_MARKER)
+        self.assertEqual(second[0].parts[0].content, NON_TOOL_TEXT_MARKER)
+        self.assertLess(len(first[0].parts[0].content), 100)
+        compact_events = [
+            event for event in events if event["event_type"] == "model_non_tool_text_compacted"
+        ]
+        self.assertEqual(len(compact_events), 1)
+        self.assertEqual(compact_events[0]["payload"]["omitted_chars"], 10_000)
 
     def test_tool_history_keeps_objective_and_recent_paired_window(self) -> None:
         messages = [ModelRequest(parts=[UserPromptPart("原始 Brief")])]

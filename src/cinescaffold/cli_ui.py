@@ -101,7 +101,7 @@ class TerminalReporter:
     def _on_model_request_started(self, payload: dict[str, Any]) -> None:
         self._line(
             "…",
-            "模型思考",
+            "模型请求",
             f"第 {payload.get('request_index', '?')} 次请求，"
             f"上下文 {payload.get('message_count', '?')} 条消息",
             "blue",
@@ -143,6 +143,13 @@ class TerminalReporter:
             "上下文整理",
             f"保留 {payload.get('messages_after', '?')}/{payload.get('messages_before', '?')} "
             f"条消息；权威状态 revision {payload.get('authoritative_revision', '?')}",
+        )
+
+    def _on_model_non_tool_text_compacted(self, payload: dict[str, Any]) -> None:
+        self.warning(
+            "异常正文",
+            f"已省略无工具调用的 {payload.get('omitted_chars', '?')} 字符；"
+            f"继续使用 Candidate revision {payload.get('authoritative_revision', '?')}",
         )
 
     def _on_agent_terminal_received(self, payload: dict[str, Any]) -> None:

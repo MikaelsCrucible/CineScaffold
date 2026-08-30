@@ -128,7 +128,10 @@ def _validate_config(data: dict[str, str]) -> None:
             raise ConfigurationError(f"{key} 不支持：{value}")
     thinking_mode = data.get("planning_thinking_mode")
     if thinking_mode not in (None, "enabled", "disabled"):
-        raise ConfigurationError("planning_thinking_mode 必须是 enabled 或 disabled")
+        raise ConfigurationError(
+            "planning_thinking_mode 必须是 enabled 或 disabled；"
+            "low、high、max 请填写 planning_reasoning_effort"
+        )
     reasoning_effort = data.get("planning_reasoning_effort")
     if reasoning_effort not in (None, "low", "high", "max"):
         raise ConfigurationError("planning_reasoning_effort 必须是 low、high 或 max")

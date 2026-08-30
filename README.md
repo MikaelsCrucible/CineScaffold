@@ -116,6 +116,15 @@ planning_model_max_tokens = 8192
 
 论文实验应明确冻结思考模式、强度和 token 上限，不能把供应商缺省值视为不变条件。规划 Trace 记录 reasoning token 数、请求耗时、停止原因与工具调用，但不保存逐字思维链。
 
+若要启用低强度思考，开关和强度必须分别填写：
+
+```text
+planning_thinking_mode = enabled
+planning_reasoning_effort = low
+```
+
+`planning_thinking_mode = low` 是无效配置；thinking 开关只接受 `enabled/disabled`。
+
 ## 使用
 
 ### 一键运行
@@ -204,6 +213,8 @@ cinescaffold execute \
 - `--json --quiet`：只输出机器可读 JSON，适合测试和批处理。
 
 运行 `cinescaffold --help` 或 `cinescaffold <命令> --help` 查看完整参数。
+
+规划进度使用“模型请求”这一中性名称，不表示 Provider 一定启用了 thinking。若模型在必须调用工具时返回纯正文，Runner 会把该正文压缩为固定短标记、记录“异常正文”事件并继续重试，避免单次失控输出污染后续上下文。
 
 ## 主要产物
 

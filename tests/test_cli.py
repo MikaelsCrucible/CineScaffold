@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cinescaffold.cli import main
+from cinescaffold.config import LoadedConfig, load_config
 from cinescaffold.execution.runner import ExecutionResult
 from tests.helpers import ROOT, valid_planning_brief
 
@@ -45,6 +46,17 @@ class _PipelineExecutionRunner:
 
 
 class CliTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # CLI 离线测试不得继承开发者机器上的默认配置。
+        self.config_patch = patch(
+            "cinescaffold.cli.load_config",
+            side_effect=lambda path: load_config(path) if path else LoadedConfig(None, {}),
+        )
+        self.config_patch.start()
+
+    def tearDown(self) -> None:
+        self.config_patch.stop()
+
     def test_parse_uses_simple_config_without_exposing_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
