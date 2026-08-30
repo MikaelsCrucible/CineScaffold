@@ -150,7 +150,7 @@ class InterpreterRunner:
                     local_commit_attempt_limit=False,
                     provider_request_timeout=False,
                     stream_telemetry=self.config.provider != "mock",
-                    reasoning_content_recorded=False,
+                    reasoning_content_recorded=True,
                     remaining_external_limits=[
                         "Provider context/output limits",
                         "Provider rate limits and availability",
@@ -215,7 +215,11 @@ class InterpreterRunner:
                 disable_request_timeout=self.config.full_power_diagnostic,
             )
             model_label = raw_model.model_name
-            tracing_model = TracingModel(raw_model, trace)
+            tracing_model = TracingModel(
+                raw_model,
+                trace,
+                record_content=self.config.full_power_diagnostic,
+            )
             if self.config.full_power_diagnostic:
                 # None 会触发 PydanticAI 默认 50 请求上限，必须显式关闭。
                 usage_limits = UsageLimits(request_limit=None)

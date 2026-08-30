@@ -114,7 +114,7 @@ planning_thinking_mode = disabled
 planning_model_max_tokens = 8192
 ```
 
-论文实验应明确冻结思考模式、强度和 token 上限，不能把供应商缺省值视为不变条件。规划 Trace 记录 reasoning token 数、请求耗时、停止原因与工具调用，但不保存逐字思维链。
+论文实验应明确冻结思考模式、强度和 token 上限，不能把供应商缺省值视为不变条件。普通规划 Trace 记录 reasoning token 数、请求耗时、停止原因与工具调用，不保存对话/思维原文；`--full-power-diagnostic` 模式额外记录完整对话与逐字思维链（受 `TraceConfig` 字节/字符上限约束，可用 `--trace-max-event-bytes`/`--trace-max-string-chars` 调大）。
 
 若要启用低强度思考，开关和强度必须分别填写：
 
@@ -198,7 +198,7 @@ cinescaffold plan \
   --full-power-diagnostic
 ```
 
-该选项强制启用 `max` 推理强度和流式遥测，并关闭 CineScaffold 与 PydanticAI 的时间、请求、工具调用、token、提交尝试及 HTTP 请求超时上限。供应商自身的上下文、输出、速率和服务可用性限制仍然存在。Trace 会记录推理 chunk 数、字符数、时序、停顿、usage 和工具调用，但不保存 `reasoning_content` 原文。该模式可能无限运行并产生不可预估费用，只用于人工监督的故障诊断，不应混入正式论文样本。
+该选项强制启用 `max` 推理强度和流式遥测，并关闭 CineScaffold 与 PydanticAI 的时间、请求、工具调用、token、提交尝试及 HTTP 请求超时上限。供应商自身的上下文、输出、速率和服务可用性限制仍然存在。Trace 会记录推理 chunk 数、字符数、时序、停顿、usage 和工具调用，并把流式 `reasoning_content` 与正文原文随遥测事件写入 Trace（受 `TraceConfig` 上限约束）。该模式可能无限运行并产生不可预估费用，只用于人工监督的故障诊断，不应混入正式论文样本。
 
 #### 3. Scene IR 转 Blender 白模视频
 

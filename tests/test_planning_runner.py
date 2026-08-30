@@ -9,12 +9,19 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+from pydantic_ai import Agent
 from pydantic_ai.messages import (
+    ModelResponse,
     PartDeltaEvent,
     PartStartEvent,
+    TextPart,
+    TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
+    ToolReturnPart,
 )
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.usage import RequestUsage
 
 from cinescaffold.planning.models import create_planning_model
 from cinescaffold.planning.objective import project_objective_brief
@@ -31,6 +38,7 @@ from cinescaffold.planning.trace import (
     StreamTelemetryHandler,
     TraceConfig,
     TraceRecorder,
+    TracingModel,
 )
 from tests.helpers import ROOT, valid_planning_brief
 
@@ -95,12 +103,17 @@ class InterpreterRunnerTest(unittest.TestCase):
         )
         self.assertFalse(_requires_complete_thinking_history(disabled))
 
-    def test_stream_telemetry_counts_reasoning_without_recording_content(self) -> None:
+    def test_stream_telemetry_records_reasoning_and_text_content(self) -> None:
         async def events():
             yield PartStartEvent(index=0, part=ThinkingPart("private-one"))
             yield PartDeltaEvent(
                 index=0,
                 delta=ThinkingPartDelta(content_delta="private-two"),
+            )
+            yield PartStartEvent(index=1, part=TextPart("answer-text"))
+            yield PartDeltaEvent(
+                index=1,
+                delta=TextPartDelta(content_delta="-more"),
             )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -110,16 +123,142 @@ class InterpreterRunnerTest(unittest.TestCase):
             model = SimpleNamespace(
                 active_stream_request_index=1,
                 active_stream_started=started,
+                record_content=True,
             )
             asyncio.run(StreamTelemetryHandler(trace, model)(None, events()))
             rendered = trace_path.read_text(encoding="utf-8")
             payload = json.loads(rendered)["payload"]
 
-        self.assertNotIn("private-one", rendered)
-        self.assertNotIn("private-two", rendered)
+        self.assertIn("private-one", rendered)
+        self.assertIn("private-two", rendered)
+        self.assertIn("answer-text", rendered)
+        self.assertIn("-more", rendered)
+        self.assertEqual(payload["reasoning_content"], "private-oneprivate-two")
+        self.assertEqual(payload["text_content"], "answer-text-more")
         self.assertEqual(payload["reasoning_chunks"], 2)
         self.assertEqual(payload["reasoning_chars"], 22)
-        self.assertFalse(payload["reasoning_content_recorded"])
+        self.assertTrue(payload["reasoning_content_recorded"])
+        self.assertTrue(payload["text_content_recorded"])
+
+    def test_stream_telemetry_stall_heartbeat_carries_partial_content(self) -> None:
+        async def events():
+            yield PartStartEvent(index=0, part=ThinkingPart("thinking-so-far"))
+            await asyncio.sleep(0.2)
+            yield PartDeltaEvent(
+                index=0,
+                delta=ThinkingPartDelta(content_delta="done"),
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "trace.jsonl"
+            trace = TraceRecorder(trace_path, "stream_stall_test")
+            started = time.monotonic()
+            model = SimpleNamespace(
+                active_stream_request_index=1,
+                active_stream_started=started,
+                record_content=True,
+            )
+            asyncio.run(
+                StreamTelemetryHandler(trace, model, heartbeat_seconds=0.05)(None, events())
+            )
+            rendered = trace_path.read_text(encoding="utf-8")
+
+        stalled = json.loads(
+            next(
+                line
+                for line in rendered.splitlines()
+                if '"event_type":"model_stream_stalled"' in line
+            )
+        )["payload"]
+        self.assertEqual(stalled["reasoning_content"], "thinking-so-far")
+        completed = json.loads(
+            next(
+                line
+                for line in rendered.splitlines()
+                if '"event_type":"model_stream_telemetry_completed"' in line
+            )
+        )["payload"]
+        self.assertEqual(completed["reasoning_content"], "thinking-so-fardone")
+
+    def test_stream_telemetry_integration_via_agent_run(self) -> None:
+        """真实 Agent 集成路径：event_stream_handler 必须写出遥测事件。"""
+
+        async def stream_function(messages, info):
+            yield "text-chunk-1"
+            yield "text-chunk-2"
+
+        def callback(messages, info) -> ModelResponse:
+            return ModelResponse(
+                parts=[TextPart("done")],
+                usage=RequestUsage(input_tokens=10, output_tokens=3),
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "trace.jsonl"
+            trace = TraceRecorder(trace_path, "stream_integration_test")
+            model = TracingModel(
+                FunctionModel(callback, stream_function=stream_function, model_name="probe"),
+                trace,
+                record_content=True,
+            )
+            agent = Agent(model, system_prompt="system")
+            handler = StreamTelemetryHandler(trace, model)
+            asyncio.run(agent.run("user", event_stream_handler=handler))
+            rendered = trace_path.read_text(encoding="utf-8")
+
+        self.assertIn("model_stream_telemetry_completed", rendered)
+        completed = json.loads(
+            next(
+                line
+                for line in rendered.splitlines()
+                if '"event_type":"model_stream_telemetry_completed"' in line
+            )
+        )["payload"]
+        self.assertEqual(completed["text_content"], "text-chunk-1text-chunk-2")
+        self.assertTrue(completed["text_content_recorded"])
+
+    def test_stream_telemetry_consumes_tool_node_streams(self) -> None:
+        """handler 必须能排空工具调用节点的流（回归：曾因 continue 漏建任务而死锁）。"""
+
+        async def stream_function(messages, info):
+            returns = [
+                part
+                for message in messages
+                if hasattr(message, "parts")
+                for part in message.parts
+                if isinstance(part, ToolReturnPart)
+            ]
+            if not returns:
+                yield {0: DeltaToolCall(name="probe_tool", json_args="{}", tool_call_id="call_1")}
+            else:
+                yield "done"
+
+        def callback(messages, info) -> ModelResponse:
+            return ModelResponse(
+                parts=[TextPart("done")],
+                usage=RequestUsage(input_tokens=5, output_tokens=3),
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "trace.jsonl"
+            trace = TraceRecorder(trace_path, "stream_tool_node_test")
+            model = TracingModel(
+                FunctionModel(callback, stream_function=stream_function, model_name="probe"),
+                trace,
+                record_content=True,
+            )
+            agent = Agent(model, system_prompt="system")
+
+            def probe_tool(ctx) -> str:
+                return "tool-result"
+
+            agent.tool(probe_tool)
+            handler = StreamTelemetryHandler(trace, model)
+            asyncio.run(agent.run("user", event_stream_handler=handler))
+            rendered = trace_path.read_text(encoding="utf-8")
+
+        # 两次模型请求各记一个遥测事件；工具节点流被排空但不产生遥测。
+        self.assertEqual(rendered.count("model_stream_telemetry_completed"), 2)
 
     def test_mock_agent_completes_loop_and_records_bounded_trace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -160,6 +299,19 @@ class InterpreterRunnerTest(unittest.TestCase):
         run_started = next(item for item in trace if item["event_type"] == "run_started")
         self.assertEqual(run_started["payload"]["toolkit_version"], "0.12")
         self.assertNotIn("孤独", "\n".join(trace_lines))
+        # 普通运行保持精简日志：不记录对话内容，response 只记类型与规模。
+        request_started = next(
+            item for item in trace if item["event_type"] == "model_request_started"
+        )
+        self.assertNotIn("messages", request_started["payload"])
+        completed = next(
+            item for item in trace if item["event_type"] == "model_request_completed"
+        )
+        summaries = completed["payload"]["response_parts"]
+        self.assertTrue(all("content_recorded" not in item for item in summaries))
+        self.assertTrue(
+            any(item["kind"] == "tool_call" for item in summaries)
+        )
         self.assertEqual(scene_ir["schema_version"], "0.1")
         self.assertEqual(len(scene_ir["camera"]["state_track"]["samples"]), 144)
         self.assertEqual(checkpoint["candidate"]["revision"], result.final_revision)
@@ -242,12 +394,36 @@ class InterpreterRunnerTest(unittest.TestCase):
             )
 
             result = asyncio.run(InterpreterRunner(config).run(valid_planning_brief()))
-            trace = (run_dir / "planning_agent_tool_trace.jsonl").read_text(
-                encoding="utf-8"
-            )
+            trace_path = run_dir / "planning_agent_tool_trace.jsonl"
+            trace_text = trace_path.read_text(encoding="utf-8")
+            trace = [
+                json.loads(line)
+                for line in trace_text.splitlines()
+            ]
 
         self.assertEqual(result.status, "success", result.error)
-        self.assertIn('"event_type":"full_power_diagnostic_enabled"', trace)
+        self.assertIn('"event_type":"full_power_diagnostic_enabled"', trace_text)
+        # 诊断模式记录完整对话内容与响应参数。
+        request_started = next(
+            item for item in trace if item["event_type"] == "model_request_started"
+        )
+        self.assertIn("messages", request_started["payload"])
+        self.assertTrue(
+            any(
+                part["kind"] == "user-prompt" and part.get("content")
+                for message in request_started["payload"]["messages"]
+                for part in message.get("parts", [])
+            )
+        )
+        completed = next(
+            item for item in trace if item["event_type"] == "model_request_completed"
+        )
+        first_call = next(
+            item
+            for item in completed["payload"]["response_parts"]
+            if item["kind"] == "tool-call"
+        )
+        self.assertIn("sections", json.dumps(first_call.get("args"), ensure_ascii=False))
 
 
 if __name__ == "__main__":
