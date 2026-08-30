@@ -69,6 +69,8 @@ Agent 协议由 Runner 确定性约束：闭集参数直接进入 Tool Schema �
 
 无 Agent 2 的执行基线也已实现：`cinescaffold execute` 在修改 Blender 前验证 IR，创建 factory template，经官方 Blender MCP 的 `execute_blender_code_for_cli` 调用固定 Executor，从空场景生成代理几何、逐帧实体/摄影机状态、白模材质和灯光，并回读 Runtime Snapshot。H.264 默认由同一固定 Executor 在后台 Blender 中渲染，避开官方 MCP CLI 工具的短调用时限；可用 `--render-backend mcp` 保留短场景的纯 MCP 渲染。执行默认使用 `preview` 诊断档：在独立渲染进程中切换到中性 Workbench，以半分辨率和每两帧一次的采样保持整段时长，输出 `diagnostic_preview.mp4`；`--render-profile control` 才严格按 Scene IR 的 EEVEE、完整分辨率和 FPS 输出正式 `clay_preview.mp4`。未给定灯光语义时，Compiler 使用版本化的摄影机相对对称无影灯组，不推断世界光源方向；Runtime Validator 会核对灯组用途、模式、父级、旋转、能量和阴影开关。两次相同 IR 重建得到字节一致的规范化 Runtime Snapshot；两实体、144 帧黄金场景已在 Blender 5.2.1 LTS 上完成 0 violation 构建和视频渲染。
 
+最新 10 秒真实回归由 Mock Semantic Parser 明确写入时长，再由 DeepSeek Scene Planning Agent 生成 240 帧 IR；修复后的飞船代理为 `90 × 30 × 70 m`、最低点高于地面约 5 m，摄影机推进 14 m。正式规划 hard pass、soft score `0.8333`，Blender Runtime Validation 为 0 violation；Workbench preview 输出 120 帧、640×360、12 fps 的 10 秒视频，完整 MCP 构建与渲染状态机内部耗时约 5.36 秒。
+
 ## 使用
 
 项目固定使用 Python 3.12.x；`.python-version` 记录解释器系列，`requirements.lock` 锁定完整 Python 依赖及哈希。推荐使用 [uv](https://docs.astral.sh/uv/) 建立环境：
