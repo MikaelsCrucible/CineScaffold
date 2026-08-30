@@ -154,6 +154,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path.home() / ".local/bin/blender-mcp",
     )
     execute_parser.add_argument("--overwrite", action="store_true")
+    execute_parser.add_argument(
+        "--render-backend",
+        choices=("background", "mcp"),
+        default="background",
+        help="默认用无 MCP 调用时限的后台 Blender 渲染；构建仍经官方 MCP",
+    )
+    execute_parser.add_argument("--render-timeout-seconds", type=float, default=600.0)
     return parser
 
 
@@ -245,6 +252,8 @@ def _run_execute(args: argparse.Namespace) -> int:
         blender_path=args.blender_path,
         mcp_command=args.mcp_command,
         overwrite=args.overwrite,
+        render_backend=args.render_backend,
+        render_timeout_seconds=args.render_timeout_seconds,
     )
     result = asyncio.run(ExecutionRunner(config).run(payload))
     print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))

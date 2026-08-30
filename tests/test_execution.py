@@ -120,7 +120,7 @@ class ExecutionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory) / "execution"
             runner = _FakeExecutionRunner(
-                ExecutionConfig(output_dir=output_dir),
+                ExecutionConfig(output_dir=output_dir, render_backend="mcp"),
                 adapter=_FakeAdapter(),
             )
             result = asyncio.run(runner.run(self.scene_ir.model_dump(mode="json")))
@@ -131,6 +131,19 @@ class ExecutionTest(unittest.TestCase):
         self.assertEqual(result.status, "success")
         self.assertEqual(manifest["status"], "success")
         self.assertIn("clay_preview", manifest["artifact_sha256"])
+        self.assertEqual(manifest["render_backend"], "mcp")
+
+    def test_background_render_bootstrap_is_fixed_and_syntax_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runner = ExecutionRunner(
+                ExecutionConfig(output_dir=Path(directory)),
+                adapter=_FakeAdapter(),
+            )
+            code = runner._background_render_code(Path(directory) / "result.json")
+
+        compile(code, "<background-render>", "exec")
+        self.assertIn("render_clay_preview", code)
+        self.assertNotIn("bpy.ops", code)
 
     def test_runner_requires_explicit_overwrite_for_existing_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

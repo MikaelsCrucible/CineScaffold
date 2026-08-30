@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import subprocess
@@ -7,7 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -37,6 +38,8 @@ class ExecutionConfig:
     mcp_command: Path = Path.home() / ".local/bin/blender-mcp"
     overwrite: bool = False
     template_timeout_seconds: float = 60.0
+    render_timeout_seconds: float = 600.0
+    render_backend: Literal["background", "mcp"] = "background"
 
 
 class ExecutionRunner:
@@ -105,16 +108,23 @@ class ExecutionRunner:
 
         scene_blend = self.output_dir / "scene.blend"
         try:
-            render = await self.adapter.render_preview(scene_blend)
+            if self.config.render_backend == "mcp":
+                render = await self.adapter.render_preview(scene_blend)
+            else:
+                render = await self._render_preview_background(scene_blend)
         except Exception as error:
             result = ExecutionResult(
                 status="render_failed",
                 scene_ir_hash=scene_ir_hash,
                 build=build,
-                render={"status": "failed", "stage": "mcp_render", "message": str(error)},
+                render={
+                    "status": "failed",
+                    "stage": f"{self.config.render_backend}_render",
+                    "message": str(error),
+                },
                 artifacts=self._existing_artifacts(),
                 elapsed_seconds=time.monotonic() - started,
-                error=f"Blender MCP 渲染失败：{error}",
+                error=f"Blender 渲染失败：{error}",
             )
             self._write_manifest(scene_ir, result)
             return result
@@ -131,6 +141,63 @@ class ExecutionRunner:
         self._write_manifest(scene_ir, result)
         return result
 
+    async def _render_preview_background(self, scene_blend: Path) -> dict[str, Any]:
+        blender_path = self.config.blender_path.resolve()
+        result_path = self.output_dir / "background_render_result.json"
+        code = self._background_render_code(result_path)
+        try:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    str(blender_path),
+                    "--background",
+                    str(scene_blend.resolve()),
+                    "--python-expr",
+                    code,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=self.config.render_timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            self._write_render_log(error.stdout or "", error.stderr or "")
+            raise ExecutionError(
+                f"后台 Blender 渲染超过 {self.config.render_timeout_seconds:g} 秒"
+            ) from error
+        self._write_render_log(completed.stdout, completed.stderr)
+        if completed.returncode != 0 or not result_path.is_file():
+            raise ExecutionError("后台 Blender 渲染失败；请查看 render_blender.log")
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if result.get("status") != "ok" or not (self.output_dir / "clay_preview.mp4").is_file():
+            raise ExecutionError("后台 Blender 未生成白模视频")
+        return result | {"transport": "background_blender"}
+
+    def _background_render_code(self, result_path: Path) -> str:
+        source_root = Path(__file__).resolve().parents[2]
+        return "\n".join(
+            (
+                "import json, sys",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root)!r})",
+                "from cinescaffold.blender.runtime import render_clay_preview",
+                "result = render_clay_preview()",
+                (
+                    f"Path({str(result_path.resolve())!r}).write_text("
+                    "json.dumps(result, ensure_ascii=False), encoding='utf-8')"
+                ),
+            )
+        )
+
+    def _write_render_log(self, stdout: str | bytes, stderr: str | bytes) -> None:
+        def normalize(value: str | bytes) -> str:
+            return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+
+        (self.output_dir / "render_blender.log").write_text(
+            normalize(stdout) + normalize(stderr),
+            encoding="utf-8",
+        )
+
     def _prepare_output_dir(self) -> None:
         reserved = (
             "scene_ir.json",
@@ -142,6 +209,8 @@ class ExecutionRunner:
             "execution_manifest.json",
             "blender_mcp.log",
             "template_blender.log",
+            "render_blender.log",
+            "background_render_result.json",
         )
         conflicts = [name for name in reserved if (self.output_dir / name).exists()]
         if conflicts and not self.config.overwrite:
@@ -192,6 +261,8 @@ class ExecutionRunner:
             "clay_preview": "clay_preview.mp4",
             "mcp_log": "blender_mcp.log",
             "template_log": "template_blender.log",
+            "render_log": "render_blender.log",
+            "background_render_result": "background_render_result.json",
         }
         return {
             artifact_id: str((self.output_dir / name).resolve())
@@ -210,8 +281,9 @@ class ExecutionRunner:
             "status": result.status,
             "scene_ir_hash": result.scene_ir_hash,
             "scene_ir_schema_version": scene_ir.schema_version,
-            "executor_api_version": "0.1",
+            "executor_api_version": "0.2",
             "mcp_tool": MCP_BUILD_TOOL,
+            "render_backend": self.config.render_backend,
             "blender_expected": scene_ir.provenance.expected_blender,
             "elapsed_seconds": result.elapsed_seconds,
             "artifacts": result.artifacts,
