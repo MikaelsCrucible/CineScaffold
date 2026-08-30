@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-EXECUTOR_VERSION = "0.2"
+EXECUTOR_VERSION = "0.3"
 FLOAT_TOLERANCE = 1e-5
 BLENDER_ENGINE_MAP = {"BLENDER_EEVEE_NEXT": "BLENDER_EEVEE"}
 NEUTRAL_CAMERA_RIG_SPECS = (
@@ -43,6 +43,10 @@ def apply_scene_ir(
     scene["cinescaffold_scene_ir_hash"] = scene_ir_hash
     scene["cinescaffold_executor_version"] = EXECUTOR_VERSION
     scene["cinescaffold_preview_path"] = str(preview_path)
+    scene["cinescaffold_render_fps"] = scene.render.fps
+    scene["cinescaffold_render_fps_base"] = scene.render.fps_base
+    scene["cinescaffold_render_resolution_x"] = scene.render.resolution_x
+    scene["cinescaffold_render_resolution_y"] = scene.render.resolution_y
     scene.frame_set(scene_ir["timeline"]["frame_start"])
 
     snapshot = _runtime_snapshot(scene, scene_ir, entities, camera)
@@ -69,17 +73,46 @@ def apply_scene_ir(
     }
 
 
-def render_clay_preview() -> dict[str, Any]:
-    """渲染当前已验证场景中冻结的 H.264 白模预览。"""
+def render_clay_video(render_profile: str = "preview") -> dict[str, Any]:
+    """按固定档位渲染诊断预览或正式控制视频。"""
     bpy, _, _ = _blender_modules()
     scene = bpy.context.scene
     preview_value = scene.get("cinescaffold_preview_path")
     if not isinstance(preview_value, str) or not preview_value:
         raise ValueError("当前场景缺少 cinescaffold_preview_path")
-    preview_path = Path(preview_value).resolve()
-    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    control_path = Path(preview_value).resolve()
+    source_fps = int(scene.get("cinescaffold_render_fps", scene.render.fps))
+    source_fps_base = float(scene.get("cinescaffold_render_fps_base", scene.render.fps_base))
+    source_resolution_x = int(
+        scene.get("cinescaffold_render_resolution_x", scene.render.resolution_x)
+    )
+    source_resolution_y = int(
+        scene.get("cinescaffold_render_resolution_y", scene.render.resolution_y)
+    )
+    plan = _render_profile_plan(
+        render_profile,
+        frame_start=scene.frame_start,
+        frame_end=scene.frame_end,
+        fps=source_fps,
+        fps_base=source_fps_base,
+        resolution_x=source_resolution_x,
+        resolution_y=source_resolution_y,
+    )
+    output_path = (
+        control_path.parent / "diagnostic_preview.mp4"
+        if render_profile == "preview"
+        else control_path
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    scene.render.filepath = str(preview_path)
+    scene.frame_step = plan["frame_step"]
+    scene.render.fps = source_fps
+    scene.render.fps_base = plan["fps_base"]
+    scene.render.resolution_x = plan["resolution_x"]
+    scene.render.resolution_y = plan["resolution_y"]
+    scene.render.resolution_percentage = 100
+
+    scene.render.filepath = str(output_path)
     scene.render.image_settings.media_type = "VIDEO"
     scene.render.image_settings.file_format = "FFMPEG"
     scene.render.ffmpeg.format = "MPEG4"
@@ -88,16 +121,61 @@ def render_clay_preview() -> dict[str, Any]:
     scene.render.ffmpeg.audio_codec = "NONE"
     bpy.ops.render.render(animation=True)
 
-    if not preview_path.is_file() or preview_path.stat().st_size == 0:
-        raise RuntimeError(f"白模视频没有生成：{preview_path}")
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        raise RuntimeError(f"白模视频没有生成：{output_path}")
     return {
         "status": "ok",
+        "render_profile": render_profile,
         "scene_ir_hash": scene.get("cinescaffold_scene_ir_hash", ""),
-        "artifact": str(preview_path),
-        "size_bytes": preview_path.stat().st_size,
+        "artifact": str(output_path),
+        "size_bytes": output_path.stat().st_size,
         "frame_start": scene.frame_start,
         "frame_end": scene.frame_end,
+        "frame_step": scene.frame_step,
+        "rendered_frame_count": plan["rendered_frame_count"],
         "fps": scene.render.fps / scene.render.fps_base,
+        "resolution_x": scene.render.resolution_x,
+        "resolution_y": scene.render.resolution_y,
+    }
+
+
+def render_clay_preview() -> dict[str, Any]:
+    """兼容旧入口；旧入口保持完整控制视频语义。"""
+    return render_clay_video("control")
+
+
+def _render_profile_plan(
+    render_profile: str,
+    *,
+    frame_start: int,
+    frame_end: int,
+    fps: int,
+    fps_base: float,
+    resolution_x: int,
+    resolution_y: int,
+) -> dict[str, Any]:
+    if render_profile not in {"preview", "control"}:
+        raise ValueError(f"未知渲染档位：{render_profile}")
+    source_frame_count = frame_end - frame_start + 1
+    if render_profile == "control":
+        return {
+            "frame_step": 1,
+            "rendered_frame_count": source_frame_count,
+            "fps_base": fps_base,
+            "resolution_x": resolution_x,
+            "resolution_y": resolution_y,
+        }
+
+    frame_step = 2
+    rendered_frame_count = (source_frame_count + frame_step - 1) // frame_step
+    source_duration = source_frame_count * fps_base / fps
+    output_fps = rendered_frame_count / source_duration
+    return {
+        "frame_step": frame_step,
+        "rendered_frame_count": rendered_frame_count,
+        "fps_base": fps / output_fps,
+        "resolution_x": max(1, round(resolution_x / 2)),
+        "resolution_y": max(1, round(resolution_y / 2)),
     }
 
 

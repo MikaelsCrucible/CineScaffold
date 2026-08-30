@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import subprocess
@@ -40,6 +41,7 @@ class ExecutionConfig:
     template_timeout_seconds: float = 60.0
     render_timeout_seconds: float = 600.0
     render_backend: Literal["background", "mcp"] = "background"
+    render_profile: Literal["preview", "control"] = "preview"
 
 
 class ExecutionRunner:
@@ -61,6 +63,7 @@ class ExecutionRunner:
 
     async def run(self, payload: dict[str, Any]) -> ExecutionResult:
         started = time.monotonic()
+        payload = _upgrade_legacy_scene_ir(payload)
         scene_ir = SceneIR.model_validate(payload)
         validate_scene_ir_for_execution(scene_ir)
         scene_ir_hash = canonical_hash(scene_ir)
@@ -109,9 +112,9 @@ class ExecutionRunner:
         scene_blend = self.output_dir / "scene.blend"
         try:
             if self.config.render_backend == "mcp":
-                render = await self.adapter.render_preview(scene_blend)
+                render = await self.adapter.render_video(scene_blend, self.config.render_profile)
             else:
-                render = await self._render_preview_background(scene_blend)
+                render = await self._render_video_background(scene_blend)
         except Exception as error:
             result = ExecutionResult(
                 status="render_failed",
@@ -141,7 +144,7 @@ class ExecutionRunner:
         self._write_manifest(scene_ir, result)
         return result
 
-    async def _render_preview_background(self, scene_blend: Path) -> dict[str, Any]:
+    async def _render_video_background(self, scene_blend: Path) -> dict[str, Any]:
         blender_path = self.config.blender_path.resolve()
         result_path = self.output_dir / "background_render_result.json"
         code = self._background_render_code(result_path)
@@ -169,7 +172,8 @@ class ExecutionRunner:
         if completed.returncode != 0 or not result_path.is_file():
             raise ExecutionError("后台 Blender 渲染失败；请查看 render_blender.log")
         result = json.loads(result_path.read_text(encoding="utf-8"))
-        if result.get("status") != "ok" or not (self.output_dir / "clay_preview.mp4").is_file():
+        expected = self._render_output_path()
+        if result.get("status") != "ok" or not expected.is_file():
             raise ExecutionError("后台 Blender 未生成白模视频")
         return result | {"transport": "background_blender"}
 
@@ -180,8 +184,8 @@ class ExecutionRunner:
                 "import json, sys",
                 "from pathlib import Path",
                 f"sys.path.insert(0, {str(source_root)!r})",
-                "from cinescaffold.blender.runtime import render_clay_preview",
-                "result = render_clay_preview()",
+                "from cinescaffold.blender.runtime import render_clay_video",
+                f"result = render_clay_video({self.config.render_profile!r})",
                 (
                     f"Path({str(result_path.resolve())!r}).write_text("
                     "json.dumps(result, ensure_ascii=False), encoding='utf-8')"
@@ -206,6 +210,7 @@ class ExecutionRunner:
             "runtime_snapshot.json",
             "runtime_validation.json",
             "clay_preview.mp4",
+            "diagnostic_preview.mp4",
             "execution_manifest.json",
             "blender_mcp.log",
             "template_blender.log",
@@ -259,6 +264,7 @@ class ExecutionRunner:
             "runtime_snapshot": "runtime_snapshot.json",
             "runtime_validation": "runtime_validation.json",
             "clay_preview": "clay_preview.mp4",
+            "diagnostic_preview": "diagnostic_preview.mp4",
             "mcp_log": "blender_mcp.log",
             "template_log": "template_blender.log",
             "render_log": "render_blender.log",
@@ -281,9 +287,10 @@ class ExecutionRunner:
             "status": result.status,
             "scene_ir_hash": result.scene_ir_hash,
             "scene_ir_schema_version": scene_ir.schema_version,
-            "executor_api_version": "0.2",
+            "executor_api_version": "0.3",
             "mcp_tool": MCP_BUILD_TOOL,
             "render_backend": self.config.render_backend,
+            "render_profile": self.config.render_profile,
             "blender_expected": scene_ir.provenance.expected_blender,
             "elapsed_seconds": result.elapsed_seconds,
             "artifacts": result.artifacts,
@@ -297,6 +304,10 @@ class ExecutionRunner:
             encoding="utf-8",
         )
 
+    def _render_output_path(self) -> Path:
+        name = "diagnostic_preview.mp4" if self.config.render_profile == "preview" else "clay_preview.mp4"
+        return self.output_dir / name
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -304,3 +315,23 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return f"sha256:{digest.hexdigest()}"
+
+
+def _upgrade_legacy_scene_ir(payload: dict[str, Any]) -> dict[str, Any]:
+    timeline = payload.get("timeline")
+    if not isinstance(timeline, dict) or "duration_resolution" in timeline:
+        return payload
+    duration = timeline.get("duration_seconds")
+    frame_count = timeline.get("frame_count")
+    if not isinstance(duration, (int, float)) or not isinstance(frame_count, int):
+        return payload
+    upgraded = copy.deepcopy(payload)
+    upgraded["timeline"]["duration_resolution"] = {
+        "request": {"mode": "legacy_frozen"},
+        "resolution_method": "legacy_frozen",
+        "proposed_duration_seconds": duration,
+        "resolved_duration_seconds": duration,
+        "frame_count": frame_count,
+        "reason": "从旧版已冻结 Scene IR 迁移；原始时长请求类型未知。",
+    }
+    return upgraded

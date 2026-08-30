@@ -67,7 +67,7 @@ Agent 协议由 Runner 确定性约束：闭集参数直接进入 Tool Schema �
 
 真实 Agent 回归暴露的规划缺陷已经进入确定性门禁：`push_in/pull_out` 按摄影机到目标的距离变化验证，不绑定世界轴；`speed_range` 独立表达移动速度，来源兼容性检查会拒绝用摄影机距离冒充“缓慢”；屏幕构图按旋转后代理体包围盒计算并使用冻结数值容差。Solver 不会为了制造侧面可见性而擅自旋转实体；三维代理是否真实构建由 Blender Runtime Validator 读取实际 mesh 拓扑和局部包围盒验证，与摄影机投影视角解耦。
 
-无 Agent 2 的执行基线也已实现：`cinescaffold execute` 在修改 Blender 前验证 IR，创建 factory template，经官方 Blender MCP 的 `execute_blender_code_for_cli` 调用固定 Executor，从空场景生成代理几何、逐帧实体/摄影机状态、白模材质和灯光，并回读 Runtime Snapshot。H.264 默认由同一固定 Executor 在后台 Blender 中渲染，避开官方 MCP CLI 工具的短调用时限；可用 `--render-backend mcp` 保留短场景的纯 MCP 渲染。未给定灯光语义时，Compiler 使用版本化的摄影机相对对称无影灯组，不推断世界光源方向；Runtime Validator 会核对灯组用途、模式、父级、旋转、能量和阴影开关。两次相同 IR 重建得到字节一致的规范化 Runtime Snapshot；两实体、144 帧黄金场景已在 Blender 5.2.1 LTS 上完成 0 violation 构建和视频渲染。
+无 Agent 2 的执行基线也已实现：`cinescaffold execute` 在修改 Blender 前验证 IR，创建 factory template，经官方 Blender MCP 的 `execute_blender_code_for_cli` 调用固定 Executor，从空场景生成代理几何、逐帧实体/摄影机状态、白模材质和灯光，并回读 Runtime Snapshot。H.264 默认由同一固定 Executor 在后台 Blender 中渲染，避开官方 MCP CLI 工具的短调用时限；可用 `--render-backend mcp` 保留短场景的纯 MCP 渲染。执行默认使用 `preview` 诊断档：保持整段时长，但以半分辨率和每两帧一次的采样输出 `diagnostic_preview.mp4`；`--render-profile control` 才严格按 Scene IR 的完整分辨率和 FPS 输出正式 `clay_preview.mp4`。未给定灯光语义时，Compiler 使用版本化的摄影机相对对称无影灯组，不推断世界光源方向；Runtime Validator 会核对灯组用途、模式、父级、旋转、能量和阴影开关。两次相同 IR 重建得到字节一致的规范化 Runtime Snapshot；两实体、144 帧黄金场景已在 Blender 5.2.1 LTS 上完成 0 violation 构建和视频渲染。
 
 ## 使用
 
@@ -166,7 +166,16 @@ cinescaffold execute \
   --output-dir runs/example/execution
 ```
 
-输出包括 `scene.blend`、`runtime_snapshot.json`、`runtime_validation.json`、`clay_preview.mp4`、MCP/Blender 日志与 `execution_manifest.json`。已有同名产物时默认拒绝覆盖；只有显式传入 `--overwrite` 才会清理本次执行的固定产物。Blender 5.2 的 Metal/EEVEE 后台执行在受限沙箱中可能无法初始化，CI 或桌面 Agent 环境需要给予 Blender 正常的 GPU/进程权限。
+默认输出包括 `scene.blend`、`runtime_snapshot.json`、`runtime_validation.json`、`diagnostic_preview.mp4`、MCP/Blender 日志与 `execution_manifest.json`。需要用于后续视频生成或正式实验的完整控制视频时运行：
+
+```bash
+cinescaffold execute \
+  --scene-ir runs/example/planning/final_scene_ir.json \
+  --output-dir runs/example/control-execution \
+  --render-profile control
+```
+
+`preview` 只改变渲染进程的采样设置，不修改 Scene IR、保存的 `.blend` 或 Runtime Validation；manifest 会记录实际帧步长、输出 FPS、分辨率与档位。已有同名产物时默认拒绝覆盖；只有显式传入 `--overwrite` 才会清理本次执行的固定产物。Blender 5.2 的 Metal/EEVEE 后台执行在受限沙箱中可能无法初始化，CI 或桌面 Agent 环境需要给予 Blender 正常的 GPU/进程权限。
 
 Provider 价格会变化，因此代码不硬编码价格。实验运行时可把当日价格作为快照显式传入：
 

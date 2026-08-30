@@ -251,7 +251,7 @@ def compile_scene_ir(
             scene_ir_compiler_version=COMPILER_VERSION,
             random_seed=profile.random_seed,
             target_runtime_profile="blender_5_2_lts_v0.1",
-            executor_api_version="0.1",
+            executor_api_version="0.3",
             expected_blender=">=5.2,<5.3",
             agent_run_id=agent_run_id,
             trace_ref=trace_ref,

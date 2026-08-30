@@ -6,7 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cinescaffold.blender.runtime import _blender_render_engine, _validate_mesh_geometry
+from cinescaffold.blender.runtime import (
+    _blender_render_engine,
+    _render_profile_plan,
+    _validate_mesh_geometry,
+)
 from cinescaffold.errors import ExecutionError
 from cinescaffold.execution.mcp import OfficialBlenderMCPAdapter
 from cinescaffold.execution.runner import ExecutionConfig, ExecutionRunner
@@ -31,10 +35,11 @@ class _FakeAdapter:
             "validation_passed": True,
         }
 
-    async def render_preview(self, scene_blend):
-        preview = scene_blend.parent / "clay_preview.mp4"
+    async def render_video(self, scene_blend, render_profile):
+        name = "diagnostic_preview.mp4" if render_profile == "preview" else "clay_preview.mp4"
+        preview = scene_blend.parent / name
         preview.write_bytes(b"fake-video")
-        return {"status": "ok", "artifact": str(preview)}
+        return {"status": "ok", "artifact": str(preview), "render_profile": render_profile}
 
 
 class _FailingAdapter:
@@ -67,8 +72,36 @@ class ExecutionTest(unittest.TestCase):
     def test_execution_validation_accepts_committed_ir(self) -> None:
         validate_scene_ir_for_execution(self.scene_ir)
 
+    def test_runner_upgrades_legacy_frozen_timeline(self) -> None:
+        payload = self.scene_ir.model_dump(mode="json")
+        del payload["timeline"]["duration_resolution"]
+        with tempfile.TemporaryDirectory() as directory:
+            runner = _FakeExecutionRunner(
+                ExecutionConfig(output_dir=Path(directory), render_backend="mcp"),
+                adapter=_FakeAdapter(),
+            )
+            result = asyncio.run(runner.run(payload))
+
+        self.assertEqual(result.status, "success")
+
     def test_scene_ir_engine_maps_to_blender_5_2_enum(self) -> None:
         self.assertEqual(_blender_render_engine("BLENDER_EEVEE_NEXT"), "BLENDER_EEVEE")
+
+    def test_preview_profile_halves_resolution_and_samples_without_changing_duration(self) -> None:
+        plan = _render_profile_plan(
+            "preview",
+            frame_start=1,
+            frame_end=144,
+            fps=24,
+            fps_base=1.0,
+            resolution_x=1280,
+            resolution_y=720,
+        )
+
+        self.assertEqual(plan["frame_step"], 2)
+        self.assertEqual(plan["rendered_frame_count"], 72)
+        self.assertEqual(plan["fps_base"], 2.0)
+        self.assertEqual((plan["resolution_x"], plan["resolution_y"]), (640, 360))
 
     def test_runtime_geometry_rejects_flat_mesh_for_box(self) -> None:
         violations = []
@@ -130,8 +163,26 @@ class ExecutionTest(unittest.TestCase):
 
         self.assertEqual(result.status, "success")
         self.assertEqual(manifest["status"], "success")
-        self.assertIn("clay_preview", manifest["artifact_sha256"])
+        self.assertIn("diagnostic_preview", manifest["artifact_sha256"])
         self.assertEqual(manifest["render_backend"], "mcp")
+        self.assertEqual(manifest["render_profile"], "preview")
+
+    def test_control_profile_keeps_formal_output_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "execution"
+            runner = _FakeExecutionRunner(
+                ExecutionConfig(
+                    output_dir=output_dir,
+                    render_backend="mcp",
+                    render_profile="control",
+                ),
+                adapter=_FakeAdapter(),
+            )
+            result = asyncio.run(runner.run(self.scene_ir.model_dump(mode="json")))
+
+        self.assertEqual(result.status, "success")
+        self.assertIn("clay_preview", result.artifacts)
+        self.assertNotIn("diagnostic_preview", result.artifacts)
 
     def test_background_render_bootstrap_is_fixed_and_syntax_valid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -142,7 +193,7 @@ class ExecutionTest(unittest.TestCase):
             code = runner._background_render_code(Path(directory) / "result.json")
 
         compile(code, "<background-render>", "exec")
-        self.assertIn("render_clay_preview", code)
+        self.assertIn("render_clay_video('preview')", code)
         self.assertNotIn("bpy.ops", code)
 
     def test_runner_requires_explicit_overwrite_for_existing_artifacts(self) -> None:

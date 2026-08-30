@@ -31,9 +31,11 @@ def validate_scene_ir_for_execution(scene_ir: SceneIR) -> None:
     preview_outputs = [item for item in scene_ir.render.outputs if item.type == "h264_preview"]
     if len(preview_outputs) != 1 or not preview_outputs[0].relative_path:
         raise ValueError("Scene IR 必须声明唯一且带 relative_path 的 H.264 preview")
-    if scene_ir.provenance.executor_api_version != "0.1":
+    supported_executor_apis = {"0.1", "0.3"}
+    if scene_ir.provenance.executor_api_version not in supported_executor_apis:
         raise ValueError(
-            f"Executor API 不兼容：{scene_ir.provenance.executor_api_version}，当前为 0.1"
+            "Executor API 不兼容："
+            f"{scene_ir.provenance.executor_api_version}，当前支持 {sorted(supported_executor_apis)}"
         )
     _reject_non_finite(scene_ir.model_dump(mode="json"), "$")
 

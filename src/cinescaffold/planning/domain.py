@@ -429,15 +429,24 @@ class InferredDurationRequest(StrictModel):
     mode: Literal["inferred"]
 
 
+class LegacyDurationRequest(StrictModel):
+    mode: Literal["legacy_frozen"]
+
+
 DurationRequest = Annotated[
-    ExactDurationRequest | RangeDurationRequest | InferredDurationRequest,
+    ExactDurationRequest | RangeDurationRequest | InferredDurationRequest | LegacyDurationRequest,
     Field(discriminator="mode"),
 ]
 
 
 class DurationResolution(StrictModel):
     request: DurationRequest
-    resolution_method: Literal["user_exact", "agent_within_user_range", "agent_inferred"]
+    resolution_method: Literal[
+        "user_exact",
+        "agent_within_user_range",
+        "agent_inferred",
+        "legacy_frozen",
+    ]
     proposed_duration_seconds: float = Field(gt=0)
     resolved_duration_seconds: float = Field(gt=0)
     frame_count: int = Field(gt=0)

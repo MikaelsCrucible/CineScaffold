@@ -165,6 +165,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="background",
         help="默认用无 MCP 调用时限的后台 Blender 渲染；构建仍经官方 MCP",
     )
+    execute_parser.add_argument(
+        "--render-profile",
+        choices=("preview", "control"),
+        default="preview",
+        help="preview 为半分辨率/半采样率诊断视频；control 保持 Scene IR 正式设置",
+    )
     execute_parser.add_argument("--render-timeout-seconds", type=float, default=600.0)
     return parser
 
@@ -259,6 +265,7 @@ def _run_execute(args: argparse.Namespace) -> int:
         mcp_command=args.mcp_command,
         overwrite=args.overwrite,
         render_backend=args.render_backend,
+        render_profile=args.render_profile,
         render_timeout_seconds=args.render_timeout_seconds,
     )
     result = asyncio.run(ExecutionRunner(config).run(payload))

@@ -40,8 +40,12 @@ class OfficialBlenderMCPAdapter:
         code = self._apply_code(scene_ir, scene_ir_hash, output_dir)
         return await self._call_cli_tool(template_blend, code)
 
+    async def render_video(self, scene_blend: Path, render_profile: str) -> dict[str, Any]:
+        return await self._call_cli_tool(scene_blend, self._render_code(render_profile))
+
     async def render_preview(self, scene_blend: Path) -> dict[str, Any]:
-        return await self._call_cli_tool(scene_blend, self._render_code())
+        """兼容旧调用，保持完整控制视频。"""
+        return await self.render_video(scene_blend, "control")
 
     async def _call_cli_tool(self, blend_file: Path, code: str) -> dict[str, Any]:
         self._validate_runtime_paths(blend_file)
@@ -87,13 +91,15 @@ class OfficialBlenderMCPAdapter:
             )
         )
 
-    def _render_code(self) -> str:
+    def _render_code(self, render_profile: str) -> str:
+        if render_profile not in {"preview", "control"}:
+            raise ValueError(f"未知渲染档位：{render_profile}")
         return "\n".join(
             (
                 "import sys",
                 f"sys.path.insert(0, {str(self.source_root)!r})",
-                "from cinescaffold.blender.runtime import render_clay_preview",
-                "result = render_clay_preview()",
+                "from cinescaffold.blender.runtime import render_clay_video",
+                f"result = render_clay_video({render_profile!r})",
             )
         )
 

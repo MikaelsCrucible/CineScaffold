@@ -560,6 +560,7 @@
             "mapping": {
               "exact": "#/$defs/ExactDurationRequest",
               "inferred": "#/$defs/InferredDurationRequest",
+              "legacy_frozen": "#/$defs/LegacyDurationRequest",
               "range": "#/$defs/RangeDurationRequest"
             },
             "propertyName": "mode"
@@ -573,6 +574,9 @@
             },
             {
               "$ref": "#/$defs/InferredDurationRequest"
+            },
+            {
+              "$ref": "#/$defs/LegacyDurationRequest"
             }
           ],
           "title": "Request"
@@ -581,7 +585,8 @@
           "enum": [
             "user_exact",
             "agent_within_user_range",
-            "agent_inferred"
+            "agent_inferred",
+            "legacy_frozen"
           ],
           "title": "Resolution Method",
           "type": "string"
@@ -835,6 +840,21 @@
         "minimum_inside_fraction"
       ],
       "title": "KeepInFrameParameters",
+      "type": "object"
+    },
+    "LegacyDurationRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "legacy_frozen",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "LegacyDurationRequest",
       "type": "object"
     },
     "LookAtParameters": {
