@@ -81,6 +81,8 @@ Agent 协议由 Runner 确定性约束：闭集参数直接进入 Tool Schema �
 
 最新 10 秒真实回归由 Mock Semantic Parser 明确写入时长，再由 DeepSeek Scene Planning Agent 生成 240 帧 IR；修复后的飞船代理为 `90 × 30 × 70 m`、最低点高于地面约 5 m，摄影机推进 14 m。正式规划 hard pass、soft score `0.8333`，Blender Runtime Validation 为 0 violation；Workbench preview 输出 120 帧、640×360、12 fps 的 10 秒视频，完整 MCP 构建与渲染状态机内部耗时约 5.36 秒。
 
+第三轮道路接车回归使用 Mock Semantic Parser 生成 12 秒六维 Brief，并由真实 `deepseek-v4-pro` 规划。回归连续暴露并修复了工具 Schema 重复膨胀、工具轮正文回灌、Pydantic 联合错误洪泛、无界工具历史、晚开始 Track 与首关键帧前状态提前生效等 harness 缺陷；最终 revision 13 续跑段使用 8 requests、9 tool calls，最大单请求上下文由失败段的 38,688 降至 22,822 tokens，Commit Gate `hard_pass=true`、`soft_score=1.0`。修正首关键帧语义后的 Scene IR hash 为 `sha256:4cafe2d9360a43d2da401d49bed9c73365259b8a09e96304b352339d60b272d3`；官方 MCP 构建和 Runtime Validation 为 0 violation，12 秒 Workbench preview 共 144 个采样帧，执行耗时约 4.64 秒。视觉审计仍把该产物标为“技术链路成功、语义可读性未完全验收”：人物在开头约 2 秒不入画，上车过程被车体部分遮挡，且“沿道路行驶”的推断语义缺少通用 path-adherence 门禁。它不会作为论文正样本，相关问题应由通用动作可见性、遮挡和路径依附能力解决，不能写汽车专用规则。
+
 ## 使用
 
 项目固定使用 Python 3.12.x；`.python-version` 记录解释器系列，`requirements.lock` 锁定完整 Python 依赖及哈希。推荐使用 [uv](https://docs.astral.sh/uv/) 建立环境：
