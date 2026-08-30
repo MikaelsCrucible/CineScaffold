@@ -71,6 +71,8 @@ Agent 协议由 Runner 确定性约束：闭集参数直接进入 Tool Schema �
 
 第一次太阳—地球—月亮真实回归虽然在旧门禁下 hard pass，却让两层轨道都在 10 秒内循环一次，形成肉眼近似刚性编队的 1:1 相位锁定。该产物保留为 Validator 反例：Toolkit v0.10 会稳定报告 `NESTED_ORBIT_PHASE_LOCKED`，不再把“数值相对位置变化”误当成“控制视频中可辨识的相对运动”。
 
+修复后使用同一六维稿从 revision 0 重跑，DeepSeek 在首次 Motion Patch 就采用地球 `cycle_count=1`、月球 `cycle_count=3`，最终于 revision 11 提交，hard pass、soft score `1.0`。月球相对地球在每 20 帧依次经过右、上、左、下，10 秒内完成三圈；全帧地球—太阳距离为 11.086–12.000 m，月球—地球距离为 2.310–2.500 m。官方 Blender MCP 构建与 Runtime Validation 为 0 violation，Workbench preview 输出 120 帧、640×360、12 fps 的 10 秒视频，执行耗时约 4.65 秒。本次规划使用 15 requests、12 tool calls、319,263 aggregate input tokens（270,208 cache read、49,055 uncached）和 3,695 output tokens；供应商响应 `cost=0.025533079`，未返回币种或价格快照。
+
 无 Agent 2 的执行基线也已实现：`cinescaffold execute` 在修改 Blender 前验证 IR，创建 factory template，经官方 Blender MCP 的 `execute_blender_code_for_cli` 调用固定 Executor，从空场景生成代理几何、逐帧实体/摄影机状态、白模材质和灯光，并回读 Runtime Snapshot。H.264 默认由同一固定 Executor 在后台 Blender 中渲染，避开官方 MCP CLI 工具的短调用时限；可用 `--render-backend mcp` 保留短场景的纯 MCP 渲染。执行默认使用 `preview` 诊断档：在独立渲染进程中切换到中性 Workbench，以半分辨率和每两帧一次的采样保持整段时长，输出 `diagnostic_preview.mp4`；Workbench 的 cast shadow 与 cavity 接触暗部固定关闭，不把未声明阴影带入白模。`--render-profile control` 才严格按 Scene IR 的 EEVEE、完整分辨率和 FPS 输出正式 `clay_preview.mp4`。未给定灯光语义时，Compiler 使用版本化的摄影机相对对称无影灯组，不推断世界光源方向；Runtime Validator 会核对灯组用途、模式、父级、旋转、能量和阴影开关。两次相同 IR 重建得到字节一致的规范化 Runtime Snapshot；两实体、144 帧黄金场景已在 Blender 5.2.1 LTS 上完成 0 violation 构建和视频渲染。
 
 最新 10 秒真实回归由 Mock Semantic Parser 明确写入时长，再由 DeepSeek Scene Planning Agent 生成 240 帧 IR；修复后的飞船代理为 `90 × 30 × 70 m`、最低点高于地面约 5 m，摄影机推进 14 m。正式规划 hard pass、soft score `0.8333`，Blender Runtime Validation 为 0 violation；Workbench preview 输出 120 帧、640×360、12 fps 的 10 秒视频，完整 MCP 构建与渲染状态机内部耗时约 5.36 秒。
