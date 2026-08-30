@@ -289,6 +289,38 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             {item["code"] for item in validation["violations"]},
         )
 
+    def test_entity_partially_intersecting_ground_is_rejected(self) -> None:
+        toolkit = _toolkit()
+        ground = {
+            "entity_id": "desert_ground",
+            "label": "荒漠地面",
+            "role": "environment",
+            "proxy": {"type": "plane", "size_xy_m": [400.0, 400.0]},
+            "tags": ["environment", "ground"],
+            "source_refs": [],
+            "solved_transform": {
+                "translation_m": [0.0, 0.0, 0.0],
+                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+            },
+        }
+        ship = _ship_entity() | {
+            "proxy": {"type": "box", "size_xyz_m": [180.0, 180.0, 200.0]},
+            "solved_transform": {
+                "translation_m": [180.0, 0.0, 10.0],
+                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+            },
+        }
+        toolkit.apply_entity_patch([ground, ship], [])
+
+        validation = toolkit.validate_candidate(checks=["transforms"])
+
+        self.assertIn(
+            "ENTITY_INTERSECTS_GROUND",
+            {item["code"] for item in validation["violations"]},
+        )
+
     def test_camera_subject_is_not_reported_as_missing_entity(self) -> None:
         toolkit = _toolkit()
         toolkit.apply_camera_patch(

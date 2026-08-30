@@ -40,7 +40,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.6"
+TOOLKIT_VERSION = "0.7"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -905,11 +905,11 @@ def _transform_violations(state: CandidateState) -> list[Violation]:
                     f"父级非均匀缩放无法无损编译：{entity.parent_id}",
                     entity_ids=[entity.parent_id, entity.entity_id],
                 ))
-    violations.extend(_below_ground_violations(state))
+    violations.extend(_ground_penetration_violations(state))
     return violations
 
 
-def _below_ground_violations(state: CandidateState) -> list[Violation]:
+def _ground_penetration_violations(state: CandidateState) -> list[Violation]:
     ground_ids = [
         entity.entity_id
         for entity in state.entities.values()
@@ -941,6 +941,7 @@ def _below_ground_violations(state: CandidateState) -> list[Violation]:
                 rotated = rotate_vector(transform.rotation_quaternion_wxyz, scaled)
                 world_z_values.append(transform.translation_m[2] + rotated[2])
             maximum_z = max(world_z_values)
+            minimum_z = min(world_z_values)
             if maximum_z < ground_z - 1e-4:
                 violations.append(
                     _violation(
@@ -951,6 +952,18 @@ def _below_ground_violations(state: CandidateState) -> list[Violation]:
                         expected={"minimum_maximum_z": ground_z},
                         actual={"maximum_z": maximum_z, "ground_z": ground_z},
                         adjustable_variables=["entity transforms", "camera transform"],
+                    )
+                )
+            elif minimum_z < ground_z - 1e-3:
+                violations.append(
+                    _violation(
+                        "ENTITY_INTERSECTS_GROUND",
+                        f"Entity 包围盒穿入水平地面：{entity.entity_id}",
+                        entity_ids=[entity.entity_id],
+                        time_range_seconds=(time_seconds, time_seconds),
+                        expected={"minimum_z": ground_z},
+                        actual={"minimum_z": minimum_z, "ground_z": ground_z},
+                        adjustable_variables=["entity transforms"],
                     )
                 )
     return violations
