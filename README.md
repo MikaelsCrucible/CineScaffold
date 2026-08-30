@@ -129,12 +129,15 @@ cinescaffold plan \
 export DEEPSEEK_API_KEY="..."
 cinescaffold plan \
   --provider deepseek \
-  --model <model-id> \
+  --model deepseek-v4-pro \
+  --thinking-mode enabled \
+  --reasoning-effort high \
+  --model-max-tokens 8192 \
   --brief runs/example/cinematic_brief.json \
   --output-dir runs/example/deepseek-planning
 ```
 
-每次规划都会写出 `planning_agent_tool_trace.jsonl`、`constraint_plan.json`、`planning_validation.json`、`planning_summary.json`；成功时额外写出 `final_scene_ir.json`。Trace 记录每轮模型请求、工具参数/结果、revision、验证错误和耗时，但不保存模型 thinking/reasoning 内容。`planning_summary.json` 记录输入、输出、缓存、请求和工具调用用量。
+每次规划都会写出 `planning_agent_tool_trace.jsonl`、`constraint_plan.json`、`planning_validation.json`、`planning_summary.json`；成功时额外写出 `final_scene_ir.json`。Trace 记录每轮模型请求、模型设置、工具参数/结果、revision、验证错误和耗时，但不保存模型 thinking/reasoning 内容。`planning_summary.json` 记录输入、输出、缓存、请求和工具调用用量。DeepSeek 的单次输出上限会通过其 Chat Completions 所需的 `max_tokens` 字段发送；其他兼容 Provider 使用 PydanticAI 的通用设置。
 
 将已提交 Scene IR 确定性执行为 Blender 场景和白模视频：
 

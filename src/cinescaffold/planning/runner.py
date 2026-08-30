@@ -8,7 +8,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.exceptions import UsageLimitExceeded
@@ -49,6 +49,9 @@ class InterpreterRunConfig(BaseModel):
     max_total_tokens: int | None = Field(default=150_000, ge=1)
     max_seconds: float = Field(default=300.0, gt=0)
     max_commit_attempts: int = Field(default=3, ge=1)
+    thinking_mode: Literal["enabled", "disabled"] | None = None
+    reasoning_effort: Literal["low", "high", "max"] | None = None
+    model_max_tokens: int | None = Field(default=None, ge=1)
     trace_config: TraceConfig = Field(default_factory=TraceConfig)
     cost_rates: CostRates | None = None
 
@@ -94,6 +97,7 @@ class InterpreterRunner:
             _write_json(run_dir / "cinematic_brief.json", cinematic_brief)
             _write_json(run_dir / "objective_planning_brief.json", projection.model_dump(mode="json"))
             system_prompt = self.config.system_prompt_path.read_text(encoding="utf-8")
+            model_settings = _planning_model_settings(self.config)
             trace.record(
                 "run_started",
                 provider=self.config.provider,
@@ -101,6 +105,7 @@ class InterpreterRunner:
                 source_brief_hash=projection.objective_brief.source_brief_sha256,
                 system_prompt_sha256=_text_hash(system_prompt),
                 toolkit_version="0.1",
+                model_settings=model_settings,
                 limits={
                     "max_requests": self.config.max_requests,
                     "max_tool_calls": self.config.max_tool_calls,
@@ -167,6 +172,7 @@ class InterpreterRunner:
                         deps=deps,
                         usage=usage,
                         usage_limits=usage_limits,
+                        model_settings=model_settings,
                         run_id=f"{run_id}_attempt_{attempt:02d}",
                         conversation_id=run_id,
                     )
@@ -328,6 +334,24 @@ def _provider_api_key(provider: str) -> str | None:
     if provider == "deepseek":
         return os.environ.get("DEEPSEEK_API_KEY")
     return None
+
+
+def _planning_model_settings(config: InterpreterRunConfig) -> dict[str, Any]:
+    settings: dict[str, Any] = {}
+    if config.reasoning_effort is not None:
+        settings["openai_reasoning_effort"] = config.reasoning_effort
+    if config.provider == "deepseek":
+        extra_body: dict[str, Any] = {}
+        if config.thinking_mode is not None:
+            extra_body["thinking"] = {"type": config.thinking_mode}
+        if config.model_max_tokens is not None:
+            # DeepSeek Chat Completions 使用 max_tokens。
+            extra_body["max_tokens"] = config.model_max_tokens
+        if extra_body:
+            settings["extra_body"] = extra_body
+    elif config.model_max_tokens is not None:
+        settings["max_tokens"] = config.model_max_tokens
+    return settings
 
 
 def _new_run_id() -> str:

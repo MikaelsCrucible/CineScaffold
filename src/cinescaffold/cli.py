@@ -97,6 +97,21 @@ def _build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--max-total-tokens", type=int, default=150_000)
     plan_parser.add_argument("--max-seconds", type=float, default=300.0)
     plan_parser.add_argument("--max-commit-attempts", type=int, default=3)
+    plan_parser.add_argument(
+        "--thinking-mode",
+        choices=("enabled", "disabled"),
+        help="显式设置 DeepSeek 思考模式",
+    )
+    plan_parser.add_argument(
+        "--reasoning-effort",
+        choices=("low", "high", "max"),
+        help="固定模型推理强度",
+    )
+    plan_parser.add_argument(
+        "--model-max-tokens",
+        type=int,
+        help="限制单次模型响应 token 数",
+    )
     plan_parser.add_argument("--trace-max-event-bytes", type=int, default=32_768)
     plan_parser.add_argument("--trace-max-string-chars", type=int, default=4_096)
     plan_parser.add_argument("--input-cost-per-million")
@@ -189,6 +204,9 @@ def _run_plan(args: argparse.Namespace) -> int:
         max_total_tokens=args.max_total_tokens,
         max_seconds=args.max_seconds,
         max_commit_attempts=args.max_commit_attempts,
+        thinking_mode=args.thinking_mode,
+        reasoning_effort=args.reasoning_effort,
+        model_max_tokens=args.model_max_tokens,
         trace_config=TraceConfig(
             max_event_bytes=args.trace_max_event_bytes,
             max_string_chars=args.trace_max_string_chars,

@@ -7,7 +7,11 @@ import unittest
 from decimal import Decimal
 from pathlib import Path
 
-from cinescaffold.planning.runner import InterpreterRunConfig, InterpreterRunner
+from cinescaffold.planning.runner import (
+    InterpreterRunConfig,
+    InterpreterRunner,
+    _planning_model_settings,
+)
 from cinescaffold.planning.models import create_planning_model
 from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.trace import CostRates, TraceConfig
@@ -27,6 +31,27 @@ class InterpreterRunnerTest(unittest.TestCase):
 
         self.assertEqual(openai_model.provider.name, "openai")
         self.assertEqual(deepseek_model.provider.name, "deepseek")
+
+    def test_deepseek_settings_use_chat_completion_fields(self) -> None:
+        config = InterpreterRunConfig(
+            provider="deepseek",
+            model="deepseek-v4-pro",
+            run_dir=Path("unused"),
+            thinking_mode="enabled",
+            reasoning_effort="high",
+            model_max_tokens=8192,
+        )
+
+        self.assertEqual(
+            _planning_model_settings(config),
+            {
+                "openai_reasoning_effort": "high",
+                "extra_body": {
+                    "thinking": {"type": "enabled"},
+                    "max_tokens": 8192,
+                },
+            },
+        )
 
     def test_mock_agent_completes_loop_and_records_bounded_trace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
