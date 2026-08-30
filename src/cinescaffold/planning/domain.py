@@ -433,8 +433,18 @@ class LegacyDurationRequest(StrictModel):
     mode: Literal["legacy_frozen"]
 
 
+class BriefDurationRequest(StrictModel):
+    mode: Literal["cinematic_brief"]
+    source_status: Literal["explicit", "inferred", "default"]
+    seconds: float = Field(gt=0)
+
+
 DurationRequest = Annotated[
-    ExactDurationRequest | RangeDurationRequest | InferredDurationRequest | LegacyDurationRequest,
+    ExactDurationRequest
+    | RangeDurationRequest
+    | InferredDurationRequest
+    | LegacyDurationRequest
+    | BriefDurationRequest,
     Field(discriminator="mode"),
 ]
 
@@ -446,6 +456,9 @@ class DurationResolution(StrictModel):
         "agent_within_user_range",
         "agent_inferred",
         "legacy_frozen",
+        "brief_explicit",
+        "brief_inferred",
+        "brief_default",
     ]
     proposed_duration_seconds: float = Field(gt=0)
     resolved_duration_seconds: float = Field(gt=0)

@@ -18,6 +18,9 @@ def valid_model_output() -> dict[str, Any]:
 def valid_planning_brief() -> dict[str, Any]:
     content = valid_model_output()
     content["summary"] = "男人孤独地面对远处飞船"
+    content["timeline"].update(
+        {"duration_seconds": 6.0, "duration_source_status": "inferred"}
+    )
     content["subjects"] = [
         {
             "id": "man_01",

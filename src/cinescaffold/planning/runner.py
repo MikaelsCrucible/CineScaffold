@@ -26,14 +26,7 @@ from cinescaffold.planning.domain import (
     PlanningProfile,
     UnsupportedResult,
 )
-from cinescaffold.planning.duration import (
-    DurationResolverDeps,
-    attach_duration_resolution,
-    create_duration_resolver_agent,
-    duration_prompt,
-    duration_request,
-    freeze_duration,
-)
+from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
 from cinescaffold.planning.models import create_planning_model
 from cinescaffold.planning.objective import ObjectiveProjection, project_objective_brief
 from cinescaffold.planning.toolkit import (
@@ -56,7 +49,6 @@ class InterpreterRunConfig(BaseModel):
     model: str | None = None
     base_url: str | None = None
     system_prompt_path: Path = Path("prompts/scene_planner/system.md")
-    duration_prompt_path: Path = Path("prompts/duration_resolver/system.md")
     run_dir: Path
     resume_from: Path | None = None
     run_id: str | None = None
@@ -116,7 +108,6 @@ class InterpreterRunner:
             projection = project_objective_brief(cinematic_brief)
             _write_json(run_dir / "cinematic_brief.json", cinematic_brief)
             system_prompt = self.config.system_prompt_path.read_text(encoding="utf-8")
-            duration_system_prompt = self.config.duration_prompt_path.read_text(encoding="utf-8")
             model_settings = _planning_model_settings(self.config)
             trace.record(
                 "run_started",
@@ -124,7 +115,6 @@ class InterpreterRunner:
                 model=model_label,
                 source_brief_hash=projection.objective_brief.source_brief_sha256,
                 system_prompt_sha256=_text_hash(system_prompt),
-                duration_prompt_sha256=_text_hash(duration_system_prompt),
                 toolkit_version=TOOLKIT_VERSION,
                 model_settings=model_settings,
                 limits={
@@ -155,6 +145,37 @@ class InterpreterRunner:
                 ],
             )
             profile = PlanningProfile()
+            if self.config.resume_from is not None:
+                resumed_raw = json.loads(self.config.resume_from.read_text(encoding="utf-8"))
+                resolution = resumed_raw["candidate"]["timeline"]["duration_resolution"]
+                projection = projection.model_copy(
+                    update={
+                        "objective_brief": attach_duration_resolution(
+                            projection.objective_brief,
+                            resolution,
+                        )
+                    }
+                )
+                trace.record("duration_resolution_reused", resolution=resolution)
+            else:
+                resolution = freeze_brief_duration(
+                    projection.objective_brief.timeline,
+                    fps_numerator=profile.fps_numerator,
+                    fps_denominator=profile.fps_denominator,
+                )
+                projection = projection.model_copy(
+                    update={
+                        "objective_brief": attach_duration_resolution(
+                            projection.objective_brief,
+                            resolution,
+                        )
+                    }
+                )
+                trace.record(
+                    "duration_frozen_from_brief",
+                    resolution=resolution.model_dump(mode="json"),
+                )
+            _write_json(run_dir / "objective_planning_brief.json", projection.model_dump(mode="json"))
             api_key = _provider_api_key(self.config.provider)
             raw_model = create_planning_model(
                 self.config.provider,
@@ -173,66 +194,6 @@ class InterpreterRunner:
                 output_tokens_limit=self.config.max_output_tokens,
                 total_tokens_limit=self.config.max_total_tokens,
             )
-            if self.config.resume_from is not None:
-                resumed_raw = json.loads(self.config.resume_from.read_text(encoding="utf-8"))
-                resolution = resumed_raw["candidate"]["timeline"]["duration_resolution"]
-                projection = projection.model_copy(
-                    update={
-                        "objective_brief": attach_duration_resolution(
-                            projection.objective_brief,
-                            resolution,
-                        )
-                    }
-                )
-                trace.record("duration_resolution_reused", resolution=resolution)
-            else:
-                request_mode, minimum, maximum = duration_request(projection.objective_brief.timeline)
-                if request_mode == "exact":
-                    assert minimum is not None
-                    resolution = freeze_duration(
-                        request_mode=request_mode,
-                        proposed_seconds=minimum,
-                        reason="采用用户给出的精确时长。",
-                        fps_numerator=profile.fps_numerator,
-                        fps_denominator=profile.fps_denominator,
-                    )
-                else:
-                    resolver = create_duration_resolver_agent(tracing_model, duration_system_prompt)
-                    remaining = max(0.001, started + self.config.max_seconds - time.monotonic())
-                    async with asyncio.timeout(remaining):
-                        duration_result = await resolver.run(
-                            duration_prompt(
-                                projection.objective_brief,
-                                request_mode,
-                                minimum,
-                                maximum,
-                            ),
-                            deps=DurationResolverDeps(minimum, maximum),
-                            usage=usage,
-                            usage_limits=usage_limits,
-                            model_settings=model_settings,
-                            run_id=f"{run_id}_duration",
-                            conversation_id=run_id,
-                        )
-                    resolution = freeze_duration(
-                        request_mode=request_mode,
-                        proposed_seconds=duration_result.output.duration_seconds,
-                        reason=duration_result.output.reason,
-                        fps_numerator=profile.fps_numerator,
-                        fps_denominator=profile.fps_denominator,
-                        minimum_seconds=minimum,
-                        maximum_seconds=maximum,
-                    )
-                projection = projection.model_copy(
-                    update={
-                        "objective_brief": attach_duration_resolution(
-                            projection.objective_brief,
-                            resolution,
-                        )
-                    }
-                )
-                trace.record("duration_resolved", resolution=resolution.model_dump(mode="json"))
-            _write_json(run_dir / "objective_planning_brief.json", projection.model_dump(mode="json"))
             resumed_checkpoint = None
             if self.config.resume_from is not None:
                 resumed_checkpoint = load_candidate_checkpoint(

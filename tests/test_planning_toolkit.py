@@ -4,7 +4,7 @@ import unittest
 
 from cinescaffold.planning.compiler import SceneIRCommitGate
 from cinescaffold.planning.domain import CommitRequest
-from cinescaffold.planning.duration import attach_duration_resolution, freeze_duration
+from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
 from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.toolkit import FULL_VALIDATION_CHECKS, ScenePlanningToolkit
 from tests.helpers import valid_model_output
@@ -756,6 +756,9 @@ def _toolkit() -> ScenePlanningToolkit:
         }
     ]
     content["camera"]["movement"]["type"] = _annotated("缓慢推近", "镜头慢慢推近")
+    content["timeline"].update(
+        {"duration_seconds": 6.0, "duration_source_status": "inferred"}
+    )
     brief = {
         "schema_version": "0.1",
         "content": content,
@@ -769,10 +772,8 @@ def _toolkit() -> ScenePlanningToolkit:
         },
     }
     objective = project_objective_brief(brief).objective_brief
-    resolution = freeze_duration(
-        request_mode="inferred",
-        proposed_seconds=6.0,
-        reason="测试固定时长。",
+    resolution = freeze_brief_duration(
+        objective.timeline,
         fps_numerator=24,
         fps_denominator=1,
     )

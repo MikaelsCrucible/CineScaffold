@@ -76,6 +76,37 @@
       "title": "BoxGeometry",
       "type": "object"
     },
+    "BriefDurationRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "cinematic_brief",
+          "title": "Mode",
+          "type": "string"
+        },
+        "source_status": {
+          "enum": [
+            "explicit",
+            "inferred",
+            "default"
+          ],
+          "title": "Source Status",
+          "type": "string"
+        },
+        "seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "mode",
+        "source_status",
+        "seconds"
+      ],
+      "title": "BriefDurationRequest",
+      "type": "object"
+    },
     "CameraFrameSample": {
       "additionalProperties": false,
       "properties": {
@@ -506,6 +537,7 @@
         "request": {
           "discriminator": {
             "mapping": {
+              "cinematic_brief": "#/$defs/BriefDurationRequest",
               "exact": "#/$defs/ExactDurationRequest",
               "inferred": "#/$defs/InferredDurationRequest",
               "legacy_frozen": "#/$defs/LegacyDurationRequest",
@@ -525,6 +557,9 @@
             },
             {
               "$ref": "#/$defs/LegacyDurationRequest"
+            },
+            {
+              "$ref": "#/$defs/BriefDurationRequest"
             }
           ],
           "title": "Request"
@@ -534,7 +569,10 @@
             "user_exact",
             "agent_within_user_range",
             "agent_inferred",
-            "legacy_frozen"
+            "legacy_frozen",
+            "brief_explicit",
+            "brief_inferred",
+            "brief_default"
           ],
           "title": "Resolution Method",
           "type": "string"

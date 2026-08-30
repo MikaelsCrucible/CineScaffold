@@ -47,7 +47,7 @@
   -> Cinematic Brief v0.1
   -> 本地 Schema 验证与来源记录
   -> 客观语义投影（剥离 mood、摘要和原始提示词）
-  -> 精确时长直通 / 用户范围内选择 / 缺省时长 Agent 推断
+  -> Semantic Parser 在六维阶段解析或推断唯一镜头时长
   -> 24 fps 帧对齐并冻结 Timeline
   -> OpenAI / DeepSeek / Mock Scene Planning Agent
   -> 九个 Scene Planning Toolkit 接口
@@ -61,7 +61,7 @@
 
 规则文件当前有意保持为空，等待项目成员提供正式转换规则。
 
-Agent 1 的客观语义投影、Candidate revision store、九个 Planning Toolkit 接口、确定性启发式 Solver、结构化 Validator 和 Scene IR Commit Gate 已经实现。模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文。Timeline 不再使用固定六秒缺省：用户精确时长直接采用，用户范围由轻量时长规划 Agent 在范围内选择，未指定时由同一 Provider 根据客观动作与运镜推断；结果按冻结 FPS 对齐，解析方式、请求和最终帧数写入 checkpoint 与 Scene IR。Commit Gate 会把规划轨迹烘焙为完整逐帧 Scene IR。当前确定性约束能力以 `get_capabilities` 返回为准，尚未实现的约束会产生明确 capability gap；同一响应会提供冻结的 FPS、时长、半开时间域和最后一帧时间，避免 Agent 通过失败调用猜测时间边界。Transform Keyframe 使用关闭额外字段的类型化 Schema，错误字段会在工具调用边界被拒绝。
+Agent 1 的客观语义投影、Candidate revision store、九个 Planning Toolkit 接口、确定性启发式 Solver、结构化 Validator 和 Scene IR Commit Gate 已经实现。模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文。镜头时长必须在自然语言转六维的 Semantic Parser 阶段解析完成：可以来自用户明确值，也可以由该层按正式规则推断；Planner 不再调用独立时长模型、复用 Scene Planning Agent 或使用固定六秒缺省。Brief 若仍为未知时长，规划会在第一次模型请求前失败。已解析结果按冻结 FPS 对齐，来源与最终帧数写入 checkpoint 和 Scene IR。Commit Gate 会把规划轨迹烘焙为完整逐帧 Scene IR。当前确定性约束能力以 `get_capabilities` 返回为准，尚未实现的约束会产生明确 capability gap；同一响应会提供冻结的 FPS、时长、半开时间域和最后一帧时间，避免 Agent 通过失败调用猜测时间边界。Transform Keyframe 使用关闭额外字段的类型化 Schema，错误字段会在工具调用边界被拒绝。
 
 Agent 协议由 Runner 确定性约束：闭集参数直接进入 Tool Schema 枚举；模型开始时只看得到能力工具，读取后该工具会从后续请求移除；`commit_ready=true` 后所有 Candidate 工具都会移除，只能结构化终止。同一 revision 的相同 inspect 会被拒绝；实体和摄影机的每个状态通道最多存在一条 Track。同一 ID 的 remove + upsert 是原子替换；Agent 推断或自选的数值不得伪装成 hard constraint，hard constraint 的明确来源还必须与约束类型兼容。“远处 / 后景”至少需要 `depth_order`，不能只用欧氏距离冒充画面深度；存在水平地面时，普通实体也不能整体藏到地面以下。实体建立后代理体类型和自身轴向不可更换，防止通过换形状迎合投影指标。默认请求上限为 24；请求次数是独立实验预算，不再被误称为上下文超限。Checkpoint 只在当前 Candidate revision 真正变化时写入，读取历史 revision 不会制造伪 checkpoint。Toolkit v0.6 会拒绝载入旧 Toolkit checkpoint，避免把旧验证语义静默带入新实验。
 
@@ -145,7 +145,7 @@ cinescaffold plan \
 
 每次规划都会写出 `planning_agent_tool_trace.jsonl`、`constraint_plan.json`、`planning_validation.json`、`planning_summary.json`；成功时额外写出 `final_scene_ir.json`。Trace 记录每轮模型请求、模型设置、工具参数/结果、revision、验证错误和耗时，但不保存模型 thinking/reasoning 内容。`planning_summary.json` 分开记录累计输入 token、缓存命中、未缓存输入和最大单次上下文；累计输入会把每轮重复上下文相加，不能解释为模型上下文窗口大小。DeepSeek 的单次输出上限会通过其 Chat Completions 所需的 `max_tokens` 字段发送；其他兼容 Provider 使用 PydanticAI 的通用设置。
 
-`Cinematic Brief.timeline` 可表达 `duration_seconds` 精确时长或 `duration_range_seconds.{minimum_seconds,maximum_seconds}` 范围，两者互斥；都为空时才进行 Agent 推断。精确时长不产生额外模型调用，范围和缺省推断会计入同一运行的请求数、token 与成本 Trace。正式 Timeline 一旦冻结，Scene Planning Agent 和 Blender 均不得重新解释时长。
+`Cinematic Brief.timeline.duration_seconds` 必须在 Semantic Parser 输出时成为正数，并以 `explicit`、`inferred` 或 `default` 标记来源。若用户给出 `duration_range_seconds`，Semantic Parser 也必须在范围内给出最终 `duration_seconds`。Planner 只做 FPS 对齐和冻结，不产生额外时长模型调用。正式 Timeline 一旦冻结，Scene Planning Agent 和 Blender 均不得重新解释时长。
 
 每个成功 Mutation 还会写入 `checkpoints/revision_NNNN.json` 并更新 `checkpoint_latest.json`。预算或网络中断后，应使用同一份 Brief 在新的输出目录建立短上下文续跑；Checkpoint 会校验 Brief、Toolkit、Profile 与 Candidate hash：
 

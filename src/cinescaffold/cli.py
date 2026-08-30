@@ -94,11 +94,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("prompts/scene_planner/system.md"),
     )
-    plan_parser.add_argument(
-        "--duration-prompt",
-        type=Path,
-        default=Path("prompts/duration_resolver/system.md"),
-    )
     plan_parser.add_argument("--run-id")
     plan_parser.add_argument("--max-requests", type=int, default=24)
     plan_parser.add_argument("--max-tool-calls", type=int, default=40)
@@ -229,7 +224,6 @@ def _run_plan(args: argparse.Namespace) -> int:
         model=args.model,
         base_url=args.base_url,
         system_prompt_path=args.system_prompt,
-        duration_prompt_path=args.duration_prompt,
         run_dir=args.output_dir,
         resume_from=args.resume_from,
         run_id=args.run_id,
