@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 
 from cinescaffold.planning.domain import TrackSpec, TransformValue
-from cinescaffold.planning.geometry import sample_path_track, sample_transform_track
+from cinescaffold.planning.geometry import (
+    sample_path_track,
+    sample_scalar_track,
+    sample_transform_track,
+)
 
 
 class PlanningGeometryTest(unittest.TestCase):
@@ -252,6 +256,58 @@ class PlanningGeometryTest(unittest.TestCase):
                     ],
                 }
             )
+
+    def test_late_transform_track_uses_fallback_before_start(self) -> None:
+        fallback = TransformValue(translation_m=(3.0, 4.0, 1.0))
+        track = TrackSpec.model_validate(
+            {
+                "track_id": "late_move",
+                "target_entity_id": "car",
+                "type": "transform",
+                "time_range_seconds": [7.0, 12.0],
+                "keyframes": [
+                    {"time_seconds": 7.0, "value": {"translation_m": [0.0, 0.0, 0.0]}},
+                    {"time_seconds": 11.9, "value": {"translation_m": [10.0, 0.0, 0.0]}},
+                ],
+            }
+        )
+
+        sampled = sample_transform_track(track, 2.0, fallback)
+
+        self.assertEqual(sampled.translation_m, fallback.translation_m)
+
+    def test_late_path_track_uses_fallback_before_start(self) -> None:
+        fallback = TransformValue(translation_m=(1.0, 2.0, 3.0))
+        track = TrackSpec.model_validate(
+            {
+                "track_id": "late_path",
+                "target_entity_id": "car",
+                "type": "path_follow",
+                "time_range_seconds": [7.0, 12.0],
+                "path": {
+                    "representation": "polyline",
+                    "control_points": [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+                },
+            }
+        )
+
+        sampled = sample_path_track(track, 2.0, fallback)
+
+        self.assertEqual(sampled.translation_m, fallback.translation_m)
+
+    def test_late_visibility_track_uses_fallback_before_start(self) -> None:
+        track = TrackSpec.model_validate(
+            {
+                "track_id": "boarded_visibility",
+                "target_entity_id": "man",
+                "type": "visibility",
+                "time_range_seconds": [7.0, 12.0],
+                "keyframes": [{"time_seconds": 7.0, "value": False}],
+            }
+        )
+
+        self.assertEqual(sample_scalar_track(track, 2.0, 1.0), 1.0)
+        self.assertEqual(sample_scalar_track(track, 8.0, 1.0), 0.0)
 
 
 if __name__ == "__main__":

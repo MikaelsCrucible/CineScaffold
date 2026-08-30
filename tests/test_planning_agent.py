@@ -3,14 +3,46 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+import json
 from pathlib import Path
 
-from cinescaffold.planning.agent import PlanningDeps
+from pydantic_ai.messages import ModelResponse, TextPart, ThinkingPart, ToolCallPart
+
+from cinescaffold.planning.agent import (
+    ConstraintPatchInput,
+    PlanningDeps,
+    TrackPatchInput,
+    _compact_tool_call_history,
+)
+from cinescaffold.planning.domain import ConstraintSpec, TrackSpec
 from cinescaffold.planning.trace import TraceRecorder
 from tests.test_planning_toolkit import _man_entity, _solved_toolkit, _toolkit
 
 
 class PlanningProtocolTest(unittest.TestCase):
+    def test_agent_patch_schemas_are_compact_but_domain_validation_stays_strict(self) -> None:
+        compact_chars = len(json.dumps(TrackPatchInput.model_json_schema()))
+        domain_chars = len(json.dumps(TrackSpec.model_json_schema()))
+        constraint_chars = len(json.dumps(ConstraintPatchInput.model_json_schema()))
+        domain_constraint_chars = len(json.dumps(ConstraintSpec.model_json_schema()))
+
+        self.assertLess(compact_chars, domain_chars * 0.65)
+        self.assertLess(constraint_chars, domain_constraint_chars * 0.4)
+
+    def test_tool_history_drops_text_and_thinking_but_keeps_calls(self) -> None:
+        response = ModelResponse(
+            parts=[
+                TextPart("冗长分析"),
+                ThinkingPart("内部推理"),
+                ToolCallPart("inspect_candidate", {"view": "summary"}, "call_1"),
+            ]
+        )
+
+        compacted = _compact_tool_call_history([response])
+
+        self.assertEqual(len(compacted[0].parts), 1)
+        self.assertIsInstance(compacted[0].parts[0], ToolCallPart)
+
     def test_capabilities_must_be_read_before_other_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             deps = _deps(Path(directory), _toolkit())

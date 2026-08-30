@@ -23,6 +23,9 @@ def sample_transform_track(
 ) -> TransformValue:
     if track is None or not track.keyframes:
         return _complete_transform(fallback)
+    if time_seconds < track.time_range_seconds[0]:
+        # 晚开始的轨道不得把首关键帧提前施加到整个镜头。
+        return _complete_transform(fallback)
     keyframes = sorted(track.keyframes, key=lambda item: item.time_seconds)
     if time_seconds <= keyframes[0].time_seconds:
         return _transform_from_value(keyframes[0].value, fallback)
@@ -62,6 +65,8 @@ def sample_path_track(
     if track.path is None:
         return _complete_transform(fallback)
     start, end = track.time_range_seconds
+    if time_seconds < start:
+        return _complete_transform(fallback)
     ratio = min(1.0, max(0.0, (time_seconds - start) / (end - start)))
     if track.interpolation == "smooth":
         ratio = ratio * ratio * (3.0 - 2.0 * ratio)
@@ -179,6 +184,8 @@ def _sample_parametric_arc_length(
 
 def sample_scalar_track(track: TrackSpec | None, time_seconds: float, fallback: float) -> float:
     if track is None or not track.keyframes:
+        return fallback
+    if time_seconds < track.time_range_seconds[0]:
         return fallback
     keyframes = sorted(track.keyframes, key=lambda item: item.time_seconds)
     if time_seconds <= keyframes[0].time_seconds:

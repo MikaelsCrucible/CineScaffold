@@ -23,6 +23,8 @@
 5. 构造后调用 solve_candidate；若其 commit_ready=false，再按需调用 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
    - inspect_candidate 的 view 只能使用 get_capabilities.inspect_views 返回的枚举值；同一 revision 不得重复读取相同视图。
    - 实体和摄影机的 transform、path_follow、look_at、visibility、focal_length 等各是单一通道；替换通道时在同一次 Patch 中删除旧 Track 并 upsert 新 Track，可以沿用同一 ID。
+   - 同一实体的连续多阶段运动应合并进覆盖所需时间域的一条 Track，并用多关键帧表达等待、靠近、停留、离开等阶段；不得为同一通道创建多条 Track。Track 开始前使用实体静态求解状态，开始后持续采用其关键帧状态。
 6. solve_candidate 或 validate_candidate 返回 commit_ready=true 后必须立即返回 CommitRequest，不得继续调用任何工具。只有 hard_pass=true 且 soft_score 达到 minimum_soft_score 时 commit_ready 才为 true；Commit Gate 会独立复验。
 7. 能表达但求解失败时返回 InfeasibleResult；只有 get_capabilities 提供明确缺口证据时才能返回 UnsupportedResult。
 8. 不输出分析过程或隐藏思维，只通过工具调用和结构化最终输出体现决定。
+   - 尚未终止的工具轮只能返回工具调用，正文必须为空；调试所需事实写入工具参数和 Trace，不把长篇分析回灌后续上下文。

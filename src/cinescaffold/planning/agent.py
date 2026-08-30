@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ThinkingPart, ToolCallPart
 from pydantic_ai.models import Model
 from pydantic_ai.tools import ToolDefinition
 
@@ -16,11 +18,10 @@ from cinescaffold.planning.domain import (
     AgentTerminal,
     CameraStatic,
     CandidateState,
-    ConstraintSpec,
     GroundInteractionSpec,
     ProxyGeometry,
     StrictModel,
-    TrackSpec,
+    TrackKeyframe,
 )
 from cinescaffold.planning.toolkit import TOOLKIT_VERSION, ScenePlanningToolkit
 from cinescaffold.planning.trace import TraceRecorder
@@ -36,6 +37,87 @@ class EntityPatchInput(StrictModel):
     locked_fields: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
     ground_interaction: GroundInteractionSpec = Field(default_factory=GroundInteractionSpec)
+
+
+class ConstraintPatchInput(StrictModel):
+    """保持工具 schema 紧凑，领域模型仍由 Toolkit 严格复验。"""
+
+    constraint_id: str = Field(min_length=1)
+    type: str
+    strength: Literal["hard", "soft"]
+    weight: float = Field(default=1.0, gt=0)
+    subjects: list[str] = Field(default_factory=list)
+    time_range_seconds: tuple[float, float]
+    parameters: dict[str, Any]
+    source_status: Literal["explicit", "inferred", "default", "agent_selected", "unknown"]
+    source_ref: str
+
+
+class PathPatchInput(StrictModel):
+    """将关闭路径联合展平，避免同一联合在多个工具中重复展开。"""
+
+    representation: Literal[
+        "polyline",
+        "sampled",
+        "circle",
+        "ellipse",
+        "catmull_rom",
+        "lemniscate",
+    ]
+    space: Literal["world", "local", "camera", "target_relative"] = "world"
+    target_id: str | None = None
+    closed: bool | None = None
+    cycle_count: float | None = Field(default=None, gt=0)
+    parameterization: Literal["normalized_time", "arc_length"] | None = None
+    orientation_mode: Literal["keep"] | None = None
+    control_points: list[tuple[float, float, float]] | None = None
+    center_offset_m: tuple[float, float, float] | None = None
+    plane_normal: tuple[float, float, float] | None = None
+    axis_direction: tuple[float, float, float] | None = None
+    initial_phase_degrees: float | None = None
+    direction: Literal["counterclockwise", "clockwise"] | None = None
+    radius_m: float | None = Field(default=None, gt=0)
+    semi_major_axis_m: float | None = Field(default=None, gt=0)
+    semi_minor_axis_m: float | None = Field(default=None, gt=0)
+    width_m: float | None = Field(default=None, gt=0)
+    height_m: float | None = Field(default=None, gt=0)
+
+
+class TrackPatchInput(StrictModel):
+    """Agent 侧紧凑输入；Toolkit 转回严格 TrackSpec。"""
+
+    track_id: str = Field(min_length=1)
+    target_entity_id: str | None = None
+    type: Literal["transform", "path_follow", "visibility", "look_at", "focal_length"]
+    time_range_seconds: tuple[float, float]
+    keyframes: list[TrackKeyframe] = Field(default_factory=list)
+    path: PathPatchInput | None = None
+    target_id: str | None = None
+    interpolation: Literal["step", "linear", "smooth"] = "linear"
+    locked_components: list[str] = Field(default_factory=list)
+    source_ref: str | None = None
+
+    def to_domain_payload(self) -> dict[str, Any]:
+        # 省略未使用的变体字段，由关闭的领域联合补默认值并拒绝错配。
+        return self.model_dump(mode="json", exclude_none=True)
+
+
+def _compact_tool_call_history(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """工具轮丢弃冗长正文，完整原响应仍由 Trace 保存。"""
+
+    compacted: list[ModelMessage] = []
+    for message in messages:
+        if isinstance(message, ModelResponse) and any(
+            isinstance(part, ToolCallPart) for part in message.parts
+        ):
+            parts = [
+                part
+                for part in message.parts
+                if not isinstance(part, (TextPart, ThinkingPart))
+            ]
+            message = replace(message, parts=parts)
+        compacted.append(message)
+    return compacted
 
 
 @dataclass
@@ -202,6 +284,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         name="cinescaffold_scene_planner",
         retries=2,
         end_strategy="exhaustive",
+        capabilities=[ProcessHistory(_compact_tool_call_history)],
     )
 
     @agent.tool(sequential=True, prepare=_prepare_capabilities_tool)
@@ -291,7 +374,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
     @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def apply_constraint_patch(
         ctx: RunContext[PlanningDeps],
-        upserts: list[ConstraintSpec],
+        upserts: list[ConstraintPatchInput],
         remove_ids: list[str],
     ) -> dict[str, Any]:
         """原子新增、更新或删除声明式客观约束。"""
@@ -308,12 +391,12 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
     @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def apply_motion_patch(
         ctx: RunContext[PlanningDeps],
-        upserts: list[TrackSpec],
+        upserts: list[TrackPatchInput],
         remove_ids: list[str],
     ) -> dict[str, Any]:
         """原子创建、更新或删除实体运动与可见性轨道。"""
         arguments = {
-            "upserts": [item.model_dump(mode="json") for item in upserts],
+            "upserts": [item.to_domain_payload() for item in upserts],
             "remove_ids": remove_ids,
         }
         return ctx.deps.call_tool(
@@ -329,7 +412,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         projection: Literal["perspective"],
         active: bool,
         static: CameraStatic,
-        tracks: list[TrackSpec],
+        tracks: list[TrackPatchInput],
         remove_track_ids: list[str],
     ) -> dict[str, Any]:
         """创建或修改活动透视摄影机及其运动、观察和焦距轨道。"""
@@ -338,7 +421,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             "projection": projection,
             "active": active,
             "static": static.model_dump(mode="json"),
-            "tracks": [item.model_dump(mode="json") for item in tracks],
+            "tracks": [item.to_domain_payload() for item in tracks],
             "remove_track_ids": remove_track_ids,
         }
         return ctx.deps.call_tool(

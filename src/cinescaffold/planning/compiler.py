@@ -40,7 +40,7 @@ from cinescaffold.planning.toolkit import (
 )
 
 
-COMPILER_VERSION = "0.10"
+COMPILER_VERSION = "0.11"
 COMMIT_GATE_VERSION = "0.10"
 
 
