@@ -38,7 +38,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.3"
+TOOLKIT_VERSION = "0.4"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -309,6 +309,12 @@ class ScenePlanningToolkit:
                     if state.entities.pop(entity_id, None) is not None:
                         changes.append({"operation": "remove", "path": f"entities.{entity_id}"})
                 for entity in parsed:
+                    existing = state.entities.get(entity.entity_id)
+                    if existing and _proxy_topology(existing.proxy) != _proxy_topology(entity.proxy):
+                        raise ValueError(
+                            f"Entity 建立后不得更换代理拓扑：{entity.entity_id}；"
+                            "请调整尺寸、Transform 或约束，不得通过换形状迎合投影指标"
+                        )
                     operation = "replace" if entity.entity_id in state.entities else "add"
                     state.entities[entity.entity_id] = entity
                     changes.append({"operation": operation, "path": f"entities.{entity.entity_id}"})
@@ -348,6 +354,24 @@ class ScenePlanningToolkit:
                     next_actions=[
                         "不得用语义无关约束替代；若 explicit requirement 没有等价能力，返回 UnsupportedResult"
                     ],
+                )
+            incompatible_hard = sorted(
+                item.constraint_id
+                for item in parsed
+                if item.strength == "hard"
+                and (
+                    item.source_ref not in self.store.get().required_source_refs
+                    or not _source_mapping_is_compatible(
+                        item.source_ref,
+                        {f"constraint:{item.type}"},
+                    )
+                )
+            )
+            if incompatible_hard:
+                return _rejected(
+                    self.store.current_revision,
+                    "hard constraint 必须直接对应兼容的 explicit requirement；"
+                    f"以下约束来源不兼容：{', '.join(incompatible_hard)}",
                 )
             upsert_ids = {item.constraint_id for item in parsed}
             remove_only_ids = set(remove_ids) - upsert_ids
@@ -738,6 +762,11 @@ def _geometry_half_height(geometry) -> float:
     if geometry.type in {"cylinder", "cone"}:
         return geometry.depth_m / 2.0
     return 0.01
+
+
+def _proxy_topology(geometry) -> tuple[str, str | None]:
+    # 尺寸可调整，但基本体类型和自身轴向一经建立即保持稳定。
+    return geometry.type, getattr(geometry, "axis", None)
 
 
 def _apply_layout_constraint(

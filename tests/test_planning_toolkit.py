@@ -149,6 +149,24 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(track_result["status"], "ok")
         self.assertEqual(len(toolkit.store.get().motion_tracks["man_move"].keyframes), 1)
 
+    def test_entity_replacement_cannot_change_proxy_topology(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_ship_entity()], [])
+        changed = _ship_entity() | {
+            "proxy": {
+                "type": "capsule",
+                "radius_m": 30.0,
+                "segment_length_m": 80.0,
+                "axis": "+Z",
+            }
+        }
+
+        result = toolkit.apply_entity_patch([changed], ["ship_01"])
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(toolkit.store.get().entities["ship_01"].proxy.type, "box")
+        self.assertIn("不得更换代理拓扑", result["warnings"][0])
+
     def test_non_explicit_hard_constraint_is_rejected(self) -> None:
         toolkit = _toolkit()
         result = toolkit.apply_constraint_patch(
@@ -174,6 +192,38 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertEqual(result["revision_after"], 0)
         self.assertIn("explicit requirement", result["warnings"][0])
+
+    def test_hard_constraint_rejects_semantically_incompatible_explicit_source(self) -> None:
+        toolkit = _toolkit()
+
+        def add_environment_requirement(state):
+            state.required_source_refs.append("content.scene_design.environment")
+            return ([{"operation": "test", "path": "required_source_refs"}], [])
+
+        toolkit.store.apply(add_environment_requirement)
+        result = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "invented_environment_depth",
+                    "type": "depth_order",
+                    "strength": "hard",
+                    "weight": 1.0,
+                    "subjects": ["man_01", "ship_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "near_entity_id": "man_01",
+                        "far_entity_id": "ship_01",
+                        "minimum_depth_gap_meters": 10.0,
+                    },
+                    "source_status": "explicit",
+                    "source_ref": "content.scene_design.environment",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("来源不兼容", result["warnings"][0])
 
     def test_camera_subject_is_not_reported_as_missing_entity(self) -> None:
         toolkit = _toolkit()
