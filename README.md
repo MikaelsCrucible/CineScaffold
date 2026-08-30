@@ -214,7 +214,7 @@ cinescaffold execute \
 | `execute` | `scene.blend`、Runtime Snapshot、Runtime Validation、执行 manifest、白模 MP4 |
 | `run` | 所有适用阶段的产物及 `pipeline_summary.json` |
 
-运行目录默认拒绝覆盖已有产物；执行阶段只有显式传入 `--overwrite` 才会覆盖其固定输出。
+运行目录默认拒绝覆盖已有产物。`run --overwrite` 会在新管线开始前清理该输出目录中的 `planning/`、`execution/`、`pipeline_summary.json`，以及由 `--text` 生成的根级 Brief，但保留根目录中的其他文件；独立 `plan` 仍要求使用空输出目录。执行阶段只有显式传入 `--overwrite` 才会覆盖其固定输出。
 
 ## 开发与验证
 

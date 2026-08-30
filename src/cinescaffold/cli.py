@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import sys
 import time
 from decimal import Decimal
@@ -475,10 +476,18 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     started = time.monotonic()
     output_dir = args.output_dir.resolve()
     summary_path = output_dir / "pipeline_summary.json"
-    if summary_path.exists() and not args.overwrite:
-        raise ValueError(f"一键运行记录已存在；请换输出目录或显式使用 --overwrite：{summary_path}")
-    output_dir.mkdir(parents=True, exist_ok=True)
     started_from = "text" if args.text is not None else "brief" if args.brief else "scene_ir"
+
+    # 先读取外部输入，避免覆盖时删除位于旧运行目录中的来源文件。
+    brief: dict[str, Any] | None = None
+    scene_ir_payload: dict[str, Any] | None = None
+    if args.brief is not None:
+        brief = _read_json_object(args.brief, "Cinematic Brief")
+    elif args.scene_ir is not None:
+        scene_ir_payload = _read_json_object(args.scene_ir, "Scene IR")
+
+    _prepare_pipeline_output(output_dir, started_from, args.overwrite)
+    output_dir.mkdir(parents=True, exist_ok=True)
     reporter.stage("一键管线", f"从 {started_from} 开始，目标是生成白模视频")
     summary: dict[str, Any] = {
         "schema_version": "0.1",
@@ -491,8 +500,6 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         "error": None,
     }
 
-    brief: dict[str, Any] | None = None
-    scene_ir_payload: dict[str, Any] | None = None
     if args.text is not None:
         semantic_args = _stage_args(args, args.semantic_settings)
         brief_path = output_dir / "cinematic_brief.json"
@@ -504,11 +511,11 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         }
         summary["artifacts"]["cinematic_brief"] = str(brief_path)
     elif args.brief is not None:
-        brief = _read_json_object(args.brief, "Cinematic Brief")
+        assert brief is not None
         summary["artifacts"]["cinematic_brief"] = str(args.brief.resolve())
         reporter.success("输入就绪", f"已读取 Cinematic Brief：{args.brief.resolve()}")
     else:
-        scene_ir_payload = _read_json_object(args.scene_ir, "Scene IR")
+        assert scene_ir_payload is not None
         summary["artifacts"]["scene_ir"] = str(args.scene_ir.resolve())
         reporter.success("输入就绪", f"已读取 Scene IR：{args.scene_ir.resolve()}")
 
@@ -542,6 +549,31 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     if execution_result.render and execution_result.render.get("artifact"):
         summary["artifacts"]["video"] = execution_result.render["artifact"]
     return _finish_pipeline(args, reporter, summary, summary_path, started)
+
+
+def _prepare_pipeline_output(output_dir: Path, started_from: str, overwrite: bool) -> None:
+    owned_paths = [
+        output_dir / "pipeline_summary.json",
+        output_dir / "execution",
+    ]
+    if started_from in {"text", "brief"}:
+        owned_paths.append(output_dir / "planning")
+    if started_from == "text":
+        owned_paths.append(output_dir / "cinematic_brief.json")
+
+    conflicts = [path for path in owned_paths if path.exists() or path.is_symlink()]
+    if conflicts and not overwrite:
+        rendered = ", ".join(str(path) for path in conflicts)
+        raise ValueError(f"一键管线产物已存在；请换输出目录或显式使用 --overwrite：{rendered}")
+    if not overwrite:
+        return
+
+    # 只清理管线拥有的固定路径，不删除输出根目录中的其他资料。
+    for path in conflicts:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
 
 
 def _stage_args(args: argparse.Namespace, settings: ModelSettings) -> argparse.Namespace:

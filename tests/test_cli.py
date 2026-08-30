@@ -316,6 +316,77 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("planning", result["stages"])
         self.assertIn("execution", result["stages"])
 
+    def test_run_overwrite_replaces_owned_stages_and_preserves_other_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            brief_path = root / "brief.json"
+            output_dir = root / "run"
+            brief_path.write_text(
+                json.dumps(valid_planning_brief(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            arguments = [
+                "run",
+                "--brief",
+                str(brief_path),
+                "--provider",
+                "mock",
+                "--output-dir",
+                str(output_dir),
+                "--json",
+                "--quiet",
+            ]
+            with patch("cinescaffold.cli.ExecutionRunner", _PipelineExecutionRunner):
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    first_status = main(arguments)
+            marker = output_dir / "planning" / "stale-marker.txt"
+            marker.write_text("旧实验", encoding="utf-8")
+            notes = output_dir / "notes.txt"
+            notes.write_text("保留", encoding="utf-8")
+
+            stdout = io.StringIO()
+            with patch("cinescaffold.cli.ExecutionRunner", _PipelineExecutionRunner):
+                with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                    second_status = main([*arguments, "--overwrite"])
+            result = json.loads(stdout.getvalue())
+
+            self.assertEqual(first_status, 0)
+            self.assertEqual(second_status, 0)
+            self.assertEqual(result["status"], "success")
+            self.assertFalse(marker.exists())
+            self.assertEqual(notes.read_text(encoding="utf-8"), "保留")
+
+    def test_run_rejects_existing_stage_before_pipeline_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            brief_path = root / "brief.json"
+            output_dir = root / "run"
+            planning_dir = output_dir / "planning"
+            planning_dir.mkdir(parents=True)
+            (planning_dir / "partial.json").write_text("{}", encoding="utf-8")
+            brief_path.write_text(
+                json.dumps(valid_planning_brief(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            stderr = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+                status = main(
+                    [
+                        "run",
+                        "--brief",
+                        str(brief_path),
+                        "--provider",
+                        "mock",
+                        "--output-dir",
+                        str(output_dir),
+                        "--quiet",
+                    ]
+                )
+
+            self.assertEqual(status, 1)
+            self.assertIn("一键管线产物已存在", stderr.getvalue())
+            self.assertFalse((output_dir / "pipeline_summary.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
