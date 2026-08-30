@@ -125,6 +125,8 @@ planning_reasoning_effort = low
 
 `planning_thinking_mode = low` 是无效配置；thinking 开关只接受 `enabled/disabled`。
 
+DeepSeek 在 thinking 与 tools 同时启用时要求后续请求完整回传历史 `reasoning_content`。CineScaffold 依赖 PydanticAI 的 DeepSeek Profile 完成字段映射，并在这种模式下保留完整工具思考历史，不再应用 13-message 压缩窗口；普通工具前置正文仍会省略。该协议可能明显增加后续请求上下文，正式实验需要把思考模式和上下文预算一起冻结。
+
 ## 使用
 
 ### 一键运行

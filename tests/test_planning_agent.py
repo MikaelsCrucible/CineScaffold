@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import tempfile
 import time
 import unittest
-import json
 from pathlib import Path
 
 from pydantic_ai.messages import (
@@ -15,6 +16,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.models import ModelRequestParameters
 
 from cinescaffold.planning.agent import (
     ConstraintPatchInput,
@@ -24,7 +26,10 @@ from cinescaffold.planning.agent import (
     _compact_tool_call_history,
 )
 from cinescaffold.planning.domain import ConstraintSpec, TrackSpec
+from cinescaffold.planning.models import create_planning_model
+from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.trace import TraceRecorder
+from tests.helpers import valid_planning_brief
 from tests.test_planning_toolkit import _man_entity, _solved_toolkit, _toolkit
 
 
@@ -38,11 +43,15 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertLess(compact_chars, domain_chars * 0.65)
         self.assertLess(constraint_chars, domain_constraint_chars * 0.4)
 
-    def test_tool_history_drops_text_and_thinking_but_keeps_calls(self) -> None:
+    def test_tool_history_drops_text_but_keeps_thinking_and_calls(self) -> None:
         response = ModelResponse(
             parts=[
                 TextPart("冗长分析"),
-                ThinkingPart("内部推理"),
+                ThinkingPart(
+                    "内部推理",
+                    id="reasoning_content",
+                    provider_name="deepseek",
+                ),
                 ToolCallPart("inspect_candidate", {"view": "summary"}, "call_1"),
             ]
         )
@@ -51,8 +60,87 @@ class PlanningProtocolTest(unittest.TestCase):
             deps = _deps(Path(directory), _toolkit())
             compacted = _compact_tool_call_history(_context(deps), [response])
 
-        self.assertEqual(len(compacted[0].parts), 1)
-        self.assertIsInstance(compacted[0].parts[0], ToolCallPart)
+        self.assertEqual(len(compacted[0].parts), 2)
+        self.assertIsInstance(compacted[0].parts[0], ThinkingPart)
+        self.assertIsInstance(compacted[0].parts[1], ToolCallPart)
+
+    def test_deepseek_thinking_history_is_not_windowed(self) -> None:
+        messages = [ModelRequest(parts=[UserPromptPart("原始 Brief")])]
+        for index in range(10):
+            call_id = f"call_{index}"
+            messages.append(
+                ModelResponse(
+                    parts=[
+                        ThinkingPart(
+                            f"reasoning-{index}",
+                            id="reasoning_content",
+                            provider_name="deepseek",
+                        ),
+                        ToolCallPart("inspect_candidate", {}, call_id),
+                    ]
+                )
+            )
+            messages.append(
+                ModelRequest(
+                    parts=[ToolReturnPart("inspect_candidate", {"revision": index}, call_id)]
+                )
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(
+                Path(directory),
+                _toolkit(),
+                preserve_complete_thinking_history=True,
+            )
+            compacted = _compact_tool_call_history(_context(deps), messages)
+
+        self.assertEqual(len(compacted), len(messages))
+        thinking_parts = [
+            part
+            for message in compacted
+            if isinstance(message, ModelResponse)
+            for part in message.parts
+            if isinstance(part, ThinkingPart)
+        ]
+        self.assertEqual(
+            [part.content for part in thinking_parts],
+            [f"reasoning-{index}" for index in range(10)],
+        )
+
+    def test_deepseek_payload_keeps_reasoning_content_with_tool_call(self) -> None:
+        objective = project_objective_brief(valid_planning_brief()).objective_brief
+        model = create_planning_model(
+            "deepseek",
+            "deepseek-v4-pro",
+            objective,
+            api_key="test-key",
+        )
+        messages = [
+            ModelResponse(
+                parts=[
+                    ThinkingPart(
+                        "reasoning-sentinel",
+                        id="reasoning_content",
+                        provider_name="deepseek",
+                    ),
+                    ToolCallPart("inspect_candidate", {}, "call_1"),
+                ]
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(
+                Path(directory),
+                _toolkit(),
+                preserve_complete_thinking_history=True,
+            )
+            compacted = _compact_tool_call_history(_context(deps), messages)
+            payload = asyncio.run(
+                model._map_messages(compacted, ModelRequestParameters())
+            )
+
+        self.assertEqual(payload[0]["reasoning_content"], "reasoning-sentinel")
+        self.assertEqual(payload[0]["tool_calls"][0]["id"], "call_1")
 
     def test_tool_history_compacts_pure_text_response_once(self) -> None:
         response = ModelResponse(
@@ -177,12 +265,19 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertEqual(checkpoints, [1])
 
 
-def _deps(path: Path, toolkit, checkpoint_writer=None) -> PlanningDeps:
+def _deps(
+    path: Path,
+    toolkit,
+    checkpoint_writer=None,
+    *,
+    preserve_complete_thinking_history: bool = False,
+) -> PlanningDeps:
     return PlanningDeps(
         toolkit=toolkit,
         trace=TraceRecorder(path / "trace.jsonl", "protocol_test"),
         deadline_monotonic=time.monotonic() + 30.0,
         checkpoint_writer=checkpoint_writer,
+        preserve_complete_thinking_history=preserve_complete_thinking_history,
     )
 
 

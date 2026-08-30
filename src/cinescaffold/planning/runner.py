@@ -125,6 +125,7 @@ class InterpreterRunner:
             system_prompt = self.config.system_prompt_path.read_text(encoding="utf-8")
             model_settings = _planning_model_settings(self.config)
             effective_limits = _effective_limits(self.config)
+            preserve_thinking_history = _requires_complete_thinking_history(self.config)
             trace.record(
                 "run_started",
                 provider=self.config.provider,
@@ -135,6 +136,11 @@ class InterpreterRunner:
                 model_settings=model_settings,
                 limits=effective_limits,
                 full_power_diagnostic=self.config.full_power_diagnostic,
+                thinking_history_policy=(
+                    "complete_provider_roundtrip"
+                    if preserve_thinking_history
+                    else "bounded_recent_tool_pairs"
+                ),
             )
             if self.config.full_power_diagnostic:
                 trace.record(
@@ -267,6 +273,7 @@ class InterpreterRunner:
                     else started + self.config.max_seconds
                 ),
                 checkpoint_writer=checkpoint_writer,
+                preserve_complete_thinking_history=preserve_thinking_history,
             )
             history = None
             prompt = _initial_agent_prompt(
@@ -586,6 +593,14 @@ def _effective_limits(config: InterpreterRunConfig) -> dict[str, Any]:
         "max_seconds": config.max_seconds,
         "max_commit_attempts": config.max_commit_attempts,
     }
+
+
+def _requires_complete_thinking_history(config: InterpreterRunConfig) -> bool:
+    """DeepSeek 带工具思考时必须在后续请求中回传完整思考历史。"""
+
+    return config.provider == "deepseek" and (
+        config.full_power_diagnostic or config.thinking_mode != "disabled"
+    )
 
 
 def _new_run_id() -> str:

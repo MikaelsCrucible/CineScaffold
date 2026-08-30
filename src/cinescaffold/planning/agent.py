@@ -15,7 +15,6 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
-    ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -121,7 +120,7 @@ def _compact_tool_call_history(
     ctx: RunContext[PlanningDeps],
     messages: list[ModelMessage],
 ) -> list[ModelMessage]:
-    """保留原始任务和近期工具轮，权威领域状态由 Candidate Store 承担。"""
+    """保留必要协议字段；允许时再裁剪为近期完整工具轮。"""
 
     compacted: list[ModelMessage] = []
     for message in messages:
@@ -129,11 +128,8 @@ def _compact_tool_call_history(
             has_tool_call = any(isinstance(part, ToolCallPart) for part in message.parts)
             text_parts = [part for part in message.parts if isinstance(part, TextPart)]
             if has_tool_call:
-                parts = [
-                    part
-                    for part in message.parts
-                    if not isinstance(part, (TextPart, ThinkingPart))
-                ]
+                # DeepSeek thinking+tools 要求后续请求完整回传 reasoning_content。
+                parts = [part for part in message.parts if not isinstance(part, TextPart)]
                 message = replace(message, parts=parts)
             elif text_parts:
                 omitted_chars = sum(len(part.content) for part in text_parts)
@@ -149,6 +145,8 @@ def _compact_tool_call_history(
                         authoritative_revision=ctx.deps.toolkit.store.current_revision,
                     )
         compacted.append(message)
+    if ctx.deps.preserve_complete_thinking_history:
+        return compacted
     if len(compacted) <= MAX_AGENT_HISTORY_MESSAGES:
         return compacted
 
@@ -180,6 +178,7 @@ class PlanningDeps:
     capabilities_read: bool = False
     inspected_calls: set[str] = field(default_factory=set)
     compacted_non_tool_responses: set[str] = field(default_factory=set)
+    preserve_complete_thinking_history: bool = False
 
     def call_tool(self, name: str, arguments: dict[str, Any], operation) -> dict[str, Any]:
         if (

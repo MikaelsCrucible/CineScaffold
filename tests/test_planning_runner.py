@@ -23,6 +23,7 @@ from cinescaffold.planning.runner import (
     InterpreterRunner,
     _effective_limits,
     _planning_model_settings,
+    _requires_complete_thinking_history,
     _usage_limit_type,
 )
 from cinescaffold.planning.trace import (
@@ -87,6 +88,12 @@ class InterpreterRunnerTest(unittest.TestCase):
             },
         )
         self.assertTrue(all(value is None for value in _effective_limits(config).values()))
+        self.assertTrue(_requires_complete_thinking_history(config))
+
+        disabled = config.model_copy(
+            update={"full_power_diagnostic": False, "thinking_mode": "disabled"}
+        )
+        self.assertFalse(_requires_complete_thinking_history(disabled))
 
     def test_stream_telemetry_counts_reasoning_without_recording_content(self) -> None:
         async def events():
