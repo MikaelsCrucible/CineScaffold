@@ -91,7 +91,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "tool_call_completed" for item in trace))
         self.assertTrue(any(item["event_type"] == "commit_gate_completed" for item in trace))
         run_started = next(item for item in trace if item["event_type"] == "run_started")
-        self.assertEqual(run_started["payload"]["toolkit_version"], "0.4")
+        self.assertEqual(run_started["payload"]["toolkit_version"], "0.5")
         self.assertNotIn("孤独", "\n".join(trace_lines))
         self.assertEqual(scene_ir["schema_version"], "0.1")
         self.assertEqual(len(scene_ir["camera"]["state_track"]["samples"]), 144)

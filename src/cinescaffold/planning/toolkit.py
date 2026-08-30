@@ -38,7 +38,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.4"
+TOOLKIT_VERSION = "0.5"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -637,7 +637,7 @@ class ScenePlanningToolkit:
         if "projection" in checks:
             violations.extend(_projection_violations(state, self.profile))
         if "hard_semantics" in checks:
-            violations.extend(_hard_semantic_violations(state))
+            violations.extend(_hard_semantic_violations(state, self.objective_brief))
 
         soft_total = 0.0
         soft_passed = 0.0
@@ -928,7 +928,10 @@ def _camera_violations(state: CandidateState) -> list[Violation]:
     return violations
 
 
-def _hard_semantic_violations(state: CandidateState) -> list[Violation]:
+def _hard_semantic_violations(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+) -> list[Violation]:
     locations: dict[str, set[str]] = {}
     for source_ref in state.runner_mapped_source_refs:
         locations.setdefault(source_ref, set()).add("runner")
@@ -969,7 +972,45 @@ def _hard_semantic_violations(state: CandidateState) -> list[Violation]:
                     actual={"locations": sorted(actual)},
                 )
             )
+        required_constraint_types = _required_constraint_types(
+            objective_brief,
+            source_ref,
+        )
+        missing_constraint_types = sorted(
+            constraint_type
+            for constraint_type in required_constraint_types
+            if f"constraint:{constraint_type}" not in actual
+        )
+        if missing_constraint_types:
+            violations.append(
+                _violation(
+                    "EXPLICIT_REQUIREMENT_CONSTRAINT_INCOMPLETE",
+                    f"明确要求缺少必要约束类型：{source_ref}",
+                    expected={"constraint_types": sorted(required_constraint_types)},
+                    actual={"locations": sorted(actual)},
+                    adjustable_variables=["constraints"],
+                )
+            )
     return violations
+
+
+def _required_constraint_types(
+    objective_brief: ObjectivePlanningBrief,
+    source_ref: str,
+) -> set[str]:
+    prefix = "content.scene_design.relationships["
+    if not source_ref.startswith(prefix):
+        return set()
+    try:
+        index = int(source_ref[len(prefix):].split("]", 1)[0])
+        relationship = objective_brief.scene_design.get("relationships", [])[index]
+    except (IndexError, TypeError, ValueError):
+        return set()
+    relation = str(relationship.get("type", "")).lower()
+    if any(marker in relation for marker in ("远", "far", "background", "远景", "后景")):
+        # 欧氏距离不足以表达画面中的“远处”，还必须证明其摄影机深度在主体之后。
+        return {"depth_order"}
+    return set()
 
 
 def _source_mapping_is_compatible(source_ref: str, actual: set[str]) -> bool:

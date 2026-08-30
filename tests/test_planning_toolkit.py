@@ -225,6 +225,38 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertIn("来源不兼容", result["warnings"][0])
 
+    def test_far_relationship_requires_camera_depth_order(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "distance_only",
+                    "type": "distance_range",
+                    "strength": "hard",
+                    "weight": 1.0,
+                    "subjects": ["man_01", "ship_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "entity_ids": ["man_01", "ship_01"],
+                        "minimum_meters": 30.0,
+                        "maximum_meters": 200.0,
+                    },
+                    "source_status": "explicit",
+                    "source_ref": "content.scene_design.relationships[0]",
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["hard_semantics"])
+
+        violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "EXPLICIT_REQUIREMENT_CONSTRAINT_INCOMPLETE"
+        )
+        self.assertEqual(violation["expected"]["constraint_types"], ["depth_order"])
+
     def test_camera_subject_is_not_reported_as_missing_entity(self) -> None:
         toolkit = _toolkit()
         toolkit.apply_camera_patch(
