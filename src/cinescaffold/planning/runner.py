@@ -45,6 +45,14 @@ from cinescaffold.planning.trace import (
 )
 
 
+DEFAULT_MAX_REQUESTS = 48
+DEFAULT_MAX_TOOL_CALLS = 80
+DEFAULT_MAX_CONTEXT_TOKENS = 128_000
+DEFAULT_MAX_OUTPUT_TOKENS = 200_000
+DEFAULT_MAX_SECONDS = 1_200.0
+DEFAULT_MAX_COMMIT_ATTEMPTS = 5
+
+
 class InterpreterRunConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     provider: str = "mock"
@@ -55,14 +63,14 @@ class InterpreterRunConfig(BaseModel):
     run_dir: Path
     resume_from: Path | None = None
     run_id: str | None = None
-    max_requests: int = Field(default=24, ge=1)
-    max_tool_calls: int = Field(default=40, ge=1)
+    max_requests: int = Field(default=DEFAULT_MAX_REQUESTS, ge=1)
+    max_tool_calls: int = Field(default=DEFAULT_MAX_TOOL_CALLS, ge=1)
     max_input_tokens: int | None = Field(default=None, ge=1)
-    max_context_tokens: int | None = Field(default=32_000, ge=1)
-    max_output_tokens: int | None = Field(default=30_000, ge=1)
+    max_context_tokens: int | None = Field(default=DEFAULT_MAX_CONTEXT_TOKENS, ge=1)
+    max_output_tokens: int | None = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=1)
     max_total_tokens: int | None = Field(default=None, ge=1)
-    max_seconds: float = Field(default=300.0, gt=0)
-    max_commit_attempts: int = Field(default=3, ge=1)
+    max_seconds: float = Field(default=DEFAULT_MAX_SECONDS, gt=0)
+    max_commit_attempts: int = Field(default=DEFAULT_MAX_COMMIT_ATTEMPTS, ge=1)
     thinking_mode: Literal["enabled", "disabled"] | None = None
     reasoning_effort: Literal["low", "high", "max"] | None = None
     model_max_tokens: int | None = Field(default=None, ge=1)

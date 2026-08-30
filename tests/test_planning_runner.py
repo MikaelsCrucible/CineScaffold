@@ -374,11 +374,15 @@ class InterpreterRunnerTest(unittest.TestCase):
         config = InterpreterRunConfig(run_dir=Path("unused"))
 
         self.assertIsNone(config.max_input_tokens)
-        self.assertEqual(config.max_requests, 24)
-        self.assertEqual(config.max_context_tokens, 32_000)
+        self.assertEqual(config.max_requests, 48)
+        self.assertEqual(config.max_tool_calls, 80)
+        self.assertEqual(config.max_context_tokens, 128_000)
+        self.assertEqual(config.max_output_tokens, 200_000)
+        self.assertEqual(config.max_seconds, 1_200.0)
+        self.assertEqual(config.max_commit_attempts, 5)
         self.assertIsNone(config.max_total_tokens)
         self.assertEqual(
-            _usage_limit_type("Exceeded the per_request_input_tokens_limit of 32000"),
+            _usage_limit_type("Exceeded the per_request_input_tokens_limit of 128000"),
             "per_request_input_tokens_limit",
         )
 

@@ -128,6 +128,8 @@ planning_reasoning_effort = low
 
 DeepSeek 在 thinking 与 tools 同时启用时要求后续请求完整回传历史 `reasoning_content`。CineScaffold 依赖 PydanticAI 的 DeepSeek Profile 完成字段映射，并在这种模式下保留完整工具思考历史，不再应用 13-message 压缩窗口；普通工具前置正文仍会省略。该协议可能明显增加后续请求上下文，正式实验需要把思考模式和上下文预算一起冻结。
 
+常规规划默认使用面向长思考工具循环的研究预算：48 次模型请求、80 次工具调用、单请求 128K 输入上下文、整轮累计 200K 输出 token、20 分钟墙钟时间和 5 次 Commit Gate 尝试。累计输入和输入输出总量默认不另设上限，但仍受上述单项门禁与供应商限制保护。每项均可通过 `--max-requests`、`--max-tool-calls`、`--max-context-tokens`、`--max-output-tokens`、`--max-seconds` 和 `--max-commit-attempts` 临时覆盖；论文批量实验应显式记录或冻结这些值。
+
 ## 使用
 
 ### 一键运行

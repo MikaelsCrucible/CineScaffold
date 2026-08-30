@@ -28,7 +28,16 @@ from cinescaffold.config import (
 )
 from cinescaffold.errors import CineScaffoldError, ConfigurationError
 from cinescaffold.execution.runner import ExecutionConfig, ExecutionRunner
-from cinescaffold.planning.runner import InterpreterRunConfig, InterpreterRunner
+from cinescaffold.planning.runner import (
+    DEFAULT_MAX_COMMIT_ATTEMPTS,
+    DEFAULT_MAX_CONTEXT_TOKENS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MAX_REQUESTS,
+    DEFAULT_MAX_SECONDS,
+    DEFAULT_MAX_TOOL_CALLS,
+    InterpreterRunConfig,
+    InterpreterRunner,
+)
 from cinescaffold.planning.trace import CostRates, TraceConfig
 from cinescaffold.providers import DeepSeekProvider, MockProvider, OpenAIProvider
 from cinescaffold.semantic import SemanticParserConfig, parse_cinematic_brief
@@ -171,8 +180,8 @@ def _add_planning_arguments(parser: argparse.ArgumentParser) -> None:
         help="从先前运行的 checkpoint_latest.json 恢复 Candidate",
     )
     parser.add_argument("--run-id")
-    parser.add_argument("--max-requests", type=int, default=24)
-    parser.add_argument("--max-tool-calls", type=int, default=40)
+    parser.add_argument("--max-requests", type=int, default=DEFAULT_MAX_REQUESTS)
+    parser.add_argument("--max-tool-calls", type=int, default=DEFAULT_MAX_TOOL_CALLS)
     parser.add_argument(
         "--max-input-tokens",
         type=int,
@@ -182,13 +191,21 @@ def _add_planning_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-context-tokens",
         type=int,
-        default=32_000,
+        default=DEFAULT_MAX_CONTEXT_TOKENS,
         help="单次模型请求的上下文 token 上限",
     )
-    parser.add_argument("--max-output-tokens", type=int, default=30_000)
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=DEFAULT_MAX_OUTPUT_TOKENS,
+    )
     parser.add_argument("--max-total-tokens", type=int, default=None)
-    parser.add_argument("--max-seconds", type=float, default=300.0)
-    parser.add_argument("--max-commit-attempts", type=int, default=3)
+    parser.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS)
+    parser.add_argument(
+        "--max-commit-attempts",
+        type=int,
+        default=DEFAULT_MAX_COMMIT_ATTEMPTS,
+    )
     parser.add_argument(
         "--thinking-mode",
         choices=("enabled", "disabled"),
