@@ -121,6 +121,14 @@ class PathSpec(StrictModel):
     parameterization: Literal["normalized_time", "arc_length"] = "normalized_time"
     orientation_mode: Literal["keep", "tangent", "look_at", "keyframed"] = "keep"
 
+    @model_validator(mode="after")
+    def validate_reference_frame(self) -> PathSpec:
+        if self.space == "target_relative" and not self.target_id:
+            raise ValueError("target_relative Path 必须提供 target_id")
+        if self.space != "target_relative" and self.target_id is not None:
+            raise ValueError(f"{self.space} Path 不接受 target_id")
+        return self
+
 
 class TrackKeyframe(StrictModel):
     time_seconds: float = Field(ge=0)
@@ -152,6 +160,17 @@ class TrackSpec(StrictModel):
             raise ValueError("path_follow Track 必须提供 path")
         if self.type == "look_at" and not self.target_id:
             raise ValueError("look_at Track 必须提供 target_id")
+        if self.type == "transform":
+            values = [item.value for item in self.keyframes]
+            if any(not isinstance(item, TransformValue) for item in values):
+                raise ValueError("transform Track 的关键帧必须使用 TransformValue")
+            frames = {
+                (item.space, item.target_id)
+                for item in values
+                if isinstance(item, TransformValue)
+            }
+            if len(frames) > 1:
+                raise ValueError("同一 transform Track 的关键帧必须使用相同参考系")
         return self
 
 

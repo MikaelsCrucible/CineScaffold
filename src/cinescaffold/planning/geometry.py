@@ -48,7 +48,8 @@ def sample_transform_track(
                     ratio,
                 ),
                 scale=_lerp_vec3(start.scale, end.scale, ratio),
-                space="world",
+                space=start.space,
+                target_id=start.target_id,
             )
     return _complete_transform(fallback)
 
@@ -62,7 +63,9 @@ def sample_path_track(
         return _complete_transform(fallback)
     start, end = track.time_range_seconds
     ratio = min(1.0, max(0.0, (time_seconds - start) / (end - start)))
-    points = track.path.control_points
+    points = list(track.path.control_points)
+    if track.path.closed and points[-1] != points[0]:
+        points.append(points[0])
     if track.path.parameterization == "arc_length":
         position = _sample_arc_length(points, ratio)
     else:
@@ -72,7 +75,8 @@ def sample_path_track(
         translation_m=position,
         rotation_quaternion_wxyz=completed.rotation_quaternion_wxyz,
         scale=completed.scale,
-        space="world",
+        space=track.path.space,
+        target_id=track.path.target_id,
     )
 
 
@@ -397,7 +401,8 @@ def _complete_transform(value: TransformValue) -> TransformValue:
         translation_m=value.translation_m or (0.0, 0.0, 0.0),
         rotation_quaternion_wxyz=value.rotation_quaternion_wxyz or IDENTITY_QUATERNION,
         scale=value.scale or UNIT_SCALE,
-        space="world",
+        space=value.space,
+        target_id=value.target_id,
     )
 
 
@@ -415,7 +420,8 @@ def _transform_from_value(value: Any, fallback: TransformValue) -> TransformValu
             parsed.rotation_quaternion_wxyz or completed.rotation_quaternion_wxyz
         ),
         scale=parsed.scale or completed.scale,
-        space="world",
+        space=parsed.space,
+        target_id=parsed.target_id,
     )
 
 
