@@ -276,6 +276,25 @@ class PlanningGeometryTest(unittest.TestCase):
 
         self.assertEqual(sampled.translation_m, fallback.translation_m)
 
+    def test_transform_uses_fallback_before_first_keyframe(self) -> None:
+        fallback = TransformValue(translation_m=(3.0, 4.0, 1.0))
+        track = TrackSpec.model_validate(
+            {
+                "track_id": "future_move",
+                "target_entity_id": "car",
+                "type": "transform",
+                "time_range_seconds": [0.0, 12.0],
+                "keyframes": [
+                    {"time_seconds": 7.0, "value": {"translation_m": [0.0, 0.0, 0.0]}},
+                    {"time_seconds": 11.9, "value": {"translation_m": [10.0, 0.0, 0.0]}},
+                ],
+            }
+        )
+
+        sampled = sample_transform_track(track, 2.0, fallback)
+
+        self.assertEqual(sampled.translation_m, fallback.translation_m)
+
     def test_late_path_track_uses_fallback_before_start(self) -> None:
         fallback = TransformValue(translation_m=(1.0, 2.0, 3.0))
         track = TrackSpec.model_validate(
@@ -308,6 +327,20 @@ class PlanningGeometryTest(unittest.TestCase):
 
         self.assertEqual(sample_scalar_track(track, 2.0, 1.0), 1.0)
         self.assertEqual(sample_scalar_track(track, 8.0, 1.0), 0.0)
+
+    def test_visibility_uses_fallback_before_first_keyframe(self) -> None:
+        track = TrackSpec.model_validate(
+            {
+                "track_id": "boarded_visibility",
+                "target_entity_id": "man",
+                "type": "visibility",
+                "time_range_seconds": [0.0, 12.0],
+                "keyframes": [{"time_seconds": 7.0, "value": False}],
+            }
+        )
+
+        self.assertEqual(sample_scalar_track(track, 6.9, 1.0), 1.0)
+        self.assertEqual(sample_scalar_track(track, 7.0, 1.0), 0.0)
 
 
 if __name__ == "__main__":

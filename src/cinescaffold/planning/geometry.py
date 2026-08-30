@@ -27,7 +27,9 @@ def sample_transform_track(
         # 晚开始的轨道不得把首关键帧提前施加到整个镜头。
         return _complete_transform(fallback)
     keyframes = sorted(track.keyframes, key=lambda item: item.time_seconds)
-    if time_seconds <= keyframes[0].time_seconds:
+    if time_seconds < keyframes[0].time_seconds:
+        return _complete_transform(fallback)
+    if time_seconds == keyframes[0].time_seconds:
         return _transform_from_value(keyframes[0].value, fallback)
     if time_seconds >= keyframes[-1].time_seconds:
         return _transform_from_value(keyframes[-1].value, fallback)
@@ -188,7 +190,9 @@ def sample_scalar_track(track: TrackSpec | None, time_seconds: float, fallback: 
     if time_seconds < track.time_range_seconds[0]:
         return fallback
     keyframes = sorted(track.keyframes, key=lambda item: item.time_seconds)
-    if time_seconds <= keyframes[0].time_seconds:
+    if time_seconds < keyframes[0].time_seconds:
+        return fallback
+    if time_seconds == keyframes[0].time_seconds:
         return float(keyframes[0].value)
     if time_seconds >= keyframes[-1].time_seconds:
         return float(keyframes[-1].value)
