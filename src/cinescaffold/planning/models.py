@@ -289,28 +289,18 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
             },
         )
     )
-    actions.extend(
-        [
-            (
-                "solve_candidate",
-                {
-                    "scope": "all",
-                    "constraint_ids": [],
-                    "allowed_variables": [],
-                    "locked_variables": [],
-                    "profile": "research_default",
-                    "strategy": "auto",
-                },
-            ),
-            (
-                "validate_candidate",
-                {
-                    "revision": None,
-                    "checks": [],
-                    "sampling_profile": "research_default",
-                },
-            ),
-        ]
+    actions.append(
+        (
+            "solve_candidate",
+            {
+                "scope": "all",
+                "constraint_ids": [],
+                "allowed_variables": [],
+                "locked_variables": [],
+                "profile": "research_default",
+                "strategy": "auto",
+            },
+        )
     )
     return actions
 

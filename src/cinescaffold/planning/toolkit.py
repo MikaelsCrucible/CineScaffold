@@ -38,7 +38,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.1"
+TOOLKIT_VERSION = "0.2"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -82,6 +82,7 @@ INSPECT_VIEWS = [
     "full_ir",
 ]
 CAMERA_SINGLETON_TRACK_TYPES = {"transform", "path_follow", "look_at", "focal_length"}
+ENTITY_SINGLETON_TRACK_TYPES = {"transform", "path_follow", "visibility", "look_at"}
 
 
 def _commit_ready(report: ValidationReport | None, profile: PlanningProfile) -> bool:
@@ -114,6 +115,33 @@ def _validate_singleton_camera_tracks(tracks: dict[str, TrackSpec]) -> None:
     )
     raise ValueError(
         f"Camera 单一通道存在重叠轨道：{details}；请用 remove_track_ids 删除旧轨道"
+    )
+
+
+def _duplicate_entity_track_ids(
+    tracks: dict[str, TrackSpec],
+) -> dict[tuple[str, str], list[str]]:
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for track in tracks.values():
+        if track.target_entity_id and track.type in ENTITY_SINGLETON_TRACK_TYPES:
+            grouped.setdefault((track.target_entity_id, track.type), []).append(track.track_id)
+    return {
+        key: sorted(track_ids)
+        for key, track_ids in grouped.items()
+        if len(track_ids) > 1
+    }
+
+
+def _validate_singleton_entity_tracks(tracks: dict[str, TrackSpec]) -> None:
+    duplicates = _duplicate_entity_track_ids(tracks)
+    if not duplicates:
+        return
+    details = "; ".join(
+        f"{entity_id}.{track_type}={','.join(track_ids)}"
+        for (entity_id, track_type), track_ids in sorted(duplicates.items())
+    )
+    raise ValueError(
+        f"Entity 单一通道存在重叠轨道：{details}；请用 remove_ids 删除旧轨道"
     )
 
 
@@ -346,6 +374,16 @@ class ScenePlanningToolkit:
         remove_ids = remove_ids or []
         try:
             parsed = [TrackSpec.model_validate(item) for item in upserts]
+            unsupported = sorted(
+                track.track_id
+                for track in parsed
+                if track.type not in ENTITY_SINGLETON_TRACK_TYPES
+            )
+            if unsupported:
+                return _rejected(
+                    self.store.current_revision,
+                    f"Entity Track 类型不受支持：{', '.join(unsupported)}",
+                )
             if set(item.track_id for item in parsed) & set(remove_ids):
                 return _rejected(self.store.current_revision, "同一 Track 不能同时 upsert 和删除")
 
@@ -364,6 +402,7 @@ class ScenePlanningToolkit:
                         "operation": "replace" if existing else "add",
                         "path": f"motion_tracks.{track.track_id}",
                     })
+                _validate_singleton_entity_tracks(state.motion_tracks)
                 return changes, []
 
             return _mutation_envelope(self.store.apply(mutate))
@@ -767,6 +806,19 @@ def _reference_violations(state: CandidateState) -> list[Violation]:
     for track in state.motion_tracks.values():
         if track.target_entity_id not in state.entities:
             violations.append(_violation("TRACK_TARGET_MISSING", f"Track 目标不存在：{track.track_id}"))
+    for (entity_id, track_type), track_ids in _duplicate_entity_track_ids(
+        state.motion_tracks
+    ).items():
+        violations.append(
+            _violation(
+                "AMBIGUOUS_ENTITY_TRACKS",
+                f"Entity {entity_id} 的 {track_type} 通道存在重叠轨道：{', '.join(track_ids)}",
+                entity_ids=[entity_id],
+                expected={"track_type": track_type, "maximum_count": 1},
+                actual={"track_ids": track_ids},
+                adjustable_variables=["entity tracks", "remove_ids"],
+            )
+        )
     for constraint in state.constraints.values():
         missing = sorted(item for item in constraint.subjects if item not in state.entities)
         if missing:

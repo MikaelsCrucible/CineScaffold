@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,7 +20,7 @@ from cinescaffold.planning.domain import (
     StrictModel,
     TrackSpec,
 )
-from cinescaffold.planning.toolkit import ScenePlanningToolkit
+from cinescaffold.planning.toolkit import TOOLKIT_VERSION, ScenePlanningToolkit
 from cinescaffold.planning.trace import TraceRecorder
 
 
@@ -40,6 +41,8 @@ class PlanningDeps:
     trace: TraceRecorder
     deadline_monotonic: float
     checkpoint_writer: Callable[[CandidateState], Path] | None = None
+    capabilities_read: bool = False
+    inspected_calls: set[str] = field(default_factory=set)
 
     def call_tool(self, name: str, arguments: dict[str, Any], operation) -> dict[str, Any]:
         if time.monotonic() >= self.deadline_monotonic:
@@ -52,6 +55,20 @@ class PlanningDeps:
             revision_before=revision_before,
             arguments=arguments,
         )
+        rejection = self._protocol_rejection(name, arguments, revision_before)
+        if rejection is not None:
+            self.trace.record(
+                "tool_call_completed",
+                tool_name=name,
+                revision_before=revision_before,
+                revision_after=revision_before,
+                result_revision=revision_before,
+                status="rejected",
+                protocol_rejected=True,
+                duration_ms=round((time.monotonic() - started) * 1000, 3),
+                result=rejection,
+            )
+            return rejection
         try:
             result = operation()
         except Exception as error:
@@ -64,26 +81,88 @@ class PlanningDeps:
                 error=str(error),
             )
             raise
+        current_revision_after = self.toolkit.store.current_revision
         self.trace.record(
             "tool_call_completed",
             tool_name=name,
             revision_before=revision_before,
-            revision_after=result.get("revision_after"),
+            revision_after=current_revision_after,
+            result_revision=result.get("revision_after"),
             status=result.get("status"),
             duration_ms=round((time.monotonic() - started) * 1000, 3),
             result=result,
         )
-        if (
-            self.checkpoint_writer is not None
-            and result.get("revision_after") != revision_before
-        ):
+        if name == "get_capabilities" and result.get("status") == "ok":
+            self.capabilities_read = True
+        if name == "inspect_candidate" and result.get("status") == "ok":
+            self.inspected_calls.add(self._inspect_key(arguments, revision_before))
+        if self.checkpoint_writer is not None and current_revision_after != revision_before:
             checkpoint_path = self.checkpoint_writer(self.toolkit.store.get())
             self.trace.record(
                 "candidate_checkpoint_written",
-                revision=result.get("revision_after"),
+                revision=current_revision_after,
                 checkpoint=checkpoint_path.name,
             )
         return result
+
+    def _protocol_rejection(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        revision: int,
+    ) -> dict[str, Any] | None:
+        if name != "get_capabilities" and not self.capabilities_read:
+            return _protocol_rejected(revision, "必须先读取一次 get_capabilities", ["调用 get_capabilities"])
+        if name == "get_capabilities" and self.capabilities_read:
+            return _protocol_rejected(
+                revision,
+                "能力清单在本次上下文中已经读取，不得重复调用",
+                ["使用已有能力结果继续构造或提交"],
+            )
+        validation = self.toolkit.store.get().validation
+        if (
+            name != "get_capabilities"
+            and validation is not None
+            and validation.hard_pass
+            and validation.soft_score >= self.toolkit.profile.minimum_soft_score
+        ):
+            return _protocol_rejected(
+                revision,
+                "当前 revision 已满足 Commit Gate 阈值，不允许继续调用工具",
+                [f"立即返回 CommitRequest(candidate_revision={revision})"],
+            )
+        if name == "inspect_candidate":
+            key = self._inspect_key(arguments, revision)
+            if key in self.inspected_calls:
+                return _protocol_rejected(
+                    revision,
+                    "同一 revision 的相同 inspect 请求已经执行",
+                    ["使用已有结果，或先产生新 revision"],
+                )
+        return None
+
+    @staticmethod
+    def _inspect_key(arguments: dict[str, Any], current_revision: int) -> str:
+        normalized = dict(arguments)
+        normalized["revision"] = (
+            current_revision if arguments.get("revision") is None else arguments["revision"]
+        )
+        return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _protocol_rejected(revision: int, message: str, next_actions: list[str]) -> dict[str, Any]:
+    return {
+        "tool_version": TOOLKIT_VERSION,
+        "status": "rejected",
+        "revision_before": revision,
+        "revision_after": revision,
+        "changes": [],
+        "data": {},
+        "violations": [],
+        "warnings": [message],
+        "capability_gaps": [],
+        "next_actions": next_actions,
+    }
 
 
 def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDeps, AgentTerminal]:
@@ -100,7 +179,25 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
     @agent.tool(sequential=True)
     async def get_capabilities(
         ctx: RunContext[PlanningDeps],
-        sections: list[str],
+        sections: list[
+            Literal[
+                "entities",
+                "constraints",
+                "tracks",
+                "camera",
+                "validators",
+                "limits",
+                "timeline",
+                "profiles",
+                "constraint_types",
+                "resources",
+                "mcp",
+                "blender",
+                "executor",
+                "scene_ir",
+                "render",
+            ]
+        ],
     ) -> dict[str, Any]:
         """读取版本化能力、约束、轨道、验证器和当前资源状态。"""
         return ctx.deps.call_tool(
@@ -201,7 +298,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
     async def apply_camera_patch(
         ctx: RunContext[PlanningDeps],
         camera_id: str,
-        projection: str,
+        projection: Literal["perspective"],
         active: bool,
         static: CameraStatic,
         tracks: list[TrackSpec],
@@ -225,12 +322,12 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
     @agent.tool(sequential=True)
     async def solve_candidate(
         ctx: RunContext[PlanningDeps],
-        scope: str = "all",
+        scope: Literal["layout", "camera", "motion", "all"] = "all",
         constraint_ids: list[str] | None = None,
         allowed_variables: list[str] | None = None,
         locked_variables: list[str] | None = None,
-        profile: str = "research_default",
-        strategy: str = "auto",
+        profile: Literal["research_default"] = "research_default",
+        strategy: Literal["auto", "heuristic", "numeric", "hybrid"] = "auto",
     ) -> dict[str, Any]:
         """确定性求解未定布局、摄影机和运动变量。"""
         arguments = {
@@ -251,8 +348,24 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
     async def validate_candidate(
         ctx: RunContext[PlanningDeps],
         revision: int | None = None,
-        checks: list[str] | None = None,
-        sampling_profile: str = "research_default",
+        checks: list[
+            Literal[
+                "schema",
+                "references",
+                "timeline",
+                "hierarchy",
+                "transforms",
+                "projection",
+                "composition",
+                "visibility",
+                "motion",
+                "camera",
+                "hard_semantics",
+                "rebuildability",
+            ]
+        ]
+        | None = None,
+        sampling_profile: Literal["research_default"] = "research_default",
     ) -> dict[str, Any]:
         """确定性验证 Candidate，并返回稳定错误码和数值证据。"""
         arguments = {

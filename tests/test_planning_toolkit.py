@@ -93,6 +93,33 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             )
         )
 
+    def test_motion_patch_rejects_overlapping_entity_tracks_atomically(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
+        result = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "man_move_a",
+                    "target_entity_id": "man_01",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [],
+                },
+                {
+                    "track_id": "man_move_b",
+                    "target_entity_id": "man_01",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [],
+                },
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("remove_ids", result["warnings"][0])
+        self.assertEqual(toolkit.store.get().motion_tracks, {})
+
     def test_transform_keyframe_rejects_unknown_position_alias(self) -> None:
         toolkit = _toolkit()
         result = toolkit.apply_camera_patch(
