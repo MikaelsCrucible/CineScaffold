@@ -416,7 +416,7 @@ class ScenePlanningToolkit:
 
         try:
             mutation = self.store.apply(mutate)
-        except ValueError as error:
+        except (ValidationError, ValueError) as error:
             return _rejected(self.store.current_revision, str(error))
         report = self._validate(self.store.get(), FULL_VALIDATION_CHECKS)
         self.store.save_validation(report)

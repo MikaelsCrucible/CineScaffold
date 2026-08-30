@@ -264,9 +264,12 @@ def _complete_transform(value: TransformValue) -> TransformValue:
 
 
 def _transform_from_value(value: Any, fallback: TransformValue) -> TransformValue:
-    if not isinstance(value, dict):
+    if isinstance(value, TransformValue):
+        parsed = value
+    elif isinstance(value, dict):
+        parsed = TransformValue.model_validate(value)
+    else:
         raise ValueError("transform 关键帧值必须是对象")
-    parsed = TransformValue.model_validate(value)
     completed = _complete_transform(fallback)
     return TransformValue(
         translation_m=parsed.translation_m or completed.translation_m,

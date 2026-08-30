@@ -26,6 +26,33 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             },
         )
 
+    def test_transform_keyframe_rejects_unknown_position_alias(self) -> None:
+        toolkit = _toolkit()
+        result = toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0},
+            tracks=[
+                {
+                    "track_id": "invalid_camera_track",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"position": [0.0, -12.0, 2.0]},
+                            "interpolation": "linear",
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["revision_after"], 0)
+        self.assertIn("position", result["warnings"][0])
+
     def test_mutations_create_revisions_and_restore_keeps_history(self) -> None:
         toolkit = _toolkit()
         first = toolkit.apply_entity_patch([_man_entity()], [])

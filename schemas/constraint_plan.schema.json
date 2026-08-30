@@ -1205,8 +1205,7 @@
         "value": {
           "anyOf": [
             {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/TransformValue"
             },
             {
               "type": "number"

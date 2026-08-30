@@ -124,7 +124,7 @@ class PathSpec(StrictModel):
 
 class TrackKeyframe(StrictModel):
     time_seconds: float = Field(ge=0)
-    value: dict[str, Any] | float | bool
+    value: TransformValue | float | bool
     interpolation: Literal["step", "linear", "smooth"] = "linear"
 
 
