@@ -41,8 +41,8 @@ from cinescaffold.planning.toolkit import (
 )
 
 
-COMPILER_VERSION = "0.7"
-COMMIT_GATE_VERSION = "0.7"
+COMPILER_VERSION = "0.8"
+COMMIT_GATE_VERSION = "0.8"
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,9 @@ def compile_scene_ir(
     for frame in frames:
         time_seconds = _frame_time(frame, timeline)
         for entity_id in state.entities:
-            world_samples[entity_id].append(_entity_transform_at(state, entity_id, time_seconds))
+            world_samples[entity_id].append(
+                _entity_transform_at(state, entity_id, time_seconds, profile)
+            )
 
     entities: list[EntityIR] = []
     for object_index, entity_id in enumerate(sorted(state.entities), start=1):

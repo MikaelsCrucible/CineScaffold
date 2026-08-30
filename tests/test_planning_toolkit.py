@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import unittest
 
-from cinescaffold.planning.compiler import SceneIRCommitGate
+from cinescaffold.planning.compiler import SceneIRCommitGate, compile_scene_ir
 from cinescaffold.planning.domain import CommitRequest
 from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
 from cinescaffold.planning.objective import project_objective_brief
-from cinescaffold.planning.toolkit import FULL_VALIDATION_CHECKS, ScenePlanningToolkit
+from cinescaffold.planning.toolkit import (
+    FULL_VALIDATION_CHECKS,
+    ScenePlanningToolkit,
+    _entity_transform_at,
+)
 from tests.helpers import valid_model_output
 
 
@@ -755,6 +759,158 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             )
         )
 
+    def test_nested_target_relative_orbits_compile_to_parent_local_ir(self) -> None:
+        toolkit = _relative_motion_toolkit()
+
+        earth_quarter = _entity_transform_at(toolkit.store.get(), "earth", 1.5)
+        moon_quarter = _entity_transform_at(toolkit.store.get(), "moon", 1.5)
+        scene_ir = compile_scene_ir(
+            toolkit,
+            toolkit.store.get(),
+            agent_run_id="relative_motion_test",
+            trace_ref="test_trace.jsonl",
+        )
+        entities = {item.entity_id: item for item in scene_ir.entities}
+
+        self.assertAlmostEqual(earth_quarter.translation_m[0], 0.0, places=8)
+        self.assertAlmostEqual(earth_quarter.translation_m[1], 10.0, places=8)
+        self.assertAlmostEqual(moon_quarter.translation_m[0], 0.0, places=8)
+        self.assertAlmostEqual(moon_quarter.translation_m[1], 12.0, places=8)
+        earth_frame = entities["earth"].local_state_track.samples[36].value
+        moon_frame = entities["moon"].local_state_track.samples[36].value
+        self.assertEqual(earth_frame.translation_m, (0.0, 10.0, 0.0))
+        self.assertEqual(moon_frame.translation_m, (0.0, 2.0, 0.0))
+
+    def test_relative_motion_cycle_is_rejected_atomically(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_sphere_entity("earth"), _sphere_entity("moon")], [])
+        revision = toolkit.store.current_revision
+
+        result = toolkit.apply_motion_patch(
+            [
+                _orbit_track("earth_orbit", "earth", "moon", 10.0),
+                _orbit_track("moon_orbit", "moon", "earth", 2.0),
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(toolkit.store.current_revision, revision)
+        self.assertEqual(toolkit.store.get().motion_tracks, {})
+        self.assertIn("参考系依赖存在循环", result["warnings"][0])
+
+    def test_local_motion_composes_parent_rotation(self) -> None:
+        toolkit = _toolkit()
+        half_root = 2**-0.5
+        parent = _sphere_entity("parent") | {
+            "solved_transform": {
+                "translation_m": [10.0, 0.0, 0.0],
+                "rotation_quaternion_wxyz": [half_root, 0.0, 0.0, half_root],
+                "scale": [1.0, 1.0, 1.0],
+            }
+        }
+        child = _sphere_entity("child") | {"parent_id": "parent"}
+        toolkit.apply_entity_patch([parent, child], [])
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "child_local",
+                    "target_entity_id": "child",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {
+                                "translation_m": [1.0, 0.0, 0.0],
+                                "space": "local",
+                            },
+                        }
+                    ],
+                }
+            ],
+            [],
+        )
+
+        child_world = _entity_transform_at(toolkit.store.get(), "child", 0.0)
+
+        self.assertAlmostEqual(child_world.translation_m[0], 10.0, places=8)
+        self.assertAlmostEqual(child_world.translation_m[1], 1.0, places=8)
+
+    def test_camera_relative_entity_uses_current_camera_transform(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_sphere_entity("marker")], [])
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0},
+            tracks=[
+                {
+                    "track_id": "camera_world",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [10.0, 0.0, 0.0]},
+                        }
+                    ],
+                }
+            ],
+            remove_track_ids=[],
+        )
+        result = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "marker_camera_relative",
+                    "target_entity_id": "marker",
+                    "type": "path_follow",
+                    "time_range_seconds": [0.0, 6.0],
+                    "path": {
+                        "space": "camera",
+                        "control_points": [[0.0, 0.0, -5.0], [0.0, 0.0, -5.0]],
+                    },
+                }
+            ],
+            [],
+        )
+
+        marker = _entity_transform_at(toolkit.store.get(), "marker", 0.0)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(marker.translation_m, (10.0, 0.0, -5.0))
+
+    def test_distance_range_checks_every_frozen_frame(self) -> None:
+        toolkit = _relative_motion_toolkit(earth_radius_m=20.0)
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "earth_orbit_radius",
+                    "type": "distance_range",
+                    "strength": "soft",
+                    "weight": 1.0,
+                    "subjects": ["sun", "earth"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "entity_ids": ["sun", "earth"],
+                        "minimum_meters": 9.0,
+                        "maximum_meters": 11.0,
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.orbit_radius",
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertIn(
+            "DISTANCE_RANGE_VIOLATED",
+            {item["code"] for item in validation["violations"]},
+        )
+
 
 def _solved_toolkit() -> ScenePlanningToolkit:
     toolkit = _toolkit()
@@ -927,6 +1083,103 @@ def _ground_entity() -> dict:
             "scale": [1.0, 1.0, 1.0],
         },
     }
+
+
+def _sphere_entity(entity_id: str, *, parent_id: str | None = None) -> dict:
+    return {
+        "entity_id": entity_id,
+        "label": entity_id,
+        "role": "subject",
+        "proxy": {"type": "sphere", "radius_m": 1.0},
+        "parent_id": parent_id,
+        "tags": [],
+        "locked_fields": [],
+        "source_refs": [],
+        "solved_transform": {
+            "translation_m": [0.0, 0.0, 0.0],
+            "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+        },
+    }
+
+
+def _orbit_track(
+    track_id: str,
+    entity_id: str,
+    target_id: str,
+    radius_m: float,
+) -> dict:
+    return {
+        "track_id": track_id,
+        "target_entity_id": entity_id,
+        "type": "path_follow",
+        "time_range_seconds": [0.0, 6.0],
+        "path": {
+            "representation": "polyline",
+            "space": "target_relative",
+            "target_id": target_id,
+            "control_points": [
+                [radius_m, 0.0, 0.0],
+                [0.0, radius_m, 0.0],
+                [-radius_m, 0.0, 0.0],
+                [0.0, -radius_m, 0.0],
+            ],
+            "closed": True,
+            "parameterization": "arc_length",
+            "orientation_mode": "keep",
+        },
+        "source_ref": "content.scene_design.relationships[0]",
+    }
+
+
+def _relative_motion_toolkit(*, earth_radius_m: float = 10.0) -> ScenePlanningToolkit:
+    toolkit = _toolkit()
+    toolkit.apply_entity_patch(
+        [
+            _sphere_entity("sun"),
+            _sphere_entity("earth", parent_id="sun"),
+            _sphere_entity("moon", parent_id="earth"),
+        ],
+        [],
+    )
+    earth_track = _orbit_track("earth_orbit", "earth", "sun", 10.0)
+    if earth_radius_m != 10.0:
+        earth_track["path"]["control_points"] = [
+            [10.0, 0.0, 0.0],
+            [earth_radius_m, 0.0, 0.0],
+            [-10.0, 0.0, 0.0],
+            [0.0, -10.0, 0.0],
+        ]
+        earth_track["path"]["parameterization"] = "normalized_time"
+    motion_result = toolkit.apply_motion_patch(
+        [earth_track, _orbit_track("moon_orbit", "moon", "earth", 2.0)],
+        [],
+    )
+    if motion_result["status"] != "ok":
+        raise AssertionError(motion_result)
+    camera_result = toolkit.apply_camera_patch(
+        camera_id="camera_main",
+        projection="perspective",
+        active=True,
+        static={"focal_length_mm": 35.0, "focus_target_id": "sun"},
+        tracks=[
+            {
+                "track_id": "camera_static",
+                "type": "transform",
+                "time_range_seconds": [0.0, 6.0],
+                "keyframes": [
+                    {
+                        "time_seconds": 0.0,
+                        "value": {"translation_m": [0.0, -45.0, 35.0]},
+                    }
+                ],
+            }
+        ],
+        remove_track_ids=[],
+    )
+    if camera_result["status"] != "ok":
+        raise AssertionError(camera_result)
+    return toolkit
 
 
 def _annotated(value: str, source_text: str) -> dict:

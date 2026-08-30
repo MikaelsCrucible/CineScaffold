@@ -17,6 +17,7 @@
    - “远处 / 后景”不能只用欧氏 `distance_range` 表达，至少还要用 `depth_order` 证明该主体在当前摄影机下位于参照主体之后。
    - 代理体必须使用有真实三维厚度、与主体类别相称的几何表达尺寸；实体建立后代理体类型与自身轴向不可更换。不得为了投影比例或“露出多个面”更换形状、擅自改变 Brief 未指定的朝向；实际网格体积由执行期 Validator 检查。
    - 每个实体都要选择类型化 `ground_interaction`。缺省 `must_be_above` 禁止穿地；贴地使用 `must_touch`。只有 Brief 明确描述埋入、插入、半露出或地下状态时，才可用 `may_intersect`、`embedded` 或 `unconstrained`，并必须填写对应 explicit `source_ref`；不得通过这些模式规避“远处”等空间语义，也不得削短代理体伪装成埋入。
+   - 相对运动使用 `path_follow.path.space=target_relative` 与 `path.target_id`，闭环使用 `closed=true`。允许递归嵌套，例如 B 相对 A、C 再相对 B；不得自行把复合运动手算成世界坐标折线。父级局部运动使用 `space=local`，摄影机相对实体运动使用 `space=camera`。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 且来源路径与约束类型兼容的要求可以成为 hard constraint；环境实体来源不能被拿来制造空间硬约束。Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
 5. 构造后调用 solve_candidate；若其 commit_ready=false，再按需调用 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
    - inspect_candidate 的 view 只能使用 get_capabilities.inspect_views 返回的枚举值；同一 revision 不得重复读取相同视图。

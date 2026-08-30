@@ -21,6 +21,7 @@ from cinescaffold.planning.domain import (
     Violation,
 )
 from cinescaffold.planning.geometry import (
+    add,
     dot,
     geometry_bounding_radius,
     geometry_local_bounds_points,
@@ -30,6 +31,7 @@ from cinescaffold.planning.geometry import (
     project_point,
     project_geometry_bounds,
     quaternion_conjugate,
+    quaternion_multiply,
     rotate_vector,
     sample_path_track,
     sample_scalar_track,
@@ -40,7 +42,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.8"
+TOOLKIT_VERSION = "0.9"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -200,6 +202,13 @@ class ScenePlanningToolkit:
                 ),
             },
             "supported_tracks": ["transform", "path_follow", "visibility", "look_at", "focal_length"],
+            "reference_frames": {
+                "world": "坐标直接位于规范世界空间",
+                "local": "坐标相对实体 parent_id；无父级时等同 world",
+                "target_relative": "坐标相对 target_id 当前帧的完整 Transform，可递归嵌套",
+                "camera": "实体坐标相对当前活动摄影机；摄影机自身不得使用",
+                "closed_path": "closed=true 会确定性补上末段到首点",
+            },
             "inspect_views": INSPECT_VIEWS,
             "acceptance": {
                 "minimum_soft_score": self.profile.minimum_soft_score,
@@ -339,6 +348,7 @@ class ScenePlanningToolkit:
                     changes.append({"operation": operation, "path": f"entities.{entity.entity_id}"})
                 _validate_parent_references(state)
                 _validate_ground_interaction_references(state, self.objective_brief)
+                _validate_reference_frame_graph(state, self.profile)
                 return changes, []
 
             return _mutation_envelope(self.store.apply(mutate))
@@ -458,6 +468,7 @@ class ScenePlanningToolkit:
                         "path": f"motion_tracks.{track.track_id}",
                     })
                 _validate_singleton_entity_tracks(state.motion_tracks)
+                _validate_reference_frame_graph(state, self.profile)
                 return changes, []
 
             return _mutation_envelope(self.store.apply(mutate))
@@ -513,6 +524,7 @@ class ScenePlanningToolkit:
                         previous.solved_transform if previous else TransformValue()
                     ),
                 )
+                _validate_reference_frame_graph(state, self.profile)
                 return ([{"operation": "replace" if previous else "add", "path": "camera"}], [])
 
             return _mutation_envelope(self.store.apply(mutate))
@@ -647,11 +659,11 @@ class ScenePlanningToolkit:
         violations: list[Violation] = []
         gaps: list[str] = []
         if "references" in checks or "hierarchy" in checks:
-            violations.extend(_reference_violations(state))
+            violations.extend(_reference_violations(state, self.profile))
         if "timeline" in checks:
             violations.extend(_timeline_violations(state))
         if "transforms" in checks or "rebuildability" in checks:
-            violations.extend(_transform_violations(state))
+            violations.extend(_transform_violations(state, self.profile))
         if "camera" in checks or "rebuildability" in checks:
             violations.extend(_camera_violations(state))
         if "projection" in checks:
@@ -734,6 +746,17 @@ def _referenced_entity_ids(state: CandidateState) -> set[str]:
     result.update(
         track.target_entity_id for track in state.motion_tracks.values() if track.target_entity_id
     )
+    for entity in state.entities.values():
+        if entity.solved_transform.target_id:
+            result.add(entity.solved_transform.target_id)
+    for track in list(state.motion_tracks.values()) + (
+        list(state.camera.tracks.values()) if state.camera else []
+    ):
+        if track.path and track.path.target_id:
+            result.add(track.path.target_id)
+        for keyframe in track.keyframes:
+            if isinstance(keyframe.value, TransformValue) and keyframe.value.target_id:
+                result.add(keyframe.value.target_id)
     for constraint in state.constraints.values():
         result.update(constraint.subjects)
         for key, value in _parameters(constraint).items():
@@ -893,12 +916,19 @@ def _apply_layout_constraint(
     return False
 
 
-def _reference_violations(state: CandidateState) -> list[Violation]:
+def _reference_violations(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> list[Violation]:
     violations: list[Violation] = []
     try:
         _validate_parent_references(state)
     except ValueError as error:
         violations.append(_violation("HIERARCHY_INVALID", str(error)))
+    try:
+        _validate_reference_frame_graph(state, profile)
+    except ValueError as error:
+        violations.append(_violation("REFERENCE_FRAME_INVALID", str(error)))
     for track in state.motion_tracks.values():
         if track.target_entity_id not in state.entities:
             violations.append(_violation("TRACK_TARGET_MISSING", f"Track 目标不存在：{track.track_id}"))
@@ -939,7 +969,10 @@ def _timeline_violations(state: CandidateState) -> list[Violation]:
     return violations
 
 
-def _transform_violations(state: CandidateState) -> list[Violation]:
+def _transform_violations(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> list[Violation]:
     violations: list[Violation] = []
     for entity in state.entities.values():
         transform = entity.solved_transform
@@ -957,11 +990,14 @@ def _transform_violations(state: CandidateState) -> list[Violation]:
                     f"父级非均匀缩放无法无损编译：{entity.parent_id}",
                     entity_ids=[entity.parent_id, entity.entity_id],
                 ))
-    violations.extend(_ground_penetration_violations(state))
+    violations.extend(_ground_penetration_violations(state, profile))
     return violations
 
 
-def _ground_penetration_violations(state: CandidateState) -> list[Violation]:
+def _ground_penetration_violations(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> list[Violation]:
     ground_ids = [
         entity.entity_id
         for entity in state.entities.values()
@@ -973,7 +1009,7 @@ def _ground_penetration_violations(state: CandidateState) -> list[Violation]:
     for time_seconds in _timeline_probe_times(state.timeline):
         ground_levels: dict[str, float] = {}
         for ground_id in ground_ids:
-            transform = _entity_transform_at(state, ground_id, time_seconds)
+            transform = _entity_transform_at(state, ground_id, time_seconds, profile)
             normal = rotate_vector(transform.rotation_quaternion_wxyz, (0.0, 0.0, 1.0))
             if abs(normal[2]) >= 0.999:
                 ground_levels[ground_id] = transform.translation_m[2]
@@ -995,7 +1031,7 @@ def _ground_penetration_violations(state: CandidateState) -> list[Violation]:
                     ground_levels.items(),
                     key=lambda item: item[1],
                 )
-            transform = _entity_transform_at(state, entity.entity_id, time_seconds)
+            transform = _entity_transform_at(state, entity.entity_id, time_seconds, profile)
             world_z_values: list[float] = []
             for point in geometry_local_bounds_points(entity.proxy):
                 scaled = tuple(
@@ -1256,7 +1292,7 @@ def _projection_violations(
             continue
         camera_transform, focal_length = camera
         transforms = {
-            entity_id: _entity_transform_at(state, entity_id, time_seconds)
+            entity_id: _entity_transform_at(state, entity_id, time_seconds, profile)
             for entity_id in state.entities
         }
         for entity_id, entity in state.entities.items():
@@ -1293,7 +1329,7 @@ def _constraint_violation(
     sample_times = _constraint_sample_times(constraint, state.timeline)
     for time_seconds in sample_times:
         transforms = {
-            entity_id: _entity_transform_at(state, entity_id, time_seconds)
+            entity_id: _entity_transform_at(state, entity_id, time_seconds, profile)
             for entity_id in state.entities
         }
         camera = _camera_state_at(state, time_seconds, profile)
@@ -1490,8 +1526,12 @@ def _constraint_violation(
                 target_id = params.get("target_id") or state.camera.static.focus_target_id
                 if target_id not in state.entities:
                     return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
-                start_target = _entity_transform_at(state, target_id, start).translation_m
-                end_target = _entity_transform_at(state, target_id, end_sample).translation_m
+                start_target = _entity_transform_at(
+                    state, target_id, start, profile
+                ).translation_m
+                end_target = _entity_transform_at(
+                    state, target_id, end_sample, profile
+                ).translation_m
                 start_distance = length(subtract(start_state[0].translation_m, start_target))
                 end_distance = length(subtract(end_state[0].translation_m, end_target))
                 progress = (
@@ -1542,8 +1582,10 @@ def _constraint_violation(
                     return _constraint_error(constraint, "CAMERA_MISSING", None)
                 delta = subtract(end_state[0].translation_m, start_state[0].translation_m)
             elif target_id in state.entities:
-                start_transform = _entity_transform_at(state, target_id, start)
-                end_transform = _entity_transform_at(state, target_id, end_sample)
+                start_transform = _entity_transform_at(state, target_id, start, profile)
+                end_transform = _entity_transform_at(
+                    state, target_id, end_sample, profile
+                )
                 delta = subtract(end_transform.translation_m, start_transform.translation_m)
             else:
                 return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
@@ -1565,8 +1607,10 @@ def _constraint_violation(
             target_id = params.get("target_id")
             if target_id not in state.entities:
                 return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
-            start_transform = _entity_transform_at(state, target_id, start)
-            end_transform = _entity_transform_at(state, target_id, end_sample)
+            start_transform = _entity_transform_at(state, target_id, start, profile)
+            end_transform = _entity_transform_at(
+                state, target_id, end_sample, profile
+            )
             delta = subtract(end_transform.translation_m, start_transform.translation_m)
         if constraint.type == "hold":
             tolerance = float(params.get("tolerance_m", 1e-4))
@@ -1588,18 +1632,241 @@ def _constraint_violation(
 
 def _constraint_sample_times(constraint: ConstraintSpec, timeline: TimelineSpec) -> list[float]:
     start, end = constraint.time_range_seconds
+    if constraint.type == "distance_range":
+        # 相对距离在每个冻结帧检查，防止嵌套轨迹只在稀疏探针碰巧通过。
+        frame_step = timeline.fps_denominator / timeline.fps_numerator
+        frame_times = [
+            frame * frame_step
+            for frame in range(timeline.frame_count)
+            if start <= frame * frame_step < end
+        ]
+        if frame_times:
+            return frame_times
     return [start, min((start + end) / 2.0, timeline.duration_seconds - 1e-6), min(end - 1e-6, timeline.duration_seconds - 1e-6)]
 
 
-def _entity_transform_at(state: CandidateState, entity_id: str, time_seconds: float) -> TransformValue:
-    entity = state.entities[entity_id]
-    tracks = [track for track in state.motion_tracks.values() if track.target_entity_id == entity_id]
-    transform = next((track for track in tracks if track.type == "transform"), None)
-    path = next((track for track in tracks if track.type == "path_follow"), None)
-    result = sample_transform_track(transform, time_seconds, entity.solved_transform)
-    if path is not None:
-        result = sample_path_track(path, time_seconds, result)
-    return result
+def _validate_reference_frame_graph(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> None:
+    resolver = _WorldTransformResolver(state, 0.0, profile)
+    for entity_id in sorted(state.entities):
+        resolver.entity(entity_id)
+    if state.camera is not None:
+        resolver.camera()
+
+
+class _WorldTransformResolver:
+    """递归求值实体与摄影机参考系，并在同一帧缓存结果。"""
+
+    def __init__(
+        self,
+        state: CandidateState,
+        time_seconds: float,
+        profile: PlanningProfile,
+    ) -> None:
+        self.state = state
+        self.time_seconds = time_seconds
+        self.profile = profile
+        self._entities: dict[str, TransformValue] = {}
+        self._camera: tuple[TransformValue, float] | None = None
+        self._resolving: list[str] = []
+
+    def entity(self, entity_id: str) -> TransformValue:
+        if entity_id in self._entities:
+            return self._entities[entity_id]
+        if entity_id not in self.state.entities:
+            raise ValueError(f"参考系目标 Entity 不存在：{entity_id}")
+        token = f"entity:{entity_id}"
+        self._enter(token)
+        try:
+            entity = self.state.entities[entity_id]
+            tracks = [
+                track
+                for track in self.state.motion_tracks.values()
+                if track.target_entity_id == entity_id
+            ]
+            transform_track = next(
+                (track for track in tracks if track.type == "transform"),
+                None,
+            )
+            path_track = next(
+                (track for track in tracks if track.type == "path_follow"),
+                None,
+            )
+            raw = sample_transform_track(
+                transform_track,
+                self.time_seconds,
+                entity.solved_transform,
+            )
+            if path_track is not None:
+                raw = sample_path_track(path_track, self.time_seconds, raw)
+            world = self._to_world(raw, entity_id=entity_id)
+            self._entities[entity_id] = world
+            return world
+        finally:
+            self._leave(token)
+
+    def camera(self) -> tuple[TransformValue, float] | None:
+        if self.state.camera is None:
+            return None
+        if self._camera is not None:
+            return self._camera
+        token = f"camera:{self.state.camera.camera_id}"
+        self._enter(token)
+        try:
+            tracks = list(self.state.camera.tracks.values())
+            transform_track = next(
+                (track for track in tracks if track.type == "transform"),
+                None,
+            )
+            path_track = next(
+                (track for track in tracks if track.type == "path_follow"),
+                None,
+            )
+            raw = sample_transform_track(
+                transform_track,
+                self.time_seconds,
+                self.state.camera.solved_transform,
+            )
+            if path_track is not None:
+                raw = sample_path_track(path_track, self.time_seconds, raw)
+            transform = self._to_world(raw, camera=True)
+            focus_id = self.state.camera.static.focus_target_id
+            look_track = next(
+                (track for track in tracks if track.type == "look_at"),
+                None,
+            )
+            if look_track and look_track.target_id:
+                focus_id = look_track.target_id
+            if focus_id in self.state.entities:
+                target = self.entity(focus_id).translation_m
+                transform = transform.model_copy(
+                    update={
+                        "rotation_quaternion_wxyz": look_at_camera_quaternion(
+                            transform.translation_m,
+                            target,
+                        )
+                    }
+                )
+            focal_track = next(
+                (track for track in tracks if track.type == "focal_length"),
+                None,
+            )
+            focal = sample_scalar_track(
+                focal_track,
+                self.time_seconds,
+                self.state.camera.static.focal_length_mm
+                or self.profile.default_focal_length_mm,
+            )
+            self._camera = (transform, focal)
+            return self._camera
+        finally:
+            self._leave(token)
+
+    def _to_world(
+        self,
+        raw: TransformValue,
+        *,
+        entity_id: str | None = None,
+        camera: bool = False,
+    ) -> TransformValue:
+        completed = _complete_preserving_frame(raw)
+        if completed.space == "world":
+            return completed.model_copy(update={"target_id": None})
+        if completed.space == "local":
+            parent_id = (
+                self.state.entities[entity_id].parent_id
+                if entity_id is not None
+                else None
+            )
+            reference = self.entity(parent_id) if parent_id else _identity_transform()
+        elif completed.space == "target_relative":
+            if not completed.target_id:
+                raise ValueError("target_relative Transform 缺少 target_id")
+            reference = self.entity(completed.target_id)
+        elif completed.space == "camera":
+            if camera:
+                raise ValueError("摄影机不能使用自身 camera 参考系")
+            camera_state = self.camera()
+            if camera_state is None:
+                raise ValueError("camera 参考系要求活动摄影机")
+            reference = camera_state[0]
+        else:  # pragma: no cover - Schema 已关闭其他值
+            raise ValueError(f"未知 Transform 参考系：{completed.space}")
+        return _compose_transform(reference, completed)
+
+    def _enter(self, token: str) -> None:
+        if token in self._resolving:
+            start = self._resolving.index(token)
+            cycle = self._resolving[start:] + [token]
+            raise ValueError(f"参考系依赖存在循环：{' -> '.join(cycle)}")
+        self._resolving.append(token)
+
+    def _leave(self, token: str) -> None:
+        if self._resolving and self._resolving[-1] == token:
+            self._resolving.pop()
+
+
+def _complete_preserving_frame(value: TransformValue) -> TransformValue:
+    return TransformValue(
+        translation_m=value.translation_m or (0.0, 0.0, 0.0),
+        rotation_quaternion_wxyz=(
+            value.rotation_quaternion_wxyz or (1.0, 0.0, 0.0, 0.0)
+        ),
+        scale=value.scale or (1.0, 1.0, 1.0),
+        space=value.space,
+        target_id=value.target_id,
+    )
+
+
+def _identity_transform() -> TransformValue:
+    return TransformValue(
+        translation_m=(0.0, 0.0, 0.0),
+        rotation_quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+        scale=(1.0, 1.0, 1.0),
+        space="world",
+    )
+
+
+def _compose_transform(
+    reference: TransformValue,
+    relative: TransformValue,
+) -> TransformValue:
+    scaled_offset = tuple(
+        relative.translation_m[index] * reference.scale[index]
+        for index in range(3)
+    )
+    translation = add(
+        reference.translation_m,
+        rotate_vector(reference.rotation_quaternion_wxyz, scaled_offset),
+    )
+    return TransformValue(
+        translation_m=translation,
+        rotation_quaternion_wxyz=quaternion_multiply(
+            reference.rotation_quaternion_wxyz,
+            relative.rotation_quaternion_wxyz,
+        ),
+        scale=tuple(
+            reference.scale[index] * relative.scale[index]
+            for index in range(3)
+        ),
+        space="world",
+    )
+
+
+def _entity_transform_at(
+    state: CandidateState,
+    entity_id: str,
+    time_seconds: float,
+    profile: PlanningProfile | None = None,
+) -> TransformValue:
+    resolver = _WorldTransformResolver(
+        state,
+        time_seconds,
+        profile or PlanningProfile(),
+    )
+    return resolver.entity(entity_id)
 
 
 def _camera_state_at(
@@ -1607,30 +1874,7 @@ def _camera_state_at(
     time_seconds: float,
     profile: PlanningProfile,
 ) -> tuple[TransformValue, float] | None:
-    if state.camera is None:
-        return None
-    tracks = list(state.camera.tracks.values())
-    transform_track = next((track for track in tracks if track.type == "transform"), None)
-    path_track = next((track for track in tracks if track.type == "path_follow"), None)
-    transform = sample_transform_track(transform_track, time_seconds, state.camera.solved_transform)
-    if path_track is not None:
-        transform = sample_path_track(path_track, time_seconds, transform)
-    focus_id = state.camera.static.focus_target_id
-    look_track = next((track for track in tracks if track.type == "look_at"), None)
-    if look_track and look_track.target_id:
-        focus_id = look_track.target_id
-    if focus_id in state.entities:
-        target = _entity_transform_at(state, focus_id, time_seconds).translation_m
-        transform = transform.model_copy(
-            update={"rotation_quaternion_wxyz": look_at_camera_quaternion(transform.translation_m, target)}
-        )
-    focal_track = next((track for track in tracks if track.type == "focal_length"), None)
-    focal = sample_scalar_track(
-        focal_track,
-        time_seconds,
-        state.camera.static.focal_length_mm or profile.default_focal_length_mm,
-    )
-    return transform, focal
+    return _WorldTransformResolver(state, time_seconds, profile).camera()
 
 
 def _projection(state, entity_id, transforms, camera_transform, focal_length, profile):
