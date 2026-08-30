@@ -30,6 +30,49 @@ class PlanningGeometryTest(unittest.TestCase):
         self.assertEqual(sampled.space, "target_relative")
         self.assertEqual(sampled.target_id, "sun")
 
+    def test_closed_path_cycle_count_repeats_without_duplicating_points(self) -> None:
+        track = TrackSpec.model_validate(
+            {
+                "track_id": "fast_orbit",
+                "target_entity_id": "moon",
+                "type": "path_follow",
+                "time_range_seconds": [0.0, 6.0],
+                "path": {
+                    "space": "target_relative",
+                    "target_id": "earth",
+                    "control_points": [
+                        [2.0, 0.0, 0.0],
+                        [0.0, 2.0, 0.0],
+                        [-2.0, 0.0, 0.0],
+                        [0.0, -2.0, 0.0],
+                    ],
+                    "closed": True,
+                    "cycle_count": 3.0,
+                },
+            }
+        )
+
+        halfway_first_cycle = sample_path_track(track, 1.0, TransformValue())
+        start_second_cycle = sample_path_track(track, 2.0, TransformValue())
+
+        self.assertEqual(halfway_first_cycle.translation_m, (-2.0, 0.0, 0.0))
+        self.assertEqual(start_second_cycle.translation_m, (2.0, 0.0, 0.0))
+
+    def test_open_path_rejects_multiple_cycles(self) -> None:
+        with self.assertRaisesRegex(ValueError, "只有闭合 Path"):
+            TrackSpec.model_validate(
+                {
+                    "track_id": "invalid_repeat",
+                    "target_entity_id": "moon",
+                    "type": "path_follow",
+                    "time_range_seconds": [0.0, 6.0],
+                    "path": {
+                        "control_points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                        "cycle_count": 2.0,
+                    },
+                }
+            )
+
     def test_transform_interpolation_preserves_reference_frame(self) -> None:
         track = TrackSpec.model_validate(
             {

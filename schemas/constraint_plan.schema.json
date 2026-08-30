@@ -1113,6 +1113,12 @@
           "title": "Closed",
           "type": "boolean"
         },
+        "cycle_count": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Cycle Count",
+          "type": "number"
+        },
         "parameterization": {
           "default": "normalized_time",
           "enum": [

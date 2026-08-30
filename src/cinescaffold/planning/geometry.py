@@ -66,6 +66,9 @@ def sample_path_track(
     points = list(track.path.control_points)
     if track.path.closed and points[-1] != points[0]:
         points.append(points[0])
+    if track.path.closed:
+        # 闭合路径可在同一 Track 时间段内重复或只走部分圈数。
+        ratio = (ratio * track.path.cycle_count) % 1.0
     if track.path.parameterization == "arc_length":
         position = _sample_arc_length(points, ratio)
     else:

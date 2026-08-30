@@ -775,11 +775,34 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertAlmostEqual(earth_quarter.translation_m[0], 0.0, places=8)
         self.assertAlmostEqual(earth_quarter.translation_m[1], 10.0, places=8)
         self.assertAlmostEqual(moon_quarter.translation_m[0], 0.0, places=8)
-        self.assertAlmostEqual(moon_quarter.translation_m[1], 12.0, places=8)
+        self.assertAlmostEqual(moon_quarter.translation_m[1], 8.0, places=8)
         earth_frame = entities["earth"].local_state_track.samples[36].value
         moon_frame = entities["moon"].local_state_track.samples[36].value
         self.assertEqual(earth_frame.translation_m, (0.0, 10.0, 0.0))
-        self.assertEqual(moon_frame.translation_m, (0.0, 2.0, 0.0))
+        self.assertAlmostEqual(moon_frame.translation_m[0], 0.0, places=8)
+        self.assertAlmostEqual(moon_frame.translation_m[1], -2.0, places=8)
+        self.assertEqual(moon_frame.translation_m[2], 0.0)
+
+    def test_nested_orbit_phase_lock_is_rejected_as_unreadable(self) -> None:
+        toolkit = _relative_motion_toolkit(moon_cycle_count=1.0)
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertFalse(validation["data"]["hard_pass"])
+        violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "NESTED_ORBIT_PHASE_LOCKED"
+        )
+        self.assertEqual(violation["actual"]["child_cycle_count"], 1.0)
+        self.assertIn("cycle_count", violation["adjustable_variables"][0])
+
+    def test_different_nested_orbit_cycle_counts_are_readable(self) -> None:
+        toolkit = _relative_motion_toolkit(moon_cycle_count=3.0)
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
 
     def test_relative_motion_cycle_is_rejected_atomically(self) -> None:
         toolkit = _toolkit()
@@ -1108,6 +1131,8 @@ def _orbit_track(
     entity_id: str,
     target_id: str,
     radius_m: float,
+    *,
+    cycle_count: float = 1.0,
 ) -> dict:
     return {
         "track_id": track_id,
@@ -1125,6 +1150,7 @@ def _orbit_track(
                 [0.0, -radius_m, 0.0],
             ],
             "closed": True,
+            "cycle_count": cycle_count,
             "parameterization": "arc_length",
             "orientation_mode": "keep",
         },
@@ -1132,8 +1158,30 @@ def _orbit_track(
     }
 
 
-def _relative_motion_toolkit(*, earth_radius_m: float = 10.0) -> ScenePlanningToolkit:
+def _relative_motion_toolkit(
+    *,
+    earth_radius_m: float = 10.0,
+    moon_cycle_count: float = 3.0,
+) -> ScenePlanningToolkit:
     toolkit = _toolkit()
+    toolkit.objective_brief = toolkit.objective_brief.model_copy(
+        update={
+            "scene_design": {
+                "relationships": [
+                    {
+                        "type": "orbit_around",
+                        "subject_id": "earth",
+                        "reference_id": "sun",
+                    },
+                    {
+                        "type": "orbit_around",
+                        "subject_id": "moon",
+                        "reference_id": "earth",
+                    },
+                ]
+            }
+        }
+    )
     toolkit.apply_entity_patch(
         [
             _sphere_entity("sun"),
@@ -1152,7 +1200,16 @@ def _relative_motion_toolkit(*, earth_radius_m: float = 10.0) -> ScenePlanningTo
         ]
         earth_track["path"]["parameterization"] = "normalized_time"
     motion_result = toolkit.apply_motion_patch(
-        [earth_track, _orbit_track("moon_orbit", "moon", "earth", 2.0)],
+        [
+            earth_track,
+            _orbit_track(
+                "moon_orbit",
+                "moon",
+                "earth",
+                2.0,
+                cycle_count=moon_cycle_count,
+            ),
+        ],
         [],
     )
     if motion_result["status"] != "ok":

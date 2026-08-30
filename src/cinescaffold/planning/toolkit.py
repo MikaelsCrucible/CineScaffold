@@ -22,6 +22,7 @@ from cinescaffold.planning.domain import (
 )
 from cinescaffold.planning.geometry import (
     add,
+    cross,
     dot,
     geometry_bounding_radius,
     geometry_local_bounds_points,
@@ -42,7 +43,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.9"
+TOOLKIT_VERSION = "0.10"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -208,6 +209,10 @@ class ScenePlanningToolkit:
                 "target_relative": "坐标相对 target_id 当前帧的完整 Transform，可递归嵌套",
                 "camera": "实体坐标相对当前活动摄影机；摄影机自身不得使用",
                 "closed_path": "closed=true 会确定性补上末段到首点",
+                "cycle_count": "闭合路径在 Track 时间段内的循环次数，可为正小数",
+                "nested_orbit_readability": (
+                    "嵌套 orbit_around 不得同相锁定；未指定周期时应让子轨道具有可辨识节奏"
+                ),
             },
             "inspect_views": INSPECT_VIEWS,
             "acceptance": {
@@ -668,6 +673,14 @@ class ScenePlanningToolkit:
             violations.extend(_camera_violations(state))
         if "projection" in checks:
             violations.extend(_projection_violations(state, self.profile))
+        if "motion" in checks:
+            violations.extend(
+                _motion_readability_violations(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
+            )
         if "hard_semantics" in checks:
             violations.extend(_hard_semantic_violations(state, self.objective_brief))
 
@@ -967,6 +980,154 @@ def _timeline_violations(state: CandidateState) -> list[Violation]:
         except ValueError as error:
             violations.append(_violation("TRACK_TIME_INVALID", str(error)))
     return violations
+
+
+def _motion_readability_violations(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    """拒绝会把嵌套公转看成刚性编队的同相轨迹。"""
+    orbit_pairs: set[tuple[str, str]] = set()
+    for item in objective_brief.scene_design.get("relationships", []):
+        if not isinstance(item, dict) or item.get("type") != "orbit_around":
+            continue
+        subject_id = item.get("subject_id")
+        reference_id = item.get("reference_id")
+        if isinstance(subject_id, str) and isinstance(reference_id, str):
+            orbit_pairs.add((subject_id, reference_id))
+    path_tracks = {
+        (track.target_entity_id, track.path.target_id): track
+        for track in state.motion_tracks.values()
+        if track.type == "path_follow"
+        and track.path is not None
+        and track.path.closed
+        and track.path.space == "target_relative"
+        and track.target_entity_id
+        and track.path.target_id
+    }
+    violations: list[Violation] = []
+    for child_id, parent_id in sorted(orbit_pairs):
+        child_track = path_tracks.get((child_id, parent_id))
+        if child_track is None:
+            continue
+        for orbiting_id, grandparent_id in sorted(orbit_pairs):
+            if orbiting_id != parent_id:
+                continue
+            parent_track = path_tracks.get((parent_id, grandparent_id))
+            if parent_track is None:
+                continue
+            if _nested_orbits_are_phase_locked(
+                state,
+                child_id,
+                parent_id,
+                grandparent_id,
+                child_track,
+                parent_track,
+                profile,
+            ):
+                start = max(
+                    child_track.time_range_seconds[0],
+                    parent_track.time_range_seconds[0],
+                )
+                end = min(
+                    child_track.time_range_seconds[1],
+                    parent_track.time_range_seconds[1],
+                )
+                violations.append(
+                    _violation(
+                        "NESTED_ORBIT_PHASE_LOCKED",
+                        (
+                            f"嵌套公转在画面控制上退化为同相编队：{child_id} -> "
+                            f"{parent_id} -> {grandparent_id}；请调整子轨道 cycle_count 或节奏"
+                        ),
+                        entity_ids=[child_id, parent_id, grandparent_id],
+                        time_range_seconds=(start, end),
+                        expected={
+                            "relative_phase": "随时间显著变化",
+                            "purpose": "让控制白模中的嵌套运动可辨识",
+                        },
+                        actual={
+                            "child_track_id": child_track.track_id,
+                            "parent_track_id": parent_track.track_id,
+                            "child_cycle_count": child_track.path.cycle_count,
+                            "parent_cycle_count": parent_track.path.cycle_count,
+                            "relative_phase": "近似恒定",
+                        },
+                        adjustable_variables=[
+                            f"motion_tracks.{child_track.track_id}.path.cycle_count",
+                            f"motion_tracks.{child_track.track_id}.path.control_points",
+                        ],
+                    )
+                )
+    return violations
+
+
+def _nested_orbits_are_phase_locked(
+    state: CandidateState,
+    child_id: str,
+    parent_id: str,
+    grandparent_id: str,
+    child_track: TrackSpec,
+    parent_track: TrackSpec,
+    profile: PlanningProfile,
+) -> bool:
+    start = max(child_track.time_range_seconds[0], parent_track.time_range_seconds[0])
+    end = min(child_track.time_range_seconds[1], parent_track.time_range_seconds[1])
+    if end <= start:
+        return False
+    child_duration = child_track.time_range_seconds[1] - child_track.time_range_seconds[0]
+    parent_duration = parent_track.time_range_seconds[1] - parent_track.time_range_seconds[0]
+    child_rate = child_track.path.cycle_count / child_duration
+    parent_rate = parent_track.path.cycle_count / parent_duration
+    if abs(child_rate - parent_rate) > profile.numeric_tolerance:
+        return False
+
+    # 均匀探针比较两层轨道方向；点积与叉积都近似不变即为相位锁定。
+    last = min(
+        end - profile.numeric_tolerance,
+        state.timeline.duration_seconds
+        - state.timeline.fps_denominator / state.timeline.fps_numerator,
+    )
+    if last <= start:
+        return False
+    phase_samples: list[tuple[float, float, float, float]] = []
+    parent_directions: list[tuple[float, float, float]] = []
+    child_directions: list[tuple[float, float, float]] = []
+    for index in range(17):
+        time_seconds = start + (last - start) * index / 16.0
+        resolver = _WorldTransformResolver(state, time_seconds, profile)
+        child = resolver.entity(child_id).translation_m
+        parent = resolver.entity(parent_id).translation_m
+        grandparent = resolver.entity(grandparent_id).translation_m
+        child_offset = subtract(child, parent)
+        parent_offset = subtract(parent, grandparent)
+        if (
+            length(child_offset) <= profile.numeric_tolerance
+            or length(parent_offset) <= profile.numeric_tolerance
+        ):
+            return False
+        child_direction = normalize(child_offset)
+        parent_direction = normalize(parent_offset)
+        child_directions.append(child_direction)
+        parent_directions.append(parent_direction)
+        cross_value = cross(parent_direction, child_direction)
+        phase_samples.append((*cross_value, dot(parent_direction, child_direction)))
+
+    # 静止偏移不冒充轨道相位锁定；这里只处理两层都实际扫过明显角度的情况。
+    if not _direction_sweeps(parent_directions) or not _direction_sweeps(child_directions):
+        return False
+    return all(
+        max(sample[axis] for sample in phase_samples)
+        - min(sample[axis] for sample in phase_samples)
+        <= 0.05
+        for axis in range(4)
+    )
+
+
+def _direction_sweeps(directions: list[tuple[float, float, float]]) -> bool:
+    first = directions[0]
+    return any(dot(first, item) < 0.5 for item in directions[1:])
 
 
 def _transform_violations(

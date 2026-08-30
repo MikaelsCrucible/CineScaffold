@@ -118,6 +118,7 @@ class PathSpec(StrictModel):
     target_id: str | None = None
     control_points: list[Vec3] = Field(min_length=2)
     closed: bool = False
+    cycle_count: float = Field(default=1.0, gt=0)
     parameterization: Literal["normalized_time", "arc_length"] = "normalized_time"
     orientation_mode: Literal["keep"] = "keep"
 
@@ -127,6 +128,10 @@ class PathSpec(StrictModel):
             raise ValueError("target_relative Path 必须提供 target_id")
         if self.space != "target_relative" and self.target_id is not None:
             raise ValueError(f"{self.space} Path 不接受 target_id")
+        if not math.isfinite(self.cycle_count) or self.cycle_count <= 0:
+            raise ValueError("Path cycle_count 必须为有限正数")
+        if not self.closed and abs(self.cycle_count - 1.0) > 1e-9:
+            raise ValueError("只有闭合 Path 可以使用非 1 的 cycle_count")
         return self
 
 
