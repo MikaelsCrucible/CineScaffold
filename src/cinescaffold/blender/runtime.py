@@ -194,8 +194,8 @@ def _configure_workbench_preview(scene) -> None:
     shading = scene.display.shading
     shading.light = "STUDIO"
     shading.color_type = "MATERIAL"
-    shading.show_shadows = True
-    shading.show_cavity = True
+    shading.show_shadows = False
+    shading.show_cavity = False
     shading.cavity_type = "WORLD"
     shading.show_specular_highlight = False
     shading.background_type = "WORLD"

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from cinescaffold.blender.runtime import (
     _blender_render_engine,
+    _configure_workbench_preview,
     _render_profile_plan,
     _validate_mesh_geometry,
 )
@@ -51,6 +52,23 @@ class _FakeExecutionRunner(ExecutionRunner):
     def _create_factory_template(self, target: Path) -> None:
         target.write_bytes(b"fake-template")
         (self.output_dir / "template_blender.log").write_text("fake\n", encoding="utf-8")
+
+
+class _FakeShading:
+    light = ""
+    color_type = ""
+    show_shadows = True
+    show_cavity = True
+    cavity_type = ""
+    show_specular_highlight = True
+    background_type = ""
+
+
+class _FakeScene:
+    class Display:
+        shading = _FakeShading()
+
+    display = Display()
 
 
 class ExecutionTest(unittest.TestCase):
@@ -138,6 +156,16 @@ class ExecutionTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "不得生成方向性投影"):
             SceneIR.model_validate(payload)
+
+    def test_workbench_preview_disables_shadow_and_cavity_shading(self) -> None:
+        scene = _FakeScene()
+
+        _configure_workbench_preview(scene)
+
+        self.assertEqual(scene.display.shading.light, "STUDIO")
+        self.assertFalse(scene.display.shading.show_shadows)
+        self.assertFalse(scene.display.shading.show_cavity)
+        self.assertFalse(scene.display.shading.show_specular_highlight)
 
     def test_mcp_bootstrap_is_fixed_and_syntax_valid(self) -> None:
         adapter = OfficialBlenderMCPAdapter(
