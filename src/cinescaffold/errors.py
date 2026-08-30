@@ -16,3 +16,7 @@ class SchemaValidationError(CineScaffoldError):
 
 class PromptTemplateError(CineScaffoldError):
     """提示模板缺少必要占位符。"""
+
+
+class ExecutionError(CineScaffoldError):
+    """Blender 执行链路中的可预期错误。"""

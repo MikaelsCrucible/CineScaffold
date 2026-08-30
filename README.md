@@ -19,10 +19,9 @@
   -> Scene Planning Agent（Agent 1）
   -> 调用 Scene Planning Toolkit 进行计划、尝试、验证和修复
   -> Constraint Plan + 通过验证的 Scene IR
-  -> Blender Execution Agent（Agent 2）
-  -> 调用 Blender Execution Toolkit 编排构建、检查、恢复和渲染
+  -> 确定性 ExecutionRunner
   -> 官方 Blender Lab MCP Adapter + 确定性 Blender Executor
-  -> Blender 真实场景构建、运行时验证与 Artifact Commit Gate
+  -> Blender 真实场景构建、运行时验证与 H.264 渲染
   -> 白模视频与控制素材
   -> 视频生成模型
   -> 匿名专家评测与统计分析
@@ -31,15 +30,15 @@
 核心分工：
 
 - Agent 1 负责开放语义理解、电影策略选择和根据结构化错误修复 Scene IR Candidate。
-- Agent 2 负责不可变 Scene IR 的 Blender 执行编排、运行时诊断、重试恢复和 Control Bundle 渲染，不重新解释电影语义。
-- 两套 Toolkit 分别负责三维规划状态和 Blender 执行状态；两个 Agent 都不能绕过各自 Commit Gate。
+- ExecutionRunner 通过固定状态机执行不可变 Scene IR，不需要第二个 LLM Agent 参与正常路径。
+- Agent 2 仅保留为未来可选的异常诊断与恢复实验层；是否引入由无 Agent 基线的消融实验决定。
 - Scene IR 完整描述正式实验中的场景状态，禁止产生 IR 之外的隐藏状态。
-- Blender Adapter 只负责确定性映射；底层选择官方 Blender Lab MCP，原始任意代码工具不直接暴露给 Agent。
+- Blender Adapter 只负责确定性映射；底层选择官方 Blender Lab MCP，调用内容由项目固定生成，不接受模型提供的任意 Python。
 - Blender 负责确定性执行、真实资产/场景验证和渲染。
 
 ## 当前状态
 
-已实现前两段研究管线：
+已实现从自然语言到白模视频的首条确定性研究管线：
 
 ```text
 自然语言
@@ -52,11 +51,17 @@
   -> 九个 Scene Planning Toolkit 接口
   -> Candidate 求解、验证、修复与 Commit Gate
   -> Constraint Plan + 逐帧 Scene IR v0.1
+  -> 执行前跨字段验证
+  -> 官方 Blender MCP 固定入口
+  -> Blender 5.2 确定性 Executor + Runtime Validator
+  -> `.blend` + H.264 白模视频 + 可复现 manifest
 ```
 
 规则文件当前有意保持为空，等待项目成员提供正式转换规则。
 
-双 Agent、Scene IR v0.1 和 Blender 执行接口已经完成设计基线。Agent 1 的客观语义投影、Candidate revision store、九个 Planning Toolkit 接口、确定性启发式 Solver、结构化 Validator 和 Scene IR Commit Gate 已经实现。模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文；Commit Gate 会把规划轨迹烘焙为完整逐帧 Scene IR。当前确定性约束能力以 `get_capabilities` 返回为准，尚未实现的约束会产生明确 capability gap。开发环境已经固定并验证 Python 3.12、PydanticAI Core 2.36.0、Blender 5.2.1 LTS 与官方 Blender Lab MCP 1.0.0；MCP 到后台 Blender 的真实调用链路已经通过冒烟测试。
+Agent 1 的客观语义投影、Candidate revision store、九个 Planning Toolkit 接口、确定性启发式 Solver、结构化 Validator 和 Scene IR Commit Gate 已经实现。模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文；Commit Gate 会把规划轨迹烘焙为完整逐帧 Scene IR。当前确定性约束能力以 `get_capabilities` 返回为准，尚未实现的约束会产生明确 capability gap。
+
+无 Agent 2 的执行基线也已实现：`cinescaffold execute` 在修改 Blender 前验证 IR，创建 factory template，经官方 Blender MCP 的 `execute_blender_code_for_cli` 调用固定 Executor，从空场景生成代理几何、逐帧实体/摄影机状态、白模材质和灯光，回读 Runtime Snapshot 并渲染 H.264。两次相同 IR 重建得到字节一致的规范化 Runtime Snapshot；两实体、144 帧黄金场景已在 Blender 5.2.1 LTS 上完成 0 violation 构建和视频渲染。
 
 ## 使用
 
@@ -131,6 +136,16 @@ cinescaffold plan \
 
 每次规划都会写出 `planning_agent_tool_trace.jsonl`、`constraint_plan.json`、`planning_validation.json`、`planning_summary.json`；成功时额外写出 `final_scene_ir.json`。Trace 记录每轮模型请求、工具参数/结果、revision、验证错误和耗时，但不保存模型 thinking/reasoning 内容。`planning_summary.json` 记录输入、输出、缓存、请求和工具调用用量。
 
+将已提交 Scene IR 确定性执行为 Blender 场景和白模视频：
+
+```bash
+cinescaffold execute \
+  --scene-ir runs/example/planning/final_scene_ir.json \
+  --output-dir runs/example/execution
+```
+
+输出包括 `scene.blend`、`runtime_snapshot.json`、`runtime_validation.json`、`clay_preview.mp4`、MCP/Blender 日志与 `execution_manifest.json`。已有同名产物时默认拒绝覆盖；只有显式传入 `--overwrite` 才会清理本次执行的固定产物。Blender 5.2 的 Metal/EEVEE 后台执行在受限沙箱中可能无法初始化，CI 或桌面 Agent 环境需要给予 Blender 正常的 GPU/进程权限。
+
 Provider 价格会变化，因此代码不硬编码价格。实验运行时可把当日价格作为快照显式传入：
 
 ```bash
@@ -176,7 +191,7 @@ API 实现依据 [OpenAI Structured Outputs](https://developers.openai.com/api/d
 2. `Constraint Plan v0.1`：机器 Schema 已由领域模型生成。
 3. `Scene IR v0.1`：机器 Schema、坐标、逐帧状态、相机和 Blender 映射基线已实现。
 
-下一步是实现 Agent 2 的 ExecutionRunner、Blender Execution Toolkit、固定 Executor 与 Runtime Commit Gate，把已提交 Scene IR 转换成 `.blend` 和白模 Control Bundle。
+下一步是补齐 Runtime Validator 的投影、可见性、遮挡、材质、灯光与输出 Pass 检查，并输出 RGB/Depth/Object ID Control Bundle；随后以确定性 ExecutionRunner 为基线，评估可选 Agent 2 是否能在故障恢复任务上带来可测收益。
 
 ## 名称
 

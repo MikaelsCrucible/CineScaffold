@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from cinescaffold.errors import CineScaffoldError, ConfigurationError
+from cinescaffold.execution.runner import ExecutionConfig, ExecutionRunner
 from cinescaffold.planning.runner import InterpreterRunConfig, InterpreterRunner
 from cinescaffold.planning.trace import CostRates, TraceConfig
 from cinescaffold.providers import DeepSeekProvider, MockProvider, OpenAIProvider
@@ -24,6 +25,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_parse(args)
         if args.command == "plan":
             return _run_plan(args)
+        if args.command == "execute":
+            return _run_execute(args)
         parser.print_help()
         return 2
     except (CineScaffoldError, OSError, ValueError, json.JSONDecodeError) as error:
@@ -102,6 +105,24 @@ def _build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--cache-write-cost-per-million")
     plan_parser.add_argument("--cost-currency", default="USD")
     plan_parser.add_argument("--price-source", default="user_supplied")
+
+    execute_parser = subparsers.add_parser(
+        "execute",
+        help="将已提交 Scene IR 通过官方 Blender MCP 渲染为白模视频",
+    )
+    execute_parser.add_argument("--scene-ir", type=Path, required=True)
+    execute_parser.add_argument("--output-dir", type=Path, required=True)
+    execute_parser.add_argument(
+        "--blender-path",
+        type=Path,
+        default=Path("/opt/homebrew/bin/blender"),
+    )
+    execute_parser.add_argument(
+        "--mcp-command",
+        type=Path,
+        default=Path.home() / ".local/bin/blender-mcp",
+    )
+    execute_parser.add_argument("--overwrite", action="store_true")
     return parser
 
 
@@ -175,6 +196,21 @@ def _run_plan(args: argparse.Namespace) -> int:
         cost_rates=_cost_rates(args),
     )
     result = asyncio.run(InterpreterRunner(config).run(brief))
+    print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    return 0 if result.status == "success" else 1
+
+
+def _run_execute(args: argparse.Namespace) -> int:
+    payload = json.loads(args.scene_ir.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Scene IR 根节点必须是对象")
+    config = ExecutionConfig(
+        output_dir=args.output_dir,
+        blender_path=args.blender_path,
+        mcp_command=args.mcp_command,
+        overwrite=args.overwrite,
+    )
+    result = asyncio.run(ExecutionRunner(config).run(payload))
     print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
     return 0 if result.status == "success" else 1
 
