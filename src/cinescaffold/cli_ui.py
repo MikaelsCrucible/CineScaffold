@@ -69,6 +69,12 @@ class TerminalReporter:
             f"启动 {payload.get('provider')}/{payload.get('model')}，准备 Agent 工具循环",
         )
 
+    def _on_full_power_diagnostic_enabled(self, _payload: dict[str, Any]) -> None:
+        self.warning(
+            "诊断特例",
+            "max 思考与流式遥测已启用；项目侧时间、token、请求和工具预算不设上限",
+        )
+
     def _on_objective_projection_completed(self, payload: dict[str, Any]) -> None:
         self.success(
             "客观语义",
@@ -115,6 +121,36 @@ class TerminalReporter:
             f"输入 {_integer(usage.get('input_tokens'))} · "
             f"输出 {_integer(usage.get('output_tokens'))} tokens · "
             f"{_milliseconds(payload.get('duration_ms'))}",
+        )
+
+    def _on_model_stream_connected(self, payload: dict[str, Any]) -> None:
+        self._line(
+            "↳",
+            "流式连接",
+            f"第 {payload.get('request_index', '?')} 次请求 · "
+            f"{_milliseconds(payload.get('connection_latency_ms'))}",
+        )
+
+    def _on_model_stream_stalled(self, payload: dict[str, Any]) -> None:
+        self._line(
+            "…",
+            "流式等待",
+            f"第 {payload.get('request_index', '?')} 次请求 · "
+            f"已收推理 {payload.get('reasoning_chunks', 0)} chunks / "
+            f"{_integer(payload.get('reasoning_chars'))} 字符 · "
+            f"距上个事件 {payload.get('seconds_since_last_event', '?')} 秒",
+            "blue",
+        )
+
+    def _on_model_stream_telemetry_completed(self, payload: dict[str, Any]) -> None:
+        self.success(
+            "流式遥测",
+            f"第 {payload.get('request_index', '?')} 次请求 · "
+            f"推理 {payload.get('reasoning_chunks', 0)} chunks / "
+            f"{_integer(payload.get('reasoning_chars'))} 字符 · "
+            f"正文 {payload.get('text_chunks', 0)} chunks / "
+            f"{_integer(payload.get('text_chars'))} 字符 · "
+            f"最大事件间隔 {_milliseconds(payload.get('max_inter_event_gap_ms'))}",
         )
 
     def _on_model_request_failed(self, payload: dict[str, Any]) -> None:

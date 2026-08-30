@@ -27,6 +27,7 @@ def create_planning_model(
     *,
     api_key: str | None = None,
     base_url: str | None = None,
+    disable_request_timeout: bool = False,
 ) -> Model:
     if provider == "mock":
         return _create_mock_model(objective_brief)
@@ -36,13 +37,29 @@ def create_planning_model(
         environment_name = "OPENAI_API_KEY" if provider == "openai" else "DEEPSEEK_API_KEY"
         raise ConfigurationError(f"缺少 {environment_name}")
     if provider == "openai":
+        if disable_request_timeout:
+            client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=base_url or "https://api.openai.com/v1",
+                timeout=None,
+            )
+            return OpenAIResponsesModel(
+                model_name,
+                provider=OpenAIProvider(openai_client=client),
+            )
         return OpenAIResponsesModel(
             model_name,
             provider=OpenAIProvider(base_url=base_url, api_key=api_key),
         )
     if provider == "deepseek":
-        if base_url:
-            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        if base_url or disable_request_timeout:
+            client_options: dict[str, Any] = {
+                "api_key": api_key,
+                "base_url": base_url or "https://api.deepseek.com",
+            }
+            if disable_request_timeout:
+                client_options["timeout"] = None
+            client = AsyncOpenAI(**client_options)
             deepseek_provider = DeepSeekProvider(openai_client=client)
         else:
             deepseek_provider = DeepSeekProvider(api_key=api_key)

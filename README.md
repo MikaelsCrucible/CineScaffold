@@ -187,6 +187,17 @@ cinescaffold plan \
 
 规划阶段同样读取 `.cinescaffold.conf`。如需临时实验覆盖，可以额外传入 `--provider` 和 `--model`，但不会修改配置文件。
 
+定位供应商长推理或流式停顿时，可以显式开启一次性诊断特例：
+
+```bash
+cinescaffold plan \
+  --brief runs/example/cinematic_brief.json \
+  --output-dir runs/diagnostics/example-max \
+  --full-power-diagnostic
+```
+
+该选项强制启用 `max` 推理强度和流式遥测，并关闭 CineScaffold 与 PydanticAI 的时间、请求、工具调用、token、提交尝试及 HTTP 请求超时上限。供应商自身的上下文、输出、速率和服务可用性限制仍然存在。Trace 会记录推理 chunk 数、字符数、时序、停顿、usage 和工具调用，但不保存 `reasoning_content` 原文。该模式可能无限运行并产生不可预估费用，只用于人工监督的故障诊断，不应混入正式论文样本。
+
 #### 3. Scene IR 转 Blender 白模视频
 
 ```bash

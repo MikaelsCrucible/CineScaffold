@@ -36,6 +36,7 @@ from cinescaffold.planning.toolkit import (
 )
 from cinescaffold.planning.trace import (
     CostRates,
+    StreamTelemetryHandler,
     TraceConfig,
     TraceEventCallback,
     TraceRecorder,
@@ -65,6 +66,7 @@ class InterpreterRunConfig(BaseModel):
     thinking_mode: Literal["enabled", "disabled"] | None = None
     reasoning_effort: Literal["low", "high", "max"] | None = None
     model_max_tokens: int | None = Field(default=None, ge=1)
+    full_power_diagnostic: bool = False
     trace_config: TraceConfig = Field(default_factory=TraceConfig)
     cost_rates: CostRates | None = None
 
@@ -122,6 +124,7 @@ class InterpreterRunner:
             _write_json(run_dir / "cinematic_brief.json", cinematic_brief)
             system_prompt = self.config.system_prompt_path.read_text(encoding="utf-8")
             model_settings = _planning_model_settings(self.config)
+            effective_limits = _effective_limits(self.config)
             trace.record(
                 "run_started",
                 provider=self.config.provider,
@@ -130,17 +133,24 @@ class InterpreterRunner:
                 system_prompt_sha256=_text_hash(system_prompt),
                 toolkit_version=TOOLKIT_VERSION,
                 model_settings=model_settings,
-                limits={
-                    "max_requests": self.config.max_requests,
-                    "max_tool_calls": self.config.max_tool_calls,
-                    "max_input_tokens": self.config.max_input_tokens,
-                    "max_context_tokens": self.config.max_context_tokens,
-                    "max_output_tokens": self.config.max_output_tokens,
-                    "max_total_tokens": self.config.max_total_tokens,
-                    "max_seconds": self.config.max_seconds,
-                    "max_commit_attempts": self.config.max_commit_attempts,
-                },
+                limits=effective_limits,
+                full_power_diagnostic=self.config.full_power_diagnostic,
             )
+            if self.config.full_power_diagnostic:
+                trace.record(
+                    "full_power_diagnostic_enabled",
+                    local_time_limit=False,
+                    local_usage_limits=False,
+                    local_commit_attempt_limit=False,
+                    provider_request_timeout=False,
+                    stream_telemetry=self.config.provider != "mock",
+                    reasoning_content_recorded=False,
+                    remaining_external_limits=[
+                        "Provider context/output limits",
+                        "Provider rate limits and availability",
+                        "Operating system and network failures",
+                    ],
+                )
             trace.record(
                 "objective_projection_completed",
                 objective_fields=[
@@ -196,17 +206,22 @@ class InterpreterRunner:
                 projection.objective_brief,
                 api_key=api_key,
                 base_url=self.config.base_url,
+                disable_request_timeout=self.config.full_power_diagnostic,
             )
             model_label = raw_model.model_name
             tracing_model = TracingModel(raw_model, trace)
-            usage_limits = UsageLimits(
-                request_limit=self.config.max_requests,
-                tool_calls_limit=self.config.max_tool_calls,
-                input_tokens_limit=self.config.max_input_tokens,
-                per_request_input_tokens_limit=self.config.max_context_tokens,
-                output_tokens_limit=self.config.max_output_tokens,
-                total_tokens_limit=self.config.max_total_tokens,
-            )
+            if self.config.full_power_diagnostic:
+                # None 会触发 PydanticAI 默认 50 请求上限，必须显式关闭。
+                usage_limits = UsageLimits(request_limit=None)
+            else:
+                usage_limits = UsageLimits(
+                    request_limit=self.config.max_requests,
+                    tool_calls_limit=self.config.max_tool_calls,
+                    input_tokens_limit=self.config.max_input_tokens,
+                    per_request_input_tokens_limit=self.config.max_context_tokens,
+                    output_tokens_limit=self.config.max_output_tokens,
+                    total_tokens_limit=self.config.max_total_tokens,
+                )
             resumed_checkpoint = None
             if self.config.resume_from is not None:
                 resumed_checkpoint = load_candidate_checkpoint(
@@ -246,7 +261,11 @@ class InterpreterRunner:
             deps = PlanningDeps(
                 toolkit=toolkit,
                 trace=trace,
-                deadline_monotonic=started + self.config.max_seconds,
+                deadline_monotonic=(
+                    None
+                    if self.config.full_power_diagnostic
+                    else started + self.config.max_seconds
+                ),
                 checkpoint_writer=checkpoint_writer,
             )
             history = None
@@ -259,8 +278,16 @@ class InterpreterRunner:
                 ),
             )
 
-            async with asyncio.timeout(self.config.max_seconds):
-                for attempt in range(1, self.config.max_commit_attempts + 1):
+            timeout_seconds = (
+                None if self.config.full_power_diagnostic else self.config.max_seconds
+            )
+            attempt = 0
+            async with asyncio.timeout(timeout_seconds):
+                while (
+                    self.config.full_power_diagnostic
+                    or attempt < self.config.max_commit_attempts
+                ):
+                    attempt += 1
                     trace.record(
                         "planning_attempt_started",
                         attempt=attempt,
@@ -275,6 +302,12 @@ class InterpreterRunner:
                         model_settings=model_settings,
                         run_id=f"{run_id}_attempt_{attempt:02d}",
                         conversation_id=run_id,
+                        event_stream_handler=(
+                            StreamTelemetryHandler(trace, tracing_model)
+                            if self.config.full_power_diagnostic
+                            and self.config.provider != "mock"
+                            else None
+                        ),
                     )
                     history = result.all_messages()
                     terminal = result.output
@@ -315,8 +348,6 @@ class InterpreterRunner:
                         break
                     status = "commit_rejected"
                     prompt = _repair_prompt(commit_result, toolkit.store.current_revision)
-                else:
-                    status = "commit_rejected"
         except TimeoutError as error:
             status = "budget_exhausted"
             error_payload = {"type": type(error).__name__, "message": str(error)}
@@ -514,20 +545,47 @@ def _provider_api_key(provider: str, configured: str | None = None) -> str | Non
 
 def _planning_model_settings(config: InterpreterRunConfig) -> dict[str, Any]:
     settings: dict[str, Any] = {}
-    if config.reasoning_effort is not None:
-        settings["openai_reasoning_effort"] = config.reasoning_effort
+    reasoning_effort = "max" if config.full_power_diagnostic else config.reasoning_effort
+    thinking_mode = "enabled" if config.full_power_diagnostic else config.thinking_mode
+    model_max_tokens = None if config.full_power_diagnostic else config.model_max_tokens
+    if reasoning_effort is not None:
+        settings["openai_reasoning_effort"] = reasoning_effort
     if config.provider == "deepseek":
         extra_body: dict[str, Any] = {}
-        if config.thinking_mode is not None:
-            extra_body["thinking"] = {"type": config.thinking_mode}
-        if config.model_max_tokens is not None:
+        if thinking_mode is not None:
+            extra_body["thinking"] = {"type": thinking_mode}
+        if model_max_tokens is not None:
             # DeepSeek Chat Completions 使用 max_tokens。
-            extra_body["max_tokens"] = config.model_max_tokens
+            extra_body["max_tokens"] = model_max_tokens
         if extra_body:
             settings["extra_body"] = extra_body
-    elif config.model_max_tokens is not None:
-        settings["max_tokens"] = config.model_max_tokens
+    elif model_max_tokens is not None:
+        settings["max_tokens"] = model_max_tokens
     return settings
+
+
+def _effective_limits(config: InterpreterRunConfig) -> dict[str, Any]:
+    if config.full_power_diagnostic:
+        return {
+            "max_requests": None,
+            "max_tool_calls": None,
+            "max_input_tokens": None,
+            "max_context_tokens": None,
+            "max_output_tokens": None,
+            "max_total_tokens": None,
+            "max_seconds": None,
+            "max_commit_attempts": None,
+        }
+    return {
+        "max_requests": config.max_requests,
+        "max_tool_calls": config.max_tool_calls,
+        "max_input_tokens": config.max_input_tokens,
+        "max_context_tokens": config.max_context_tokens,
+        "max_output_tokens": config.max_output_tokens,
+        "max_total_tokens": config.max_total_tokens,
+        "max_seconds": config.max_seconds,
+        "max_commit_attempts": config.max_commit_attempts,
+    }
 
 
 def _new_run_id() -> str:

@@ -200,6 +200,14 @@ def _add_planning_arguments(parser: argparse.ArgumentParser) -> None:
         help="固定模型推理强度",
     )
     parser.add_argument("--model-max-tokens", type=int, help="限制单次模型响应 token 数")
+    parser.add_argument(
+        "--full-power-diagnostic",
+        action="store_true",
+        help=(
+            "诊断特例：启用 max 思考、流式遥测，并关闭项目侧时间、token、"
+            "请求、工具和提交次数上限"
+        ),
+    )
     parser.add_argument("--trace-max-event-bytes", type=int, default=32_768)
     parser.add_argument("--trace-max-string-chars", type=int, default=4_096)
     parser.add_argument("--input-cost-per-million")
@@ -425,6 +433,7 @@ def _plan_brief(
         thinking_mode=args.thinking_mode,
         reasoning_effort=args.reasoning_effort,
         model_max_tokens=args.model_max_tokens,
+        full_power_diagnostic=args.full_power_diagnostic,
         trace_config=TraceConfig(
             max_event_bytes=args.trace_max_event_bytes,
             max_string_chars=args.trace_max_string_chars,

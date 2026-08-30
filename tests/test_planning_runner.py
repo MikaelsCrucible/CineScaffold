@@ -3,19 +3,34 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+import time
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
+from pydantic_ai.messages import (
+    PartDeltaEvent,
+    PartStartEvent,
+    ThinkingPart,
+    ThinkingPartDelta,
+)
+
+from cinescaffold.planning.models import create_planning_model
+from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.runner import (
     InterpreterRunConfig,
     InterpreterRunner,
+    _effective_limits,
     _planning_model_settings,
     _usage_limit_type,
 )
-from cinescaffold.planning.models import create_planning_model
-from cinescaffold.planning.objective import project_objective_brief
-from cinescaffold.planning.trace import CostRates, TraceConfig
+from cinescaffold.planning.trace import (
+    CostRates,
+    StreamTelemetryHandler,
+    TraceConfig,
+    TraceRecorder,
+)
 from tests.helpers import ROOT, valid_planning_brief
 
 
@@ -42,7 +57,6 @@ class InterpreterRunnerTest(unittest.TestCase):
             reasoning_effort="high",
             model_max_tokens=8192,
         )
-
         self.assertEqual(
             _planning_model_settings(config),
             {
@@ -53,6 +67,52 @@ class InterpreterRunnerTest(unittest.TestCase):
                 },
             },
         )
+
+    def test_full_power_diagnostic_overrides_local_limits_and_model_caps(self) -> None:
+        config = InterpreterRunConfig(
+            provider="deepseek",
+            model="deepseek-v4-pro",
+            run_dir=Path("unused"),
+            thinking_mode="disabled",
+            reasoning_effort="low",
+            model_max_tokens=1024,
+            full_power_diagnostic=True,
+        )
+
+        self.assertEqual(
+            _planning_model_settings(config),
+            {
+                "openai_reasoning_effort": "max",
+                "extra_body": {"thinking": {"type": "enabled"}},
+            },
+        )
+        self.assertTrue(all(value is None for value in _effective_limits(config).values()))
+
+    def test_stream_telemetry_counts_reasoning_without_recording_content(self) -> None:
+        async def events():
+            yield PartStartEvent(index=0, part=ThinkingPart("private-one"))
+            yield PartDeltaEvent(
+                index=0,
+                delta=ThinkingPartDelta(content_delta="private-two"),
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "trace.jsonl"
+            trace = TraceRecorder(trace_path, "stream_metadata_test")
+            started = time.monotonic()
+            model = SimpleNamespace(
+                active_stream_request_index=1,
+                active_stream_started=started,
+            )
+            asyncio.run(StreamTelemetryHandler(trace, model)(None, events()))
+            rendered = trace_path.read_text(encoding="utf-8")
+            payload = json.loads(rendered)["payload"]
+
+        self.assertNotIn("private-one", rendered)
+        self.assertNotIn("private-two", rendered)
+        self.assertEqual(payload["reasoning_chunks"], 2)
+        self.assertEqual(payload["reasoning_chars"], 22)
+        self.assertFalse(payload["reasoning_content_recorded"])
 
     def test_mock_agent_completes_loop_and_records_bounded_trace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -162,6 +222,25 @@ class InterpreterRunnerTest(unittest.TestCase):
             _usage_limit_type("Exceeded the per_request_input_tokens_limit of 32000"),
             "per_request_input_tokens_limit",
         )
+
+    def test_full_power_diagnostic_mock_keeps_mock_non_streaming(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            config = InterpreterRunConfig(
+                provider="mock",
+                run_dir=run_dir,
+                run_id="mock_full_power",
+                system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+                full_power_diagnostic=True,
+            )
+
+            result = asyncio.run(InterpreterRunner(config).run(valid_planning_brief()))
+            trace = (run_dir / "planning_agent_tool_trace.jsonl").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(result.status, "success", result.error)
+        self.assertIn('"event_type":"full_power_diagnostic_enabled"', trace)
 
 
 if __name__ == "__main__":

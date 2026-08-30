@@ -175,14 +175,17 @@ def _compact_tool_call_history(
 class PlanningDeps:
     toolkit: ScenePlanningToolkit
     trace: TraceRecorder
-    deadline_monotonic: float
+    deadline_monotonic: float | None
     checkpoint_writer: Callable[[CandidateState], Path] | None = None
     capabilities_read: bool = False
     inspected_calls: set[str] = field(default_factory=set)
     compacted_non_tool_responses: set[str] = field(default_factory=set)
 
     def call_tool(self, name: str, arguments: dict[str, Any], operation) -> dict[str, Any]:
-        if time.monotonic() >= self.deadline_monotonic:
+        if (
+            self.deadline_monotonic is not None
+            and time.monotonic() >= self.deadline_monotonic
+        ):
             raise TimeoutError("Agent 1 已超过运行时间预算")
         started = time.monotonic()
         revision_before = self.toolkit.store.current_revision
