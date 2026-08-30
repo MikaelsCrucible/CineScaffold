@@ -25,10 +25,12 @@ class CandidateStore:
     """保存不可变 revision，调用方只能获得深拷贝。"""
 
     def __init__(self, initial: CandidateState) -> None:
-        if initial.revision != 0:
-            raise ValueError("初始 Candidate revision 必须为 0")
-        self._history: dict[int, CandidateState] = {0: initial.model_copy(deep=True)}
-        self._current_revision = 0
+        if initial.revision < 0:
+            raise ValueError("初始 Candidate revision 不能为负数")
+        self._history: dict[int, CandidateState] = {
+            initial.revision: initial.model_copy(deep=True)
+        }
+        self._current_revision = initial.revision
         self._committed_revision: int | None = None
 
     @property

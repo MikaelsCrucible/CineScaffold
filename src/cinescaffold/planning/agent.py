@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field
@@ -11,6 +13,7 @@ from pydantic_ai.models import Model
 from cinescaffold.planning.domain import (
     AgentTerminal,
     CameraStatic,
+    CandidateState,
     ConstraintSpec,
     ProxyGeometry,
     StrictModel,
@@ -36,6 +39,7 @@ class PlanningDeps:
     toolkit: ScenePlanningToolkit
     trace: TraceRecorder
     deadline_monotonic: float
+    checkpoint_writer: Callable[[CandidateState], Path] | None = None
 
     def call_tool(self, name: str, arguments: dict[str, Any], operation) -> dict[str, Any]:
         if time.monotonic() >= self.deadline_monotonic:
@@ -69,6 +73,16 @@ class PlanningDeps:
             duration_ms=round((time.monotonic() - started) * 1000, 3),
             result=result,
         )
+        if (
+            self.checkpoint_writer is not None
+            and result.get("revision_after") != revision_before
+        ):
+            checkpoint_path = self.checkpoint_writer(self.toolkit.store.get())
+            self.trace.record(
+                "candidate_checkpoint_written",
+                revision=result.get("revision_after"),
+                checkpoint=checkpoint_path.name,
+            )
         return result
 
 

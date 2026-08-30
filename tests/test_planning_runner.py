@@ -74,6 +74,9 @@ class InterpreterRunnerTest(unittest.TestCase):
             trace_lines = trace_path.read_text(encoding="utf-8").splitlines()
             trace = [json.loads(line) for line in trace_lines]
             scene_ir = json.loads((run_dir / "final_scene_ir.json").read_text(encoding="utf-8"))
+            checkpoint = json.loads(
+                (run_dir / "checkpoint_latest.json").read_text(encoding="utf-8")
+            )
 
         self.assertEqual(result.status, "success", result.error)
         self.assertEqual(result.terminal_type, "commit_request")
@@ -87,6 +90,41 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertNotIn("孤独", "\n".join(trace_lines))
         self.assertEqual(scene_ir["schema_version"], "0.1")
         self.assertEqual(len(scene_ir["camera"]["state_track"]["samples"]), 144)
+        self.assertEqual(checkpoint["candidate"]["revision"], result.final_revision)
+
+    def test_resume_uses_checkpoint_revision_with_fresh_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = asyncio.run(
+                InterpreterRunner(
+                    InterpreterRunConfig(
+                        provider="mock",
+                        run_dir=root / "first",
+                        run_id="checkpoint_source",
+                        system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+                    )
+                ).run(valid_planning_brief())
+            )
+            second_dir = root / "second"
+            second = asyncio.run(
+                InterpreterRunner(
+                    InterpreterRunConfig(
+                        provider="mock",
+                        run_dir=second_dir,
+                        run_id="checkpoint_resume",
+                        resume_from=root / "first" / "checkpoint_latest.json",
+                        system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+                    )
+                ).run(valid_planning_brief())
+            )
+            trace = (second_dir / "planning_agent_tool_trace.jsonl").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(first.status, "success")
+        self.assertEqual(second.status, "success", second.error)
+        self.assertGreater(second.final_revision, first.final_revision)
+        self.assertIn("candidate_checkpoint_loaded", trace)
 
     def test_commit_repair_attempts_use_distinct_agent_run_ids(self) -> None:
         brief = valid_planning_brief()

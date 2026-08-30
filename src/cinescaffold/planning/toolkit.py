@@ -81,12 +81,15 @@ class ScenePlanningToolkit:
         objective_brief: ObjectivePlanningBrief,
         profile: PlanningProfile | None = None,
         scene_id: str | None = None,
+        initial_candidate: CandidateState | None = None,
     ) -> None:
         self.objective_brief = objective_brief.model_copy(deep=True)
         self.profile = profile or PlanningProfile()
-        self.store = CandidateStore(
-            _initial_candidate(self.objective_brief, self.profile, scene_id)
-        )
+        expected = _initial_candidate(self.objective_brief, self.profile, scene_id)
+        if initial_candidate is not None:
+            _validate_initial_candidate(initial_candidate, expected)
+            expected = initial_candidate.model_copy(deep=True)
+        self.store = CandidateStore(expected)
 
     def get_capabilities(self, sections: list[str] | None = None) -> dict[str, Any]:
         state = self.store.get()
@@ -559,6 +562,17 @@ def _initial_candidate(
             if item.path == "content.timeline.duration_seconds"
         ],
     )
+
+
+def _validate_initial_candidate(actual: CandidateState, expected: CandidateState) -> None:
+    if actual.schema_version != expected.schema_version:
+        raise ValueError("Checkpoint Candidate Schema 版本不兼容")
+    if actual.timeline != expected.timeline:
+        raise ValueError("Checkpoint timeline 与当前 Brief/Profile 不一致")
+    if actual.required_source_refs != expected.required_source_refs:
+        raise ValueError("Checkpoint explicit requirement 索引与当前 Brief 不一致")
+    if actual.runner_mapped_source_refs != expected.runner_mapped_source_refs:
+        raise ValueError("Checkpoint Runner 映射与当前 Brief 不一致")
 
 
 def _referenced_entity_ids(state: CandidateState) -> set[str]:

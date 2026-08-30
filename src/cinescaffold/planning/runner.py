@@ -15,6 +15,10 @@ from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from cinescaffold.planning.agent import PlanningDeps, create_planning_agent
+from cinescaffold.planning.checkpoint import (
+    load_candidate_checkpoint,
+    write_candidate_checkpoint,
+)
 from cinescaffold.planning.compiler import CommitGateResult, SceneIRCommitGate
 from cinescaffold.planning.domain import (
     CommitRequest,
@@ -24,7 +28,11 @@ from cinescaffold.planning.domain import (
 )
 from cinescaffold.planning.models import create_planning_model
 from cinescaffold.planning.objective import ObjectiveProjection, project_objective_brief
-from cinescaffold.planning.toolkit import FULL_VALIDATION_CHECKS, ScenePlanningToolkit
+from cinescaffold.planning.toolkit import (
+    FULL_VALIDATION_CHECKS,
+    TOOLKIT_VERSION,
+    ScenePlanningToolkit,
+)
 from cinescaffold.planning.trace import (
     CostRates,
     TraceConfig,
@@ -41,6 +49,7 @@ class InterpreterRunConfig(BaseModel):
     base_url: str | None = None
     system_prompt_path: Path = Path("prompts/scene_planner/system.md")
     run_dir: Path
+    resume_from: Path | None = None
     run_id: str | None = None
     max_requests: int = Field(default=12, ge=1)
     max_tool_calls: int = Field(default=40, ge=1)
@@ -133,7 +142,41 @@ class InterpreterRunner:
                 ],
             )
             profile = PlanningProfile()
-            toolkit = ScenePlanningToolkit(projection.objective_brief, profile)
+            resumed_checkpoint = None
+            if self.config.resume_from is not None:
+                resumed_checkpoint = load_candidate_checkpoint(
+                    self.config.resume_from,
+                    objective_brief=projection.objective_brief,
+                    profile=profile,
+                    toolkit_version=TOOLKIT_VERSION,
+                )
+            toolkit = ScenePlanningToolkit(
+                projection.objective_brief,
+                profile,
+                initial_candidate=(
+                    resumed_checkpoint.candidate if resumed_checkpoint is not None else None
+                ),
+            )
+            if resumed_checkpoint is not None:
+                trace.record(
+                    "candidate_checkpoint_loaded",
+                    source_run_id=resumed_checkpoint.run_id,
+                    revision=resumed_checkpoint.candidate.revision,
+                    candidate_hash=resumed_checkpoint.candidate_hash,
+                )
+            checkpoint_dir = run_dir / "checkpoints"
+
+            def checkpoint_writer(candidate):
+                return write_candidate_checkpoint(
+                    checkpoint_dir,
+                    run_id=run_id,
+                    toolkit_version=TOOLKIT_VERSION,
+                    source_brief_sha256=projection.objective_brief.source_brief_sha256,
+                    profile_id=profile.profile_id,
+                    candidate=candidate,
+                )
+
+            checkpoint_writer(toolkit.store.get())
             api_key = _provider_api_key(self.config.provider)
             raw_model = create_planning_model(
                 self.config.provider,
@@ -148,6 +191,7 @@ class InterpreterRunner:
                 toolkit=toolkit,
                 trace=trace,
                 deadline_monotonic=started + self.config.max_seconds,
+                checkpoint_writer=checkpoint_writer,
             )
             usage_limits = UsageLimits(
                 request_limit=self.config.max_requests,
@@ -157,7 +201,11 @@ class InterpreterRunner:
                 total_tokens_limit=self.config.max_total_tokens,
             )
             history = None
-            prompt = _initial_agent_prompt(projection)
+            prompt = _initial_agent_prompt(
+                projection,
+                current_revision=toolkit.store.current_revision,
+                resumed=resumed_checkpoint is not None,
+            )
 
             async with asyncio.timeout(self.config.max_seconds):
                 for attempt in range(1, self.config.max_commit_attempts + 1):
@@ -264,11 +312,24 @@ class InterpreterRunner:
         return summary
 
 
-def _initial_agent_prompt(projection: ObjectiveProjection) -> str:
+def _initial_agent_prompt(
+    projection: ObjectiveProjection,
+    *,
+    current_revision: int,
+    resumed: bool,
+) -> str:
     payload = projection.objective_brief.model_dump(mode="json")
+    continuation = (
+        f"已从可信 checkpoint 恢复 Candidate revision {current_revision}；先 inspect 当前状态并继续修复，"
+        "不要从头重建。"
+        if resumed
+        else f"当前 Candidate revision 为 {current_revision}。"
+    )
     return (
         "请根据以下只含客观内容的 Objective Planning Brief 建立并验证 Candidate。"
-        "先检查能力，再通过工具构造；不要处理或猜测已剥离的主观字段。\n\n"
+        "先检查能力，再通过工具构造；不要处理或猜测已剥离的主观字段。"
+        + continuation
+        + "\n\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
 
@@ -314,6 +375,9 @@ def _persist_run_artifacts(
         validation_path = run_dir / "planning_validation.json"
         _write_json(validation_path, validation["data"])
         artifacts["validation"] = validation_path.name
+        checkpoint_path = run_dir / "checkpoint_latest.json"
+        if checkpoint_path.is_file():
+            artifacts["checkpoint"] = checkpoint_path.name
     if commit_result and commit_result.scene_ir is not None:
         scene_ir_path = run_dir / "final_scene_ir.json"
         _write_json(scene_ir_path, commit_result.scene_ir.model_dump(mode="json"))

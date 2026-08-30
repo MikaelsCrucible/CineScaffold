@@ -78,6 +78,11 @@ def _build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--brief", type=Path, required=True)
     plan_parser.add_argument("--output-dir", type=Path, required=True)
     plan_parser.add_argument(
+        "--resume-from",
+        type=Path,
+        help="从先前运行的 checkpoint_latest.json 恢复 Candidate",
+    )
+    plan_parser.add_argument(
         "--provider",
         choices=("mock", "openai", "deepseek"),
         default="mock",
@@ -196,6 +201,7 @@ def _run_plan(args: argparse.Namespace) -> int:
         base_url=args.base_url,
         system_prompt_path=args.system_prompt,
         run_dir=args.output_dir,
+        resume_from=args.resume_from,
         run_id=args.run_id,
         max_requests=args.max_requests,
         max_tool_calls=args.max_tool_calls,
