@@ -244,10 +244,24 @@
       "type": "object",
       "properties": {
         "duration_seconds": {"type": ["number", "null"]},
+        "duration_range_seconds": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "minimum_seconds": {"type": "number"},
+                "maximum_seconds": {"type": "number"}
+              },
+              "required": ["minimum_seconds", "maximum_seconds"],
+              "additionalProperties": false
+            },
+            {"type": "null"}
+          ]
+        },
         "duration_source_status": {"$ref": "#/$defs/sourceStatus"},
         "events": {"type": "array", "items": {"$ref": "#/$defs/timelineEvent"}}
       },
-      "required": ["duration_seconds", "duration_source_status", "events"],
+      "required": ["duration_seconds", "duration_range_seconds", "duration_source_status", "events"],
       "additionalProperties": false
     },
     "uncertainty": {

@@ -552,6 +552,71 @@
       "title": "DistanceRangeParameters",
       "type": "object"
     },
+    "DurationResolution": {
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "discriminator": {
+            "mapping": {
+              "exact": "#/$defs/ExactDurationRequest",
+              "inferred": "#/$defs/InferredDurationRequest",
+              "range": "#/$defs/RangeDurationRequest"
+            },
+            "propertyName": "mode"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ExactDurationRequest"
+            },
+            {
+              "$ref": "#/$defs/RangeDurationRequest"
+            },
+            {
+              "$ref": "#/$defs/InferredDurationRequest"
+            }
+          ],
+          "title": "Request"
+        },
+        "resolution_method": {
+          "enum": [
+            "user_exact",
+            "agent_within_user_range",
+            "agent_inferred"
+          ],
+          "title": "Resolution Method",
+          "type": "string"
+        },
+        "proposed_duration_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Proposed Duration Seconds",
+          "type": "number"
+        },
+        "resolved_duration_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Resolved Duration Seconds",
+          "type": "number"
+        },
+        "frame_count": {
+          "exclusiveMinimum": 0,
+          "title": "Frame Count",
+          "type": "integer"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "resolution_method",
+        "proposed_duration_seconds",
+        "resolved_duration_seconds",
+        "frame_count",
+        "reason"
+      ],
+      "title": "DurationResolution",
+      "type": "object"
+    },
     "EntitySpec": {
       "additionalProperties": false,
       "properties": {
@@ -655,6 +720,27 @@
       "title": "EntitySpec",
       "type": "object"
     },
+    "ExactDurationRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "exact",
+          "title": "Mode",
+          "type": "string"
+        },
+        "seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "mode",
+        "seconds"
+      ],
+      "title": "ExactDurationRequest",
+      "type": "object"
+    },
     "FocalLengthRangeParameters": {
       "additionalProperties": false,
       "properties": {
@@ -713,6 +799,21 @@
         "components"
       ],
       "title": "HoldParameters",
+      "type": "object"
+    },
+    "InferredDurationRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "inferred",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "InferredDurationRequest",
       "type": "object"
     },
     "KeepInFrameParameters": {
@@ -1047,6 +1148,33 @@
       "title": "ProjectedSizeParameters",
       "type": "object"
     },
+    "RangeDurationRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "range",
+          "title": "Mode",
+          "type": "string"
+        },
+        "minimum_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Minimum Seconds",
+          "type": "number"
+        },
+        "maximum_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Maximum Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "mode",
+        "minimum_seconds",
+        "maximum_seconds"
+      ],
+      "title": "RangeDurationRequest",
+      "type": "object"
+    },
     "RelativePositionParameters": {
       "additionalProperties": false,
       "properties": {
@@ -1236,11 +1364,15 @@
           "exclusiveMinimum": 0,
           "title": "Duration Seconds",
           "type": "number"
+        },
+        "duration_resolution": {
+          "$ref": "#/$defs/DurationResolution"
         }
       },
       "required": [
         "frame_count",
-        "duration_seconds"
+        "duration_seconds",
+        "duration_resolution"
       ],
       "title": "TimelineSpec",
       "type": "object"

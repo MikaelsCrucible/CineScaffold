@@ -117,6 +117,7 @@ def compile_scene_ir(
         frame_count=state.timeline.frame_count,
         frame_end=state.timeline.frame_end,
         duration_seconds=state.timeline.duration_seconds,
+        duration_resolution=state.timeline.duration_resolution,
     )
     frames = range(timeline.frame_start, timeline.frame_end + 1)
     world_samples: dict[str, list[TransformValue]] = {name: [] for name in state.entities}

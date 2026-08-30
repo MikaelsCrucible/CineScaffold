@@ -4,6 +4,7 @@ import unittest
 
 from cinescaffold.planning.compiler import SceneIRCommitGate
 from cinescaffold.planning.domain import CommitRequest
+from cinescaffold.planning.duration import attach_duration_resolution, freeze_duration
 from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.toolkit import FULL_VALIDATION_CHECKS, ScenePlanningToolkit
 from tests.helpers import valid_model_output
@@ -767,7 +768,15 @@ def _toolkit() -> ScenePlanningToolkit:
             "response_id": "mock-response-001",
         },
     }
-    return ScenePlanningToolkit(project_objective_brief(brief).objective_brief)
+    objective = project_objective_brief(brief).objective_brief
+    resolution = freeze_duration(
+        request_mode="inferred",
+        proposed_seconds=6.0,
+        reason="测试固定时长。",
+        fps_numerator=24,
+        fps_denominator=1,
+    )
+    return ScenePlanningToolkit(attach_duration_resolution(objective, resolution))
 
 
 def _man_entity() -> dict:

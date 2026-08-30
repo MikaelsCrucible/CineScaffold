@@ -39,6 +39,7 @@
   },
   "timeline": {
     "duration_seconds": null,
+    "duration_range_seconds": null,
     "duration_source_status": "unknown",
     "events": []
   },

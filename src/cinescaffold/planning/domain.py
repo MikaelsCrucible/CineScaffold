@@ -414,12 +414,43 @@ class CameraCandidate(StrictModel):
     solved_transform: TransformValue = Field(default_factory=TransformValue)
 
 
+class ExactDurationRequest(StrictModel):
+    mode: Literal["exact"]
+    seconds: float = Field(gt=0)
+
+
+class RangeDurationRequest(StrictModel):
+    mode: Literal["range"]
+    minimum_seconds: float = Field(gt=0)
+    maximum_seconds: float = Field(gt=0)
+
+
+class InferredDurationRequest(StrictModel):
+    mode: Literal["inferred"]
+
+
+DurationRequest = Annotated[
+    ExactDurationRequest | RangeDurationRequest | InferredDurationRequest,
+    Field(discriminator="mode"),
+]
+
+
+class DurationResolution(StrictModel):
+    request: DurationRequest
+    resolution_method: Literal["user_exact", "agent_within_user_range", "agent_inferred"]
+    proposed_duration_seconds: float = Field(gt=0)
+    resolved_duration_seconds: float = Field(gt=0)
+    frame_count: int = Field(gt=0)
+    reason: str
+
+
 class TimelineSpec(StrictModel):
     fps_numerator: int = Field(default=24, gt=0)
     fps_denominator: int = Field(default=1, gt=0)
     frame_start: int = 1
     frame_count: int = Field(gt=0)
     duration_seconds: float = Field(gt=0)
+    duration_resolution: DurationResolution
 
     @property
     def frame_end(self) -> int:
@@ -463,10 +494,9 @@ class CandidateState(StrictModel):
 
 
 class PlanningProfile(StrictModel):
-    profile_id: str = "research_default_v0.1"
+    profile_id: str = "research_default_v0.2"
     fps_numerator: int = 24
     fps_denominator: int = 1
-    default_duration_seconds: float = 6.0
     resolution_x: int = 1280
     resolution_y: int = 720
     minimum_soft_score: float = 0.75

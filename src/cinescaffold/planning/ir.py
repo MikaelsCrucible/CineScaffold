@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from cinescaffold.planning.domain import (
+    DurationResolution,
     ProxyGeometry,
     Quaternion,
     StrictModel,
@@ -41,6 +42,7 @@ class IRTimeline(StrictModel):
     duration_seconds: float = Field(gt=0)
     time_domain: Literal["half_open"] = "half_open"
     motion_blur: Literal[False] = False
+    duration_resolution: DurationResolution
 
     @model_validator(mode="after")
     def validate_frames(self) -> IRTimeline:

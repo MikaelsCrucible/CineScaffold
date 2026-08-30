@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from openai import AsyncOpenAI
-from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models import Model
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
@@ -49,6 +56,31 @@ def _create_mock_model(objective: ObjectivePlanningBrief) -> FunctionModel:
     actions = _mock_actions(objective)
 
     def callback(messages: list, info: AgentInfo) -> ModelResponse:
+        duration_tool = next(
+            (
+                item
+                for item in info.output_tools
+                if "duration_seconds" in item.parameters_json_schema.get("properties", {})
+            ),
+            None,
+        )
+        if duration_tool is not None:
+            minimum, maximum = _mock_duration_bounds(messages)
+            duration = (minimum + maximum) / 2.0 if minimum is not None else 6.0
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        duration_tool.name,
+                        {
+                            "duration_seconds": duration,
+                            "reason": "Mock 按单镜头动作与运镜复杂度选择时长。",
+                        },
+                        tool_call_id="mock_duration",
+                    )
+                ],
+                usage=RequestUsage(input_tokens=90, output_tokens=20, details={"mock_estimated": 1}),
+                finish_reason="stop",
+            )
         returns = _tool_returns(messages)
         action_index = len(returns)
         usage = RequestUsage(
@@ -343,8 +375,32 @@ def _annotated_value(value: Any) -> str | None:
 
 
 def _duration(objective: ObjectivePlanningBrief) -> float:
-    value = objective.timeline.get("duration_seconds")
+    resolution = objective.timeline.get("duration_resolution")
+    value = resolution.get("resolved_duration_seconds") if isinstance(resolution, dict) else None
+    if not isinstance(value, (int, float)) or value <= 0:
+        value = objective.timeline.get("duration_seconds")
     return float(value) if isinstance(value, (int, float)) and value > 0 else 6.0
+
+
+def _mock_duration_bounds(messages: list) -> tuple[float | None, float | None]:
+    for message in reversed(messages):
+        if not isinstance(message, ModelRequest):
+            continue
+        for part in reversed(message.parts):
+            if not isinstance(part, UserPromptPart) or not isinstance(part.content, str):
+                continue
+            start = part.content.find("{")
+            if start < 0:
+                continue
+            try:
+                payload = json.loads(part.content[start:])
+            except json.JSONDecodeError:
+                continue
+            minimum = payload.get("minimum_seconds")
+            maximum = payload.get("maximum_seconds")
+            if isinstance(minimum, (int, float)) and isinstance(maximum, (int, float)):
+                return float(minimum), float(maximum)
+    return None, None
 
 
 def _last_time(objective: ObjectivePlanningBrief) -> float:

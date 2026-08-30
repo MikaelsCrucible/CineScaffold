@@ -12,6 +12,7 @@ from cinescaffold.planning.domain import (
     CandidateState,
     ConstraintSpec,
     EntitySpec,
+    DurationResolution,
     PlanningProfile,
     TimelineSpec,
     TrackSpec,
@@ -670,10 +671,8 @@ def _initial_candidate(
     profile: PlanningProfile,
     scene_id: str | None,
 ) -> CandidateState:
-    duration = brief.timeline.get("duration_seconds")
-    if not isinstance(duration, (int, float)) or duration <= 0:
-        duration = profile.default_duration_seconds
-    frame_count = max(1, round(duration * profile.fps_numerator / profile.fps_denominator))
+    resolution = DurationResolution.model_validate(brief.timeline.get("duration_resolution"))
+    frame_count = resolution.frame_count
     suffix = brief.source_brief_sha256.removeprefix("sha256:")[:12]
     return CandidateState(
         scene_id=scene_id or f"scene_{suffix}",
@@ -681,13 +680,17 @@ def _initial_candidate(
             fps_numerator=profile.fps_numerator,
             fps_denominator=profile.fps_denominator,
             frame_count=frame_count,
-            duration_seconds=frame_count * profile.fps_denominator / profile.fps_numerator,
+            duration_seconds=resolution.resolved_duration_seconds,
+            duration_resolution=resolution,
         ),
         required_source_refs=[item.path for item in brief.explicit_requirements],
         runner_mapped_source_refs=[
             item.path
             for item in brief.explicit_requirements
-            if item.path == "content.timeline.duration_seconds"
+            if item.path in {
+                "content.timeline.duration_seconds",
+                "content.timeline.duration_range_seconds",
+            }
         ],
     )
 
