@@ -6,7 +6,15 @@ import unittest
 import json
 from pathlib import Path
 
-from pydantic_ai.messages import ModelResponse, TextPart, ThinkingPart, ToolCallPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 from cinescaffold.planning.agent import (
     ConstraintPatchInput,
@@ -38,10 +46,36 @@ class PlanningProtocolTest(unittest.TestCase):
             ]
         )
 
-        compacted = _compact_tool_call_history([response])
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), _toolkit())
+            compacted = _compact_tool_call_history(_context(deps), [response])
 
         self.assertEqual(len(compacted[0].parts), 1)
         self.assertIsInstance(compacted[0].parts[0], ToolCallPart)
+
+    def test_tool_history_keeps_objective_and_recent_paired_window(self) -> None:
+        messages = [ModelRequest(parts=[UserPromptPart("原始 Brief")])]
+        for index in range(10):
+            call_id = f"call_{index}"
+            messages.append(
+                ModelResponse(parts=[ToolCallPart("inspect_candidate", {}, call_id)])
+            )
+            messages.append(
+                ModelRequest(
+                    parts=[ToolReturnPart("inspect_candidate", {"revision": index}, call_id)]
+                )
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), _toolkit())
+            compacted = _compact_tool_call_history(_context(deps), messages)
+            trace = (Path(directory) / "trace.jsonl").read_text(encoding="utf-8")
+
+        self.assertEqual(compacted[0].parts[0].content, "原始 Brief")
+        self.assertLessEqual(len(compacted), 14)
+        self.assertIsInstance(compacted[1], ModelResponse)
+        self.assertIsInstance(compacted[-1], ModelRequest)
+        self.assertIn("model_history_compacted", trace)
 
     def test_capabilities_must_be_read_before_other_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -125,6 +159,12 @@ def _deps(path: Path, toolkit, checkpoint_writer=None) -> PlanningDeps:
         deadline_monotonic=time.monotonic() + 30.0,
         checkpoint_writer=checkpoint_writer,
     )
+
+
+def _context(deps: PlanningDeps):
+    from pydantic_ai.tools import RunContext
+
+    return RunContext(deps=deps, model=None, usage=None)
 
 
 def _read_capabilities(deps: PlanningDeps) -> None:

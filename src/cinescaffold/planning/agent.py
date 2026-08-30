@@ -10,7 +10,15 @@ from typing import Any, Literal
 from pydantic import Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import ProcessHistory
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ThinkingPart, ToolCallPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models import Model
 from pydantic_ai.tools import ToolDefinition
 
@@ -105,8 +113,14 @@ class TrackPatchInput(StrictModel):
         return self.model_dump(mode="json", exclude_none=True)
 
 
-def _compact_tool_call_history(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """工具轮丢弃冗长正文，完整原响应仍由 Trace 保存。"""
+MAX_AGENT_HISTORY_MESSAGES = 13
+
+
+def _compact_tool_call_history(
+    ctx: RunContext[PlanningDeps],
+    messages: list[ModelMessage],
+) -> list[ModelMessage]:
+    """保留原始任务和近期工具轮，权威领域状态由 Candidate Store 承担。"""
 
     compacted: list[ModelMessage] = []
     for message in messages:
@@ -120,7 +134,26 @@ def _compact_tool_call_history(messages: list[ModelMessage]) -> list[ModelMessag
             ]
             message = replace(message, parts=parts)
         compacted.append(message)
-    return compacted
+    if len(compacted) <= MAX_AGENT_HISTORY_MESSAGES:
+        return compacted
+
+    first = compacted[0]
+    start = len(compacted) - (MAX_AGENT_HISTORY_MESSAGES - 1)
+    if (
+        start > 1
+        and isinstance(compacted[start], ModelRequest)
+        and any(isinstance(part, ToolReturnPart) for part in compacted[start].parts)
+    ):
+        # 不留下缺少对应 ToolCall 的孤立 ToolReturn。
+        start -= 1
+    bounded = [first, *compacted[start:]]
+    ctx.deps.trace.record(
+        "model_history_compacted",
+        messages_before=len(compacted),
+        messages_after=len(bounded),
+        authoritative_revision=ctx.deps.toolkit.store.current_revision,
+    )
+    return bounded
 
 
 @dataclass
