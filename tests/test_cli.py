@@ -15,7 +15,8 @@ class CliTest(unittest.TestCase):
     def test_mock_parse_writes_brief(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "brief.json"
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
                 status = main(
                     [
                         "parse",
@@ -40,6 +41,7 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertEqual(result["provenance"]["provider"], "mock")
+        self.assertIn("先在 Semantic Parser 阶段解析并确认正数时长", stdout.getvalue())
 
     def test_mock_plan_writes_scene_ir_and_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

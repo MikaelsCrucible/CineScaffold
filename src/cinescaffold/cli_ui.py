@@ -323,7 +323,13 @@ def print_parse_summary(brief: dict[str, Any], output_path: Path | None, *, stre
     print(f"时长      {duration} 秒" if duration else "时长      待定", file=stream)
     if output_path:
         print(f"输出文件  {output_path.resolve()}", file=stream)
-        print(f"下一步    cinescaffold plan --brief {output_path} --output-dir <目录>", file=stream)
+        if duration:
+            print(
+                f"下一步    cinescaffold plan --brief {output_path} --output-dir <目录>",
+                file=stream,
+            )
+        else:
+            print("下一步    先在 Semantic Parser 阶段解析并确认正数时长", file=stream)
 
 
 def _format_elapsed(seconds: float) -> str:

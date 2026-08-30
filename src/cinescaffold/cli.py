@@ -206,11 +206,11 @@ def _reporter(args: argparse.Namespace) -> TerminalReporter:
 def _run_parse(args: argparse.Namespace) -> int:
     reporter = _reporter(args)
     description = args.text if args.text is not None else args.input.read_text(encoding="utf-8")
+    provider = _create_provider(args)
     reporter.stage(
         "自然语言解析",
-        f"读取 {len(description)} 个字符，调用 {args.provider}/{args.model or 'mock'}",
+        f"读取 {len(description)} 个字符，调用 {provider.name}/{provider.model}",
     )
-    provider = _create_provider(args)
     config = SemanticParserConfig(
         system_template_path=args.system_template,
         rules_path=args.rules,
