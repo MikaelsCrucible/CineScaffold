@@ -63,6 +63,26 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertEqual(scene_ir["schema_version"], "0.1")
         self.assertEqual(len(scene_ir["camera"]["state_track"]["samples"]), 144)
 
+    def test_commit_repair_attempts_use_distinct_agent_run_ids(self) -> None:
+        brief = valid_planning_brief()
+        brief["content"]["scene_design"]["environment"] = {
+            "value": "荒漠",
+            "source_status": "explicit",
+            "source_text": "荒漠里",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            config = InterpreterRunConfig(
+                provider="mock",
+                run_dir=Path(directory),
+                run_id="test_repair_run",
+                system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+            )
+
+            result = asyncio.run(InterpreterRunner(config).run(brief))
+
+        self.assertEqual(result.status, "commit_rejected")
+        self.assertIsNone(result.error)
+
 
 if __name__ == "__main__":
     unittest.main()

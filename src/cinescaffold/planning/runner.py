@@ -167,7 +167,8 @@ class InterpreterRunner:
                         deps=deps,
                         usage=usage,
                         usage_limits=usage_limits,
-                        run_id=run_id,
+                        run_id=f"{run_id}_attempt_{attempt:02d}",
+                        conversation_id=run_id,
                     )
                     history = result.all_messages()
                     terminal = result.output
