@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import ModelMessage, ModelResponse, ThinkingPart, ToolCallPart
@@ -14,6 +14,9 @@ from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage
+
+
+TraceEventCallback = Callable[[str, dict[str, Any]], None]
 
 
 class TraceConfig(BaseModel):
@@ -39,23 +42,26 @@ class TraceRecorder:
         path: Path,
         run_id: str,
         config: TraceConfig | None = None,
+        event_callback: TraceEventCallback | None = None,
     ) -> None:
         self.path = path
         self.run_id = run_id
         self.config = config or TraceConfig()
+        self.event_callback = event_callback
         self._sequence = 0
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
 
     def record(self, event_type: str, **payload: Any) -> None:
         self._sequence += 1
+        safe_payload = _sanitize(payload, self.config)
         event = {
             "trace_version": "0.1",
             "sequence": self._sequence,
             "timestamp_utc": datetime.now(UTC).isoformat(),
             "run_id": self.run_id,
             "event_type": event_type,
-            "payload": _sanitize(payload, self.config),
+            "payload": safe_payload,
         }
         encoded = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > self.config.max_event_bytes:
@@ -67,6 +73,12 @@ class TraceRecorder:
             encoded = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
         with self.path.open("a", encoding="utf-8") as file:
             file.write(encoded + "\n")
+        if self.event_callback is not None:
+            # 展示层失败不得中断实验状态机或 Trace 写入。
+            try:
+                self.event_callback(event_type, safe_payload)
+            except Exception:
+                pass
 
 
 class TracingModel(WrapperModel):

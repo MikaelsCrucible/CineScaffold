@@ -9,6 +9,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from cinescaffold import __version__
+from cinescaffold.cli_ui import (
+    TerminalReporter,
+    print_execution_summary,
+    print_parse_summary,
+    print_planning_summary,
+)
 from cinescaffold.errors import CineScaffoldError, ConfigurationError
 from cinescaffold.execution.runner import ExecutionConfig, ExecutionRunner
 from cinescaffold.planning.runner import InterpreterRunConfig, InterpreterRunner
@@ -35,7 +42,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="cinescaffold")
+    parser = argparse.ArgumentParser(
+        prog="cinescaffold",
+        description="把自然语言逐步转换为可验证 Scene IR 和 Blender 白模视频。",
+        epilog=(
+            "常用流程：\n"
+            "  cinescaffold parse --provider mock --text \"...\" --output brief.json\n"
+            "  cinescaffold plan --provider mock --brief brief.json --output-dir planning\n"
+            "  cinescaffold execute --scene-ir planning/final_scene_ir.json "
+            "--output-dir execution\n\n"
+            "默认显示适合人工阅读的进度和摘要；自动化脚本请使用 --json --quiet。"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
     parse_parser = subparsers.add_parser("parse", help="将自然语言解析为六维 Cinematic Brief")
 
@@ -70,6 +90,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parse_parser.add_argument("--mock-response", type=Path)
     parse_parser.add_argument("--output", type=Path)
+    _add_display_arguments(parse_parser)
 
     plan_parser = subparsers.add_parser(
         "plan",
@@ -136,6 +157,7 @@ def _build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--cache-write-cost-per-million")
     plan_parser.add_argument("--cost-currency", default="USD")
     plan_parser.add_argument("--price-source", default="user_supplied")
+    _add_display_arguments(plan_parser)
 
     execute_parser = subparsers.add_parser(
         "execute",
@@ -167,11 +189,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="preview 为半分辨率/半采样率诊断视频；control 保持 Scene IR 正式设置",
     )
     execute_parser.add_argument("--render-timeout-seconds", type=float, default=600.0)
+    _add_display_arguments(execute_parser)
     return parser
 
 
+def _add_display_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--json", action="store_true", help="在 stdout 输出完整机器可读 JSON")
+    parser.add_argument("--quiet", action="store_true", help="关闭阶段进度，只保留最终结果")
+    parser.add_argument("--no-color", action="store_true", help="关闭 ANSI 颜色")
+
+
+def _reporter(args: argparse.Namespace) -> TerminalReporter:
+    return TerminalReporter(quiet=args.quiet, color=not args.no_color)
+
+
 def _run_parse(args: argparse.Namespace) -> int:
+    reporter = _reporter(args)
     description = args.text if args.text is not None else args.input.read_text(encoding="utf-8")
+    reporter.stage(
+        "自然语言解析",
+        f"读取 {len(description)} 个字符，调用 {args.provider}/{args.model or 'mock'}",
+    )
     provider = _create_provider(args)
     config = SemanticParserConfig(
         system_template_path=args.system_template,
@@ -180,12 +218,20 @@ def _run_parse(args: argparse.Namespace) -> int:
         model_output_schema_path=args.schema,
     )
     brief = parse_cinematic_brief(description, provider, config)
+    reporter.success("结构化校验", "Cinematic Brief 已通过关闭 Schema 校验")
     rendered = json.dumps(brief, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered, encoding="utf-8")
+        reporter.success("保存结果", str(args.output.resolve()))
+        if args.json:
+            print(rendered, end="")
+        else:
+            print_parse_summary(brief, args.output, stream=sys.stdout)
     else:
         print(rendered, end="")
+        if not args.json:
+            print_parse_summary(brief, None, stream=sys.stderr)
     return 0
 
 
@@ -216,6 +262,7 @@ def _create_provider(args: argparse.Namespace) -> Any:
 
 
 def _run_plan(args: argparse.Namespace) -> int:
+    reporter = _reporter(args)
     brief = json.loads(args.brief.read_text(encoding="utf-8"))
     if not isinstance(brief, dict):
         raise ValueError("Cinematic Brief 根节点必须是对象")
@@ -244,12 +291,18 @@ def _run_plan(args: argparse.Namespace) -> int:
         ),
         cost_rates=_cost_rates(args),
     )
-    result = asyncio.run(InterpreterRunner(config).run(brief))
-    print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    result = asyncio.run(
+        InterpreterRunner(config, progress_callback=reporter.event).run(brief)
+    )
+    if args.json:
+        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    else:
+        print_planning_summary(result, args.output_dir)
     return 0 if result.status == "success" else 1
 
 
 def _run_execute(args: argparse.Namespace) -> int:
+    reporter = _reporter(args)
     payload = json.loads(args.scene_ir.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Scene IR 根节点必须是对象")
@@ -262,8 +315,13 @@ def _run_execute(args: argparse.Namespace) -> int:
         render_profile=args.render_profile,
         render_timeout_seconds=args.render_timeout_seconds,
     )
-    result = asyncio.run(ExecutionRunner(config).run(payload))
-    print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    result = asyncio.run(
+        ExecutionRunner(config, progress_callback=reporter.event).run(payload)
+    )
+    if args.json:
+        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    else:
+        print_execution_summary(result)
     return 0 if result.status == "success" else 1
 
 

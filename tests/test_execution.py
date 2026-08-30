@@ -72,6 +72,26 @@ class _FakeScene:
 
 
 class ExecutionTest(unittest.TestCase):
+    def test_runner_emits_user_facing_stage_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            events: list[str] = []
+            result = asyncio.run(
+                _FakeExecutionRunner(
+                    ExecutionConfig(
+                        output_dir=Path(directory),
+                        render_backend="mcp",
+                    ),
+                    adapter=_FakeAdapter(),
+                    progress_callback=lambda event, payload: events.append(event),
+                ).run(self.scene_ir.model_dump(mode="json"))
+            )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(events[0], "execution_validation_started")
+        self.assertIn("mcp_build_started", events)
+        self.assertIn("render_started", events)
+        self.assertEqual(events[-1], "execution_finished")
+
     @classmethod
     def setUpClass(cls) -> None:
         toolkit = _solved_toolkit()

@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -52,8 +52,10 @@ class ExecutionRunner:
         config: ExecutionConfig,
         *,
         adapter: OfficialBlenderMCPAdapter | None = None,
+        progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.config = config
+        self.progress_callback = progress_callback
         self.output_dir = config.output_dir.resolve()
         self.adapter = adapter or OfficialBlenderMCPAdapter(
             mcp_command=config.mcp_command,
@@ -63,10 +65,23 @@ class ExecutionRunner:
 
     async def run(self, payload: dict[str, Any]) -> ExecutionResult:
         started = time.monotonic()
-        payload = _upgrade_legacy_scene_ir(payload)
-        scene_ir = SceneIR.model_validate(payload)
-        validate_scene_ir_for_execution(scene_ir)
+        self._emit("execution_validation_started")
+        try:
+            payload = _upgrade_legacy_scene_ir(payload)
+            scene_ir = SceneIR.model_validate(payload)
+            validate_scene_ir_for_execution(scene_ir)
+        except Exception as error:
+            self._emit("execution_validation_failed", error=str(error))
+            raise
         scene_ir_hash = canonical_hash(scene_ir)
+        self._emit(
+            "execution_validation_completed",
+            scene_ir_hash=scene_ir_hash,
+            entity_count=len(scene_ir.entities),
+            frame_count=scene_ir.timeline.frame_count,
+            duration_seconds=scene_ir.timeline.duration_seconds,
+        )
+        self._emit("execution_workspace_started", output_dir=str(self.output_dir))
         self._prepare_output_dir()
 
         normalized_ir_path = self.output_dir / "scene_ir.json"
@@ -74,10 +89,18 @@ class ExecutionRunner:
             json.dumps(scene_ir.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        self._emit("execution_workspace_completed", output_dir=str(self.output_dir))
         template_path = self.output_dir / "factory_template.blend"
-        self._create_factory_template(template_path)
+        self._emit("factory_template_started", blender_path=str(self.config.blender_path))
+        try:
+            self._create_factory_template(template_path)
+        except Exception as error:
+            self._emit("factory_template_failed", error=str(error))
+            raise
+        self._emit("factory_template_completed", path=str(template_path))
 
         try:
+            self._emit("mcp_build_started", tool=MCP_BUILD_TOOL)
             build = await self.adapter.apply_scene_ir(
                 scene_ir=scene_ir,
                 scene_ir_hash=scene_ir_hash,
@@ -85,6 +108,7 @@ class ExecutionRunner:
                 output_dir=self.output_dir,
             )
         except Exception as error:
+            self._emit("mcp_build_failed", error=str(error))
             result = ExecutionResult(
                 status="execution_failed",
                 scene_ir_hash=scene_ir_hash,
@@ -95,7 +119,15 @@ class ExecutionRunner:
                 error=f"Blender MCP 构建失败：{error}",
             )
             self._write_manifest(scene_ir, result)
+            self._emit("execution_finished", status=result.status, elapsed_seconds=result.elapsed_seconds)
             return result
+        self._emit(
+            "mcp_build_completed",
+            status=build.get("status"),
+            blender_version=build.get("blender_version"),
+            validation_passed=build.get("validation_passed"),
+            violation_count=build.get("violation_count"),
+        )
         if build.get("status") != "ok" or build.get("validation_passed") is not True:
             result = ExecutionResult(
                 status="runtime_mismatch",
@@ -107,15 +139,24 @@ class ExecutionRunner:
                 error="Blender Runtime 与 Scene IR 不一致",
             )
             self._write_manifest(scene_ir, result)
+            self._emit("execution_finished", status=result.status, elapsed_seconds=result.elapsed_seconds)
             return result
 
         scene_blend = self.output_dir / "scene.blend"
         try:
+            self._emit(
+                "render_started",
+                backend=self.config.render_backend,
+                profile=self.config.render_profile,
+                frame_count=scene_ir.timeline.frame_count,
+                timeout_seconds=self.config.render_timeout_seconds,
+            )
             if self.config.render_backend == "mcp":
                 render = await self.adapter.render_video(scene_blend, self.config.render_profile)
             else:
                 render = await self._render_video_background(scene_blend)
         except Exception as error:
+            self._emit("render_failed", error=str(error))
             result = ExecutionResult(
                 status="render_failed",
                 scene_ir_hash=scene_ir_hash,
@@ -130,7 +171,17 @@ class ExecutionRunner:
                 error=f"Blender 渲染失败：{error}",
             )
             self._write_manifest(scene_ir, result)
+            self._emit("execution_finished", status=result.status, elapsed_seconds=result.elapsed_seconds)
             return result
+        self._emit(
+            "render_completed",
+            status=render.get("status"),
+            artifact=render.get("artifact"),
+            rendered_frame_count=render.get("rendered_frame_count"),
+            fps=render.get("fps"),
+            resolution_x=render.get("resolution_x"),
+            resolution_y=render.get("resolution_y"),
+        )
         status = "success" if render.get("status") == "ok" else "render_failed"
         result = ExecutionResult(
             status=status,
@@ -142,7 +193,17 @@ class ExecutionRunner:
             error=None if status == "success" else "白模视频渲染失败",
         )
         self._write_manifest(scene_ir, result)
+        self._emit("execution_finished", status=result.status, elapsed_seconds=result.elapsed_seconds)
         return result
+
+    def _emit(self, event_type: str, **payload: Any) -> None:
+        if self.progress_callback is None:
+            return
+        # 终端展示错误不应改变构建与渲染结果。
+        try:
+            self.progress_callback(event_type, payload)
+        except Exception:
+            pass
 
     async def _render_video_background(self, scene_blend: Path) -> dict[str, Any]:
         blender_path = self.config.blender_path.resolve()

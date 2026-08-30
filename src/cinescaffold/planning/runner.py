@@ -37,6 +37,7 @@ from cinescaffold.planning.toolkit import (
 from cinescaffold.planning.trace import (
     CostRates,
     TraceConfig,
+    TraceEventCallback,
     TraceRecorder,
     TracingModel,
     usage_summary,
@@ -82,8 +83,14 @@ class InterpreterRunResult(BaseModel):
 
 
 class InterpreterRunner:
-    def __init__(self, config: InterpreterRunConfig) -> None:
+    def __init__(
+        self,
+        config: InterpreterRunConfig,
+        *,
+        progress_callback: TraceEventCallback | None = None,
+    ) -> None:
         self.config = config
+        self.progress_callback = progress_callback
 
     async def run(self, cinematic_brief: dict[str, Any]) -> InterpreterRunResult:
         run_id = self.config.run_id or _new_run_id()
@@ -92,7 +99,12 @@ class InterpreterRunner:
             raise ValueError(f"规划输出目录必须为空，避免覆盖实验记录：{run_dir}")
         run_dir.mkdir(parents=True, exist_ok=True)
         trace_path = run_dir / "planning_agent_tool_trace.jsonl"
-        trace = TraceRecorder(trace_path, run_id, self.config.trace_config)
+        trace = TraceRecorder(
+            trace_path,
+            run_id,
+            self.config.trace_config,
+            event_callback=self.progress_callback,
+        )
         started = time.monotonic()
         usage = RunUsage()
         projection: ObjectiveProjection | None = None
