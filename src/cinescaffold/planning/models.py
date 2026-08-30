@@ -56,7 +56,12 @@ def _create_mock_model(objective: ObjectivePlanningBrief) -> FunctionModel:
             output_tokens=30,
             details={"mock_estimated": 1},
         )
-        if action_index < len(actions):
+        commit_ready = any(
+            isinstance(item.content, dict)
+            and item.content.get("data", {}).get("acceptance", {}).get("commit_ready") is True
+            for item in returns
+        )
+        if action_index < len(actions) and not commit_ready:
             name, arguments = actions[action_index]
             return ModelResponse(
                 parts=[ToolCallPart(name, arguments, tool_call_id=f"mock_call_{action_index:03d}")],

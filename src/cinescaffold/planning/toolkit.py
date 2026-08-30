@@ -1197,10 +1197,15 @@ def _constraint_violation(
         elif constraint.type == "position_at_time":
             target_id = params.get("target_id")
             expected = params.get("position_m")
-            if target_id not in transforms or not isinstance(expected, (list, tuple)) or len(expected) != 3:
+            if not isinstance(expected, (list, tuple)) or len(expected) != 3:
                 return _constraint_error(constraint, "CONSTRAINT_PARAMETER_INVALID", None)
             tolerance = float(params.get("tolerance_m", 0.01))
-            actual = transforms[target_id].translation_m
+            if target_id == state.camera.camera_id:
+                actual = camera_transform.translation_m
+            elif target_id in transforms:
+                actual = transforms[target_id].translation_m
+            else:
+                return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
             if length(subtract(actual, tuple(expected))) > tolerance:
                 return _constraint_error(constraint, "POSITION_AT_TIME_VIOLATED", {"position_m": actual})
 

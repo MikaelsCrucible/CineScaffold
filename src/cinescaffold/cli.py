@@ -95,7 +95,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path("prompts/scene_planner/system.md"),
     )
     plan_parser.add_argument("--run-id")
-    plan_parser.add_argument("--max-requests", type=int, default=12)
+    plan_parser.add_argument("--max-requests", type=int, default=24)
     plan_parser.add_argument("--max-tool-calls", type=int, default=40)
     plan_parser.add_argument(
         "--max-input-tokens",

@@ -213,6 +213,55 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             {item["code"] for item in validation["violations"]},
         )
 
+    def test_position_at_time_supports_camera_target(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0},
+            tracks=[
+                {
+                    "track_id": "camera_position",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [0.0, -30.0, 2.5]},
+                        }
+                    ],
+                }
+            ],
+        )
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "camera_position_hint",
+                    "type": "position_at_time",
+                    "strength": "soft",
+                    "weight": 1.0,
+                    "subjects": ["camera_main"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "target_id": "camera_main",
+                        "position_m": [0.0, -30.0, 2.5],
+                        "tolerance_m": 0.01,
+                    },
+                    "source_status": "inferred",
+                    "source_ref": "content.camera.angle",
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["projection"])
+
+        self.assertNotIn(
+            "CONSTRAINT_PARAMETER_INVALID",
+            {item["code"] for item in validation["violations"]},
+        )
+
     def test_transform_keyframe_rejects_unknown_position_alias(self) -> None:
         toolkit = _toolkit()
         result = toolkit.apply_camera_patch(

@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
+from pydantic_ai.tools import ToolDefinition
 
 from cinescaffold.planning.domain import (
     AgentTerminal,
@@ -165,6 +166,31 @@ def _protocol_rejected(revision: int, message: str, next_actions: list[str]) -> 
     }
 
 
+async def _prepare_capabilities_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    # 能力读取后从模型工具表移除，避免重复调用浪费请求。
+    return None if ctx.deps.capabilities_read else tool_definition
+
+
+async def _prepare_candidate_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    # 首次能力读取前只暴露能力工具；可提交后只允许结构化终止。
+    if not ctx.deps.capabilities_read:
+        return None
+    validation = ctx.deps.toolkit.store.get().validation
+    if (
+        validation is not None
+        and validation.hard_pass
+        and validation.soft_score >= ctx.deps.toolkit.profile.minimum_soft_score
+    ):
+        return None
+    return tool_definition
+
+
 def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDeps, AgentTerminal]:
     agent: Agent[PlanningDeps, AgentTerminal] = Agent(
         model,
@@ -176,7 +202,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         end_strategy="exhaustive",
     )
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=_prepare_capabilities_tool)
     async def get_capabilities(
         ctx: RunContext[PlanningDeps],
         sections: list[
@@ -206,7 +232,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.get_capabilities(sections),
         )
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def inspect_candidate(
         ctx: RunContext[PlanningDeps],
         view: Literal[
@@ -242,7 +268,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.inspect_candidate(**arguments),
         )
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def apply_entity_patch(
         ctx: RunContext[PlanningDeps],
         upserts: list[EntityPatchInput],
@@ -260,7 +286,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.apply_entity_patch(**arguments),
         )
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def apply_constraint_patch(
         ctx: RunContext[PlanningDeps],
         upserts: list[ConstraintSpec],
@@ -277,7 +303,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.apply_constraint_patch(**arguments),
         )
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def apply_motion_patch(
         ctx: RunContext[PlanningDeps],
         upserts: list[TrackSpec],
@@ -294,7 +320,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.apply_motion_patch(**arguments),
         )
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def apply_camera_patch(
         ctx: RunContext[PlanningDeps],
         camera_id: str,
@@ -319,7 +345,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.apply_camera_patch(**arguments),
         )
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def solve_candidate(
         ctx: RunContext[PlanningDeps],
         scope: Literal["layout", "camera", "motion", "all"] = "all",
@@ -344,7 +370,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.solve_candidate(**arguments),
         )
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def validate_candidate(
         ctx: RunContext[PlanningDeps],
         revision: int | None = None,
@@ -379,7 +405,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.validate_candidate(**arguments),
         )
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def restore_candidate(
         ctx: RunContext[PlanningDeps],
         source_revision: int,

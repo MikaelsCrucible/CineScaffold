@@ -61,7 +61,7 @@
 
 Agent 1 的客观语义投影、Candidate revision store、九个 Planning Toolkit 接口、确定性启发式 Solver、结构化 Validator 和 Scene IR Commit Gate 已经实现。模型调用前只保留主体、运动、空间关系、可数值化构图、摄影机和时间线，`mood` 与混合摘要不会进入规划模型上下文；Commit Gate 会把规划轨迹烘焙为完整逐帧 Scene IR。当前确定性约束能力以 `get_capabilities` 返回为准，尚未实现的约束会产生明确 capability gap；同一响应会提供冻结的 FPS、时长、半开时间域和最后一帧时间，避免 Agent 通过失败调用猜测时间边界。Transform Keyframe 使用关闭额外字段的类型化 Schema，错误字段会在工具调用边界被拒绝。
 
-Agent 协议由 Runner 确定性约束：闭集参数直接进入 Tool Schema 枚举；每个上下文只能读取一次能力清单，同一 revision 的相同 inspect 会被拒绝；实体和摄影机的每个状态通道最多存在一条 Track；`commit_ready=true` 后不再允许继续调用工具。同一 ID 的 remove + upsert 是原子替换，Agent 推断或自选的数值不得伪装成 hard constraint。Checkpoint 只在当前 Candidate revision 真正变化时写入，读取历史 revision 不会制造伪 checkpoint。Toolkit v0.3 会拒绝载入旧 Toolkit checkpoint，避免把旧验证语义静默带入新实验。
+Agent 协议由 Runner 确定性约束：闭集参数直接进入 Tool Schema 枚举；模型开始时只看得到能力工具，读取后该工具会从后续请求移除；`commit_ready=true` 后所有 Candidate 工具都会移除，只能结构化终止。同一 revision 的相同 inspect 会被拒绝；实体和摄影机的每个状态通道最多存在一条 Track。同一 ID 的 remove + upsert 是原子替换，Agent 推断或自选的数值不得伪装成 hard constraint。默认请求上限为 24；请求次数是独立实验预算，不再被误称为上下文超限。Checkpoint 只在当前 Candidate revision 真正变化时写入，读取历史 revision 不会制造伪 checkpoint。Toolkit v0.3 会拒绝载入旧 Toolkit checkpoint，避免把旧验证语义静默带入新实验。
 
 真实 Agent 回归暴露的规划缺陷已经进入确定性门禁：`push_in/pull_out` 按摄影机到目标的距离变化验证，不绑定世界轴；`speed_range` 独立表达移动速度，来源兼容性检查会拒绝用摄影机距离冒充“缓慢”；屏幕构图按旋转后代理体包围盒计算并使用冻结数值容差。Solver 不会为了制造侧面可见性而擅自旋转实体；三维代理是否真实构建由 Blender Runtime Validator 读取实际 mesh 拓扑和局部包围盒验证，与摄影机投影视角解耦。
 

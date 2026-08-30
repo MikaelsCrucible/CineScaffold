@@ -51,7 +51,7 @@ class InterpreterRunConfig(BaseModel):
     run_dir: Path
     resume_from: Path | None = None
     run_id: str | None = None
-    max_requests: int = Field(default=12, ge=1)
+    max_requests: int = Field(default=24, ge=1)
     max_tool_calls: int = Field(default=40, ge=1)
     max_input_tokens: int | None = Field(default=None, ge=1)
     max_context_tokens: int | None = Field(default=32_000, ge=1)
@@ -115,7 +115,7 @@ class InterpreterRunner:
                 model=model_label,
                 source_brief_hash=projection.objective_brief.source_brief_sha256,
                 system_prompt_sha256=_text_hash(system_prompt),
-                toolkit_version="0.1",
+                toolkit_version=TOOLKIT_VERSION,
                 model_settings=model_settings,
                 limits={
                     "max_requests": self.config.max_requests,
