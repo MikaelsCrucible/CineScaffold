@@ -38,7 +38,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.2"
+TOOLKIT_VERSION = "0.3"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -296,16 +296,16 @@ class ScenePlanningToolkit:
         remove_ids = remove_ids or []
         try:
             parsed = [EntitySpec.model_validate(item) for item in upserts]
-            if set(item.entity_id for item in parsed) & set(remove_ids):
-                return _rejected(self.store.current_revision, "同一 Entity 不能同时 upsert 和删除")
+            upsert_ids = {item.entity_id for item in parsed}
+            remove_only_ids = set(remove_ids) - upsert_ids
 
             def mutate(state: CandidateState):
                 referenced = _referenced_entity_ids(state)
-                blocked = sorted(set(remove_ids) & referenced)
+                blocked = sorted(remove_only_ids & referenced)
                 if blocked:
                     raise ValueError(f"Entity 仍被引用，不能删除：{', '.join(blocked)}")
                 changes: list[dict[str, Any]] = []
-                for entity_id in remove_ids:
+                for entity_id in remove_only_ids:
                     if state.entities.pop(entity_id, None) is not None:
                         changes.append({"operation": "remove", "path": f"entities.{entity_id}"})
                 for entity in parsed:
@@ -327,6 +327,17 @@ class ScenePlanningToolkit:
         remove_ids = remove_ids or []
         try:
             parsed = [ConstraintSpec.model_validate(item) for item in upserts]
+            invalid_hard = sorted(
+                item.constraint_id
+                for item in parsed
+                if item.strength == "hard" and item.source_status != "explicit"
+            )
+            if invalid_hard:
+                return _rejected(
+                    self.store.current_revision,
+                    "只有 explicit requirement 可成为 hard constraint；"
+                    f"请将以下约束改为 soft：{', '.join(invalid_hard)}",
+                )
             unsupported = sorted({item.type for item in parsed} - SUPPORTED_CONSTRAINTS)
             if unsupported:
                 return _envelope(
@@ -338,12 +349,12 @@ class ScenePlanningToolkit:
                         "不得用语义无关约束替代；若 explicit requirement 没有等价能力，返回 UnsupportedResult"
                     ],
                 )
-            if set(item.constraint_id for item in parsed) & set(remove_ids):
-                return _rejected(self.store.current_revision, "同一 Constraint 不能同时 upsert 和删除")
+            upsert_ids = {item.constraint_id for item in parsed}
+            remove_only_ids = set(remove_ids) - upsert_ids
 
             def mutate(state: CandidateState):
                 changes: list[dict[str, Any]] = []
-                for constraint_id in remove_ids:
+                for constraint_id in remove_only_ids:
                     existing = state.constraints.get(constraint_id)
                     if existing and existing.strength == "hard" and existing.source_status == "explicit":
                         raise ValueError("不得删除 explicit hard constraint")
@@ -384,12 +395,12 @@ class ScenePlanningToolkit:
                     self.store.current_revision,
                     f"Entity Track 类型不受支持：{', '.join(unsupported)}",
                 )
-            if set(item.track_id for item in parsed) & set(remove_ids):
-                return _rejected(self.store.current_revision, "同一 Track 不能同时 upsert 和删除")
+            upsert_ids = {item.track_id for item in parsed}
+            remove_only_ids = set(remove_ids) - upsert_ids
 
             def mutate(state: CandidateState):
                 changes: list[dict[str, Any]] = []
-                for track_id in remove_ids:
+                for track_id in remove_only_ids:
                     if state.motion_tracks.pop(track_id, None) is not None:
                         changes.append({"operation": "remove", "path": f"motion_tracks.{track_id}"})
                 for track in parsed:
@@ -820,7 +831,12 @@ def _reference_violations(state: CandidateState) -> list[Violation]:
             )
         )
     for constraint in state.constraints.values():
-        missing = sorted(item for item in constraint.subjects if item not in state.entities)
+        camera_id = state.camera.camera_id if state.camera else "camera_main"
+        missing = sorted(
+            item
+            for item in constraint.subjects
+            if item not in state.entities and item != camera_id
+        )
         if missing:
             violations.append(_constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", {"missing": missing}))
     return violations

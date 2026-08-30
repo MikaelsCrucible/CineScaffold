@@ -120,6 +120,99 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertIn("remove_ids", result["warnings"][0])
         self.assertEqual(toolkit.store.get().motion_tracks, {})
 
+    def test_same_id_remove_and_upsert_atomically_replaces_entity_and_track(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
+        replaced_entity = _man_entity() | {"label": "替换后的人物"}
+
+        entity_result = toolkit.apply_entity_patch([replaced_entity], ["man_01"])
+        first_track = {
+            "track_id": "man_move",
+            "target_entity_id": "man_01",
+            "type": "transform",
+            "time_range_seconds": [0.0, 6.0],
+            "keyframes": [],
+        }
+        toolkit.apply_motion_patch([first_track], [])
+        replaced_track = first_track | {
+            "keyframes": [
+                {
+                    "time_seconds": 0.0,
+                    "value": {"translation_m": [0.0, 0.0, 0.9]},
+                }
+            ]
+        }
+        track_result = toolkit.apply_motion_patch([replaced_track], ["man_move"])
+
+        self.assertEqual(entity_result["status"], "ok")
+        self.assertEqual(toolkit.store.get().entities["man_01"].label, "替换后的人物")
+        self.assertEqual(track_result["status"], "ok")
+        self.assertEqual(len(toolkit.store.get().motion_tracks["man_move"].keyframes), 1)
+
+    def test_non_explicit_hard_constraint_is_rejected(self) -> None:
+        toolkit = _toolkit()
+        result = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "invented_ground_height",
+                    "type": "position_at_time",
+                    "strength": "hard",
+                    "weight": 1.0,
+                    "subjects": ["man_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "target_id": "man_01",
+                        "position_m": [0.0, 0.0, 0.4],
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.layout",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["revision_after"], 0)
+        self.assertIn("explicit requirement", result["warnings"][0])
+
+    def test_camera_subject_is_not_reported_as_missing_entity(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0},
+            tracks=[],
+        )
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "camera_speed",
+                    "type": "speed_range",
+                    "strength": "hard",
+                    "weight": 1.0,
+                    "subjects": ["camera_main"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "target_id": "camera_main",
+                        "minimum_mps": 0.01,
+                        "maximum_mps": 2.0,
+                        "space": "world",
+                    },
+                    "source_status": "explicit",
+                    "source_ref": "content.camera.movement.speed",
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["references"])
+
+        self.assertNotIn(
+            "CONSTRAINT_REFERENCE_MISSING",
+            {item["code"] for item in validation["violations"]},
+        )
+
     def test_transform_keyframe_rejects_unknown_position_alias(self) -> None:
         toolkit = _toolkit()
         result = toolkit.apply_camera_patch(
@@ -291,7 +384,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 {
                     "constraint_id": "man_fully_visible",
                     "type": "keep_in_frame",
-                    "strength": "hard",
+                    "strength": "soft",
                     "weight": 1.0,
                     "subjects": ["man_01"],
                     "time_range_seconds": [0.0, 6.0],

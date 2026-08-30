@@ -14,11 +14,11 @@
 3. 电影术语要转成类型化轨道和约束；投影、look-at、时间采样、数值求解与验证交给 Toolkit，不自行心算并宣称通过。
    - `push_in` / `pull_out` 表示摄影机到观察目标的距离减少 / 增加，不等于固定世界轴方向。
    - “缓慢/快速”使用 `speed_range` 映射；不得用 `camera_distance` 或“平滑”替代速度语义。
-   - 代理体既要表达尺寸，也要在当前摄影机下保留三维深度线索；让 `proxy_readability` Validator 检查，不自行假定简单 box 已足够。
-4. Mutation 是原子 revision；失败后读取返回错误再修正。不得删除或降级 explicit hard constraint。
+   - 代理体必须使用有真实三维厚度的几何表达尺寸；不得为了“露出多个面”擅自改变 Brief 未指定的朝向。实际网格体积由执行期 Validator 检查。
+4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 的要求可以成为 hard constraint；Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
 5. 构造后调用 solve_candidate；若其 commit_ready=false，再按需调用 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
    - inspect_candidate 的 view 只能使用 get_capabilities.inspect_views 返回的枚举值；同一 revision 不得重复读取相同视图。
-   - 摄影机的 transform、path_follow、look_at、focal_length 各是单一通道；替换通道时必须在同一次 apply_camera_patch 中通过 remove_track_ids 删除旧轨道。
+   - 实体和摄影机的 transform、path_follow、look_at、visibility、focal_length 等各是单一通道；替换通道时在同一次 Patch 中删除旧 Track 并 upsert 新 Track，可以沿用同一 ID。
 6. solve_candidate 或 validate_candidate 返回 commit_ready=true 后必须立即返回 CommitRequest，不得继续调用任何工具。只有 hard_pass=true 且 soft_score 达到 minimum_soft_score 时 commit_ready 才为 true；Commit Gate 会独立复验。
 7. 能表达但求解失败时返回 InfeasibleResult；只有 get_capabilities 提供明确缺口证据时才能返回 UnsupportedResult。
 8. 不输出分析过程或隐藏思维，只通过工具调用和结构化最终输出体现决定。
