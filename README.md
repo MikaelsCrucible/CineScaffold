@@ -107,6 +107,15 @@ api_key = 填写 API KEY
 
 配置也可以分别指定 `semantic_provider/model` 和 `planning_provider/model`。完整可选字段及注释见 [`.cinescaffold.example.conf`](.cinescaffold.example.conf)。命令行参数优先于配置文件；未找到配置值时，API Key 仍可从 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 环境变量读取。
 
+DeepSeek V4 Pro 的思考模式缺省为启用，缺省强度为 `high`。真实回归中，模型读取完整 Toolkit 能力后的首次规划可能产生上万 reasoning tokens，并让单次请求持续数分钟。若实验优先考虑低延迟与稳定工具调用，可在配置中明确填写：
+
+```text
+planning_thinking_mode = disabled
+planning_model_max_tokens = 8192
+```
+
+论文实验应明确冻结思考模式、强度和 token 上限，不能把供应商缺省值视为不变条件。规划 Trace 记录 reasoning token 数、请求耗时、停止原因与工具调用，但不保存逐字思维链。
+
 ## 使用
 
 ### 一键运行
