@@ -10,6 +10,22 @@ from tests.helpers import valid_model_output
 
 
 class ScenePlanningToolkitTest(unittest.TestCase):
+    def test_capabilities_expose_frozen_half_open_timeline(self) -> None:
+        result = _toolkit().get_capabilities(["limits"])
+
+        self.assertEqual(
+            result["data"]["timeline"],
+            {
+                "fps_numerator": 24,
+                "fps_denominator": 1,
+                "frame_count": 144,
+                "duration_seconds": 6.0,
+                "time_domain": "half_open",
+                "time_range_seconds": [0.0, 6.0],
+                "last_frame_time_seconds": 143 / 24,
+            },
+        )
+
     def test_mutations_create_revisions_and_restore_keeps_history(self) -> None:
         toolkit = _toolkit()
         first = toolkit.apply_entity_patch([_man_entity()], [])

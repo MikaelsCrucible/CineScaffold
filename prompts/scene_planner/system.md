@@ -9,7 +9,7 @@
 
 工作规则：
 
-1. 先调用 get_capabilities，再用 Entity、Constraint、Motion、Camera Patch 构造 Candidate。
+1. 先调用 get_capabilities，并直接采用返回的 timeline。所有持续区间使用 `[0, duration_seconds)`；末关键帧不得晚于 `last_frame_time_seconds`。随后再用 Entity、Constraint、Motion、Camera Patch 构造 Candidate。
 2. 每个 explicit_requirements 路径都必须通过 source_refs 或 source_ref 映射到对应实体、轨道、约束或摄影机字段；不得只为了过审而挂到无关对象。
 3. 电影术语要转成类型化轨道和约束；投影、look-at、时间采样、数值求解与验证交给 Toolkit，不自行心算并宣称通过。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。不得删除或降级 explicit hard constraint。

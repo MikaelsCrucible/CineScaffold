@@ -106,6 +106,19 @@ class ScenePlanningToolkit:
             "supported_tracks": ["transform", "path_follow", "visibility", "look_at", "focal_length"],
             "supported_constraints": sorted(SUPPORTED_CONSTRAINTS),
             "validators": FULL_VALIDATION_CHECKS,
+            "timeline": {
+                "fps_numerator": state.timeline.fps_numerator,
+                "fps_denominator": state.timeline.fps_denominator,
+                "frame_count": state.timeline.frame_count,
+                "duration_seconds": state.timeline.duration_seconds,
+                "time_domain": "half_open",
+                "time_range_seconds": [0.0, state.timeline.duration_seconds],
+                "last_frame_time_seconds": (
+                    (state.timeline.frame_count - 1)
+                    * state.timeline.fps_denominator
+                    / state.timeline.fps_numerator
+                ),
+            },
             "current_counts": {
                 "entities": len(state.entities),
                 "tracks": len(state.motion_tracks),
