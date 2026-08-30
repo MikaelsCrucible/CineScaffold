@@ -43,6 +43,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 通过官方 Blender Lab MCP 调用固定 Blender Executor，不把任意 Blender Python 暴露给模型。
 - 输出 `.blend`、运行时验证、执行 manifest 和 H.264 白模视频。
 - CLI 实时显示 Agent 请求、工具调用、token、revision、验证和渲染进度。
+- 可从自然语言、Cinematic Brief 或 Scene IR 一键运行到白模视频。
 
 ## 研究范围
 
@@ -86,11 +87,56 @@ uv tool install --python 3.12 \
 
 还需要在 Blender 中安装并启用官方 MCP Add-on。上游安装说明见 [Blender Lab MCP](https://www.blender.org/lab/mcp-server/)。
 
+## 配置文件
+
+复制示例并用任意文本编辑器填写：
+
+```bash
+cp .cinescaffold.example.conf .cinescaffold.conf
+```
+
+最小配置只有三行：
+
+```text
+provider = deepseek
+model = 填写模型 ID
+api_key = 填写 API KEY
+```
+
+`.cinescaffold.conf` 和 `cinescaffold.local.conf` 已加入 Git Ignore，不会被正常提交。自定义其他文件名时需要自行确认其未被 Git 跟踪。
+
+配置也可以分别指定 `semantic_provider/model` 和 `planning_provider/model`。完整可选字段及注释见 [`.cinescaffold.example.conf`](.cinescaffold.example.conf)。命令行参数优先于配置文件；未找到配置值时，API Key 仍可从 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 环境变量读取。
+
 ## 使用
 
-CLI 保留三个显式阶段，方便研究者检查、更换或复用中间产物。
+### 一键运行
 
-### 1. 自然语言转 Cinematic Brief
+缺省会自动读取当前目录的 `.cinescaffold.conf`：
+
+```bash
+# 从自然语言开始
+cinescaffold run \
+  --text "一个男人站在荒漠里，远处有巨大的飞船。" \
+  --output-dir runs/example/full
+
+# 从 Cinematic Brief 开始
+cinescaffold run \
+  --brief runs/example/cinematic_brief.json \
+  --output-dir runs/example/full
+
+# 从 Scene IR 开始
+cinescaffold run \
+  --ir runs/example/final_scene_ir.json \
+  --output-dir runs/example/execution-only
+```
+
+使用其他配置文件时传入 `--config cinescaffold.local.conf`。一键运行会写出 `pipeline_summary.json`，并在任一阶段失败时停止，不会把不合法 IR 继续交给 Blender。
+
+### 分阶段运行
+
+`parse`、`plan`、`execute` 仍然保留，方便研究者检查、更换或复用中间产物。
+
+#### 1. 自然语言转 Cinematic Brief
 
 OpenAI：
 
@@ -120,7 +166,7 @@ Mock Provider 不理解文本，只返回指定的模拟响应。未传入 `--mo
 
 正式使用前需要由项目成员补充并评审 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md) 中的六维转换规则；该文件当前有意留空。
 
-### 2. Cinematic Brief 转 Scene IR
+#### 2. Cinematic Brief 转 Scene IR
 
 ```bash
 cinescaffold plan \
@@ -131,7 +177,7 @@ cinescaffold plan \
 
 Mock 规划不需要 `--model`。使用真实 Provider 时必须显式指定模型 ID，避免模型别名变化导致实验条件漂移。
 
-### 3. Scene IR 转 Blender 白模视频
+#### 3. Scene IR 转 Blender 白模视频
 
 ```bash
 cinescaffold execute \
@@ -165,6 +211,7 @@ cinescaffold execute \
 | `parse` | `cinematic_brief.json` |
 | `plan` | Agent Trace、checkpoint、Constraint Plan、验证报告、`final_scene_ir.json` |
 | `execute` | `scene.blend`、Runtime Snapshot、Runtime Validation、执行 manifest、白模 MP4 |
+| `run` | 所有适用阶段的产物及 `pipeline_summary.json` |
 
 运行目录默认拒绝覆盖已有产物；执行阶段只有显式传入 `--overwrite` 才会覆盖其固定输出。
 
