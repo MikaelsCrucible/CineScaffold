@@ -25,13 +25,20 @@ from cinescaffold.planning.agent import (
     PlanningDeps,
     TrackPatchInput,
     _compact_tool_call_history,
+    _prepare_repair_apply_tool,
+    _prepare_repair_suggestion_tool,
 )
 from cinescaffold.planning.domain import ConstraintSpec, TrackSpec
 from cinescaffold.planning.models import create_planning_model
 from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.trace import TraceRecorder
 from tests.helpers import valid_planning_brief
-from tests.test_planning_toolkit import _man_entity, _solved_toolkit, _toolkit
+from tests.test_planning_toolkit import (
+    _man_entity,
+    _projected_motion_toolkit,
+    _solved_toolkit,
+    _toolkit,
+)
 
 
 class PlanningProtocolTest(unittest.TestCase):
@@ -273,6 +280,41 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertEqual(result["revision_after"], 0)
         self.assertEqual(deps.toolkit.store.current_revision, 1)
         self.assertEqual(checkpoints, [1])
+
+    def test_repair_tools_are_exposed_only_when_domain_state_needs_them(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(0.0, 0.0, 0.9),
+            camera_position=(0.0, -10.0, 1.5),
+        )
+        sentinel = object()
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), toolkit)
+            _read_capabilities(deps)
+            context = _context(deps)
+
+            before = asyncio.run(
+                _prepare_repair_suggestion_tool(context, sentinel)
+            )
+            deps.call_tool(
+                "validate_candidate",
+                {"checks": ["motion"]},
+                lambda: toolkit.validate_candidate(checks=["motion"]),
+            )
+            suggestion_ready = asyncio.run(
+                _prepare_repair_suggestion_tool(context, sentinel)
+            )
+            toolkit.suggest_repairs(max_options=1)
+            suggestion_after_search = asyncio.run(
+                _prepare_repair_suggestion_tool(context, sentinel)
+            )
+            apply_ready = asyncio.run(
+                _prepare_repair_apply_tool(context, sentinel)
+            )
+
+        self.assertIsNone(before)
+        self.assertIs(suggestion_ready, sentinel)
+        self.assertIsNone(suggestion_after_search)
+        self.assertIs(apply_ready, sentinel)
 
 
 def _deps(

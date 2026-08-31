@@ -368,6 +368,28 @@ async def _prepare_candidate_tool(
     return tool_definition
 
 
+async def _prepare_repair_suggestion_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    prepared = await _prepare_candidate_tool(ctx, tool_definition)
+    if prepared is None:
+        return None
+    if ctx.deps.toolkit.has_current_repair_suggestions:
+        return None
+    return prepared if ctx.deps.toolkit.has_repairable_violations else None
+
+
+async def _prepare_repair_apply_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    prepared = await _prepare_candidate_tool(ctx, tool_definition)
+    if prepared is None:
+        return None
+    return prepared if ctx.deps.toolkit.has_current_repair_suggestions else None
+
+
 def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDeps, AgentTerminal]:
     agent: Agent[PlanningDeps, AgentTerminal] = Agent(
         model,
@@ -581,6 +603,49 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             "validate_candidate",
             arguments,
             lambda: ctx.deps.toolkit.validate_candidate(**arguments),
+        )
+
+    @agent.tool(sequential=True, prepare=_prepare_repair_suggestion_tool)
+    async def suggest_repairs(
+        ctx: RunContext[PlanningDeps],
+        revision: int | None = None,
+        violation_ids: list[str] | None = None,
+        preference: Literal[
+            "balanced",
+            "maximize_motion_readability",
+            "minimize_change",
+            "preserve_composition",
+        ] = "balanced",
+        max_options: int = 3,
+    ) -> dict[str, Any]:
+        """为投影或机位 violation 搜索一至三个经复验的整体策略，不修改 Candidate。"""
+        arguments = {
+            "revision": revision,
+            "violation_ids": violation_ids or [],
+            "preference": preference,
+            "max_options": max_options,
+        }
+        return ctx.deps.call_tool(
+            "suggest_repairs",
+            arguments,
+            lambda: ctx.deps.toolkit.suggest_repairs(**arguments),
+        )
+
+    @agent.tool(sequential=True, prepare=_prepare_repair_apply_tool)
+    async def apply_repair(
+        ctx: RunContext[PlanningDeps],
+        base_revision: int,
+        suggestion_id: str,
+    ) -> dict[str, Any]:
+        """按 suggestion_id 原子应用具体数值并复验；只接受未过期的当前 revision。"""
+        arguments = {
+            "base_revision": base_revision,
+            "suggestion_id": suggestion_id,
+        }
+        return ctx.deps.call_tool(
+            "apply_repair",
+            arguments,
+            lambda: ctx.deps.toolkit.apply_repair(**arguments),
         )
 
     @agent.tool(sequential=True, prepare=_prepare_candidate_tool)

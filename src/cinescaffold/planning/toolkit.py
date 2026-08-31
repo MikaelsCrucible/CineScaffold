@@ -203,6 +203,28 @@ class ScenePlanningToolkit:
         self.store = CandidateStore(expected)
         self._repair_suggestions: dict[str, _CameraRepair] = {}
 
+    @property
+    def has_repairable_violations(self) -> bool:
+        validation = self.store.get().validation
+        return bool(
+            validation
+            and any(
+                item.code in REPAIRABLE_VIOLATION_CODES
+                and item.severity != "warning"
+                for item in validation.violations
+            )
+        )
+
+    @property
+    def has_current_repair_suggestions(self) -> bool:
+        current = self.store.get()
+        current_hash = _candidate_hash(current)
+        return any(
+            item.base_revision == current.revision
+            and item.base_candidate_hash == current_hash
+            for item in self._repair_suggestions.values()
+        )
+
     def get_capabilities(self, sections: list[str] | None = None) -> dict[str, Any]:
         state = self.store.get()
         requested = sections or [
@@ -1080,51 +1102,43 @@ class ScenePlanningToolkit:
         for focus_id in focus_ids:
             focus_time = _repair_focus_time(state, selected, focus_id)
             resolver = _WorldTransformResolver(state, focus_time, self.profile)
-            camera_state = resolver.camera()
-            if camera_state is None:
+            if resolver.camera() is None:
                 continue
-            camera_transform, focal_before = camera_state
             focus_point = resolver.entity(focus_id).translation_m
-            for yaw_degrees in (0.0, -30.0, 30.0, -45.0, 45.0, -60.0, 60.0, -90.0, 90.0):
-                for distance_scale in (0.5, 0.7, 0.85, 1.0, 1.2, 1.4):
-                    for focal_scale in (0.7, 0.85, 1.0, 1.15, 1.3, 1.6):
-                        if (
-                            abs(yaw_degrees) < 1e-9
-                            and abs(distance_scale - 1.0) < 1e-9
-                            and abs(focal_scale - 1.0) < 1e-9
-                        ):
-                            continue
-                        preview = state.model_copy(deep=True)
-                        try:
-                            repair = _build_camera_repair(
-                                preview,
-                                base_hash=base_hash,
-                                focus_entity_id=focus_id,
-                                focus_point_m=focus_point,
-                                yaw_degrees=yaw_degrees,
-                                distance_scale=distance_scale,
-                                focal_scale=focal_scale,
-                                target_codes=target_codes,
-                                profile=self.profile,
-                            )
-                            _apply_camera_repair(preview, repair)
-                            _validate_reference_frame_graph(preview, self.profile)
-                        except (ValidationError, ValueError, ZeroDivisionError):
-                            continue
-                        evaluated += 1
-                        predicted = self._validate(preview, FULL_VALIDATION_CHECKS)
-                        if _target_violation_count(predicted, target_codes) >= baseline_target_count:
-                            continue
-                        if _non_target_hard_count(predicted, target_codes) > baseline_non_target_hard:
-                            continue
-                        candidates.append(
-                            _finish_camera_repair(
-                                repair,
-                                preview,
-                                predicted,
-                                baseline_report,
-                            )
-                        )
+            for yaw_degrees, distance_scale, focal_scale in (
+                _camera_repair_parameter_grid(target_codes)
+            ):
+                preview = state.model_copy(deep=True)
+                try:
+                    repair = _build_camera_repair(
+                        preview,
+                        base_hash=base_hash,
+                        focus_entity_id=focus_id,
+                        focus_point_m=focus_point,
+                        yaw_degrees=yaw_degrees,
+                        distance_scale=distance_scale,
+                        focal_scale=focal_scale,
+                        target_codes=target_codes,
+                        profile=self.profile,
+                    )
+                    _apply_camera_repair(preview, repair)
+                    _validate_reference_frame_graph(preview, self.profile)
+                except (ValidationError, ValueError, ZeroDivisionError):
+                    continue
+                evaluated += 1
+                predicted = self._validate(preview, FULL_VALIDATION_CHECKS)
+                if _target_violation_count(predicted, target_codes) >= baseline_target_count:
+                    continue
+                if _non_target_hard_count(predicted, target_codes) > baseline_non_target_hard:
+                    continue
+                candidates.append(
+                    _finish_camera_repair(
+                        repair,
+                        preview,
+                        predicted,
+                        baseline_report,
+                    )
+                )
 
         ranked = sorted(
             candidates,
@@ -1521,6 +1535,50 @@ def _camera_repair_strategy(
     if distance_scale > 1.0 or focal_scale < 1.0:
         return "wider_framing"
     return "tighter_framing"
+
+
+def _camera_repair_parameter_grid(
+    target_codes: tuple[str, ...],
+) -> list[tuple[float, float, float]]:
+    """按问题族冻结小型模板，避免对无关自由度做笛卡尔穷举。"""
+
+    codes = set(target_codes)
+    values: list[tuple[float, float, float]] = []
+    if "CAMERA_MOTION_NEAR_COLLINEAR" in codes:
+        values.extend(
+            (yaw, distance, 1.0)
+            for yaw in (-30.0, 30.0, -45.0, 45.0, -60.0, 60.0, -90.0, 90.0)
+            for distance in (0.85, 1.0, 1.2)
+        )
+    if "PROJECTED_MOTION_UNREADABLE" in codes:
+        values.extend(
+            (yaw, distance, focal)
+            for yaw in (-30.0, 30.0, -45.0, 45.0, -60.0, 60.0, -90.0, 90.0)
+            for distance, focal in (
+                (1.0, 1.0),
+                (0.85, 1.0),
+                (0.7, 1.15),
+                (0.5, 1.3),
+                (0.5, 1.6),
+            )
+        )
+    if codes & {"ENTITY_OUT_OF_FRAME", "PROJECTED_SIZE_VIOLATED"}:
+        framing_pairs = (
+            (1.4, 0.7),
+            (1.2, 0.85),
+            (1.0, 0.7),
+            (1.0, 0.85),
+            (0.85, 1.15),
+            (0.7, 1.3),
+            (0.5, 1.6),
+        )
+        values.extend(
+            (yaw, distance, focal)
+            for yaw in (0.0, -30.0, 30.0)
+            for distance, focal in framing_pairs
+        )
+    # 保持固定顺序去重，使相同输入始终产生相同 suggestion_id 排序。
+    return list(dict.fromkeys(values))
 
 
 def _target_violation_count(

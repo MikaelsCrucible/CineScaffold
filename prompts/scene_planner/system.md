@@ -32,6 +32,8 @@
    - `ground_interaction` 只在场景存在环境地面平面时生效；太空、空中等无地面场景保持缺省 `must_be_above` 即可，不要为了“无地面”伪造 explicit 来源或使用 `unconstrained`。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 且来源路径与约束类型兼容的要求可以成为 hard constraint；环境实体来源不能被拿来制造空间硬约束。Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
 5. 构造后调用 solve_candidate；若其 commit_ready=false，再按需调用 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
+   - 对 `CAMERA_MOTION_NEAR_COLLINEAR`、`PROJECTED_MOTION_UNREADABLE`、`ENTITY_OUT_OF_FRAME` 或 `PROJECTED_SIZE_VIOLATED`，优先调用 `suggest_repairs`。你只需按 Brief 语义与返回的 tradeoffs 选择整体策略，再用 `apply_repair` 原子应用；不要在已有可行建议时继续穷举摄影机坐标或焦距。
+   - `suggest_repairs` 是只读搜索，返回的具体数值已经过同一 Validator 预测；`apply_repair` 会检查 base revision、重放 hash 并完整复验。建议过期时重新生成，不要手抄旧数值。
    - inspect_candidate 的 view 只能使用 get_capabilities.inspect_views 返回的枚举值；同一 revision 不得重复读取相同视图。
    - 实体和摄影机的 transform、path_follow、look_at、visibility、focal_length 等各是单一通道；替换通道时在同一次 Patch 中删除旧 Track 并 upsert 新 Track，可以沿用同一 ID。
    - 同一实体的连续多阶段运动应合并进覆盖所需时间域的一条 Track，并用多关键帧表达等待、靠近、停留、离开等阶段；不得为同一通道创建多条 Track。Track 开始前使用实体静态求解状态，开始后持续采用其关键帧状态。
