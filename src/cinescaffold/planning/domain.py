@@ -737,7 +737,7 @@ class CandidateState(StrictModel):
 
 
 class PlanningProfile(StrictModel):
-    profile_id: str = "research_default_v0.3"
+    profile_id: str = "research_default_v0.4"
     fps_numerator: int = 24
     fps_denominator: int = 1
     resolution_x: int = 1280
@@ -747,6 +747,8 @@ class PlanningProfile(StrictModel):
     default_camera_distance_m: float = 12.0
     default_depth_gap_m: float = 12.0
     minimum_orbit_plane_view_alignment: float = Field(default=0.35, gt=0, le=1)
+    minimum_projected_motion_extent: float = Field(default=0.08, gt=0, le=1)
+    minimum_projected_motion_scale_ratio: float = Field(default=1.2, gt=1)
     numeric_tolerance: float = Field(default=1e-8, gt=0)
     random_seed: int = 0
 

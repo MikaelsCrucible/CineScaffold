@@ -42,6 +42,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 支持世界、局部、目标相对和摄影机相对参考系。
 - 支持直线、圆、椭圆、平滑样条和 8 字等代理运动轨迹。
 - Agent 可见接口固定右手 Z-up、路径方向和屏幕坐标约定；推断机位下的解析轨道需通过投影可读性门禁。
+- 每个量化为移动的主体阶段还需通过通用投影运动可读性门禁；仅有世界坐标位移、但屏幕轨迹和尺度变化都过小的 Candidate 不得提交。
 - 通过官方 Blender Lab MCP 调用固定 Blender Executor，不把任意 Blender Python 暴露给模型。
 - 输出 `.blend`、运行时验证、执行 manifest 和 H.264 白模视频。
 - CLI 实时显示 Agent 请求、工具调用、token、revision、验证和渲染进度。
@@ -201,6 +202,8 @@ cinescaffold parse \
 Mock Provider 不理解文本，只返回指定的模拟响应。未传入 `--mock-response` 时，它仅用于检查 Schema 和 CLI 接口。
 
 语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。解析结果使用 Cinematic Brief v0.2，并附带代码生成的 `translation_parameters`；用户明确要求始终优先于规则推导和缺省值。径向推近/后拉的速度由起止距离和本次实际时长计算，避免固定速度与可变时长矛盾。包含“然后/随后/先…再…”的描述必须生成分段事件；如果模型仍让所有事件覆盖全片，量化器会按事件顺序等分总时长并同步对应主体动作。包含“同时”的持续动作不会被错误拆分。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
+
+规划门禁不仅检查实体是否在三维世界中移动，还检查每个移动阶段在摄影机投影中的轨迹范围和尺度变化。默认推断机位若让运动在白模里近似静止，Agent 必须调整运动方向、机位或距离；用户明确指定摄影机设计时保留其要求，并把同项降为 warning。
 
 #### 2. Cinematic Brief 转 Scene IR
 

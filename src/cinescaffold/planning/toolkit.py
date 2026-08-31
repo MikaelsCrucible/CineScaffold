@@ -44,7 +44,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.13"
+TOOLKIT_VERSION = "0.14"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -275,6 +275,10 @@ class ScenePlanningToolkit:
                     "target_relative 由 Resolver 逐帧递归合成"
                 ),
                 "unset_optional_values": "未指定的可选实现参数应省略以采用版本化默认值，不要猜其他软件惯例",
+                "projected_motion_readability": (
+                    "moving 主体在每个语义动作阶段必须产生足够的屏幕轨迹范围或投影尺度变化；"
+                    "不能用沿镜头纵深的微小尺寸变化冒充对白模可读的运动"
+                ),
             },
             "inspect_views": INSPECT_VIEWS,
             "acceptance": {
@@ -283,6 +287,12 @@ class ScenePlanningToolkit:
                 "commit_ready": _commit_ready(state.validation, self.profile),
                 "minimum_orbit_plane_view_alignment": (
                     self.profile.minimum_orbit_plane_view_alignment
+                ),
+                "minimum_projected_motion_extent": (
+                    self.profile.minimum_projected_motion_extent
+                ),
+                "minimum_projected_motion_scale_ratio": (
+                    self.profile.minimum_projected_motion_scale_ratio
                 ),
             },
             "supported_constraints": sorted(SUPPORTED_CONSTRAINTS),
@@ -852,7 +862,14 @@ class ScenePlanningToolkit:
                 )
             )
             violations.extend(
-                _motion_readability_violations(
+                _nested_orbit_readability_violations(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
+            )
+            violations.extend(
+                _projected_motion_readability_violations(
                     state,
                     self.objective_brief,
                     self.profile,
@@ -1166,7 +1183,7 @@ def _timeline_violations(state: CandidateState) -> list[Violation]:
     return violations
 
 
-def _motion_readability_violations(
+def _nested_orbit_readability_violations(
     state: CandidateState,
     objective_brief: ObjectivePlanningBrief,
     profile: PlanningProfile,
@@ -1237,6 +1254,136 @@ def _motion_readability_violations(
                         ],
                     )
                 )
+    return violations
+
+
+def _projected_motion_readability_violations(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    """确保语义移动在控制白模的屏幕投影中可辨识。"""
+
+    if state.camera is None:
+        return []
+    parameters = objective_brief.translation_parameters or {}
+    motions = parameters.get("motions")
+    if not isinstance(motions, list):
+        return []
+
+    explicit_camera = _has_explicit_camera_staging(objective_brief)
+    frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
+    last_frame_time = state.timeline.duration_seconds - frame_step
+    violations: list[Violation] = []
+    for motion in motions:
+        if not isinstance(motion, dict):
+            continue
+        motion_type = str(motion.get("motion_type", ""))
+        if motion_type in {"", "static", "interactive"}:
+            continue
+        subject_id = motion.get("subject_id")
+        if not isinstance(subject_id, str) or subject_id not in state.entities:
+            continue
+        start = float(motion.get("start_time_seconds", 0.0))
+        end = float(motion.get("end_time_seconds", state.timeline.duration_seconds))
+        sample_end = min(end - frame_step, last_frame_time)
+        if sample_end <= start:
+            continue
+        sample_times = [
+            start + (sample_end - start) * index / 8.0
+            for index in range(9)
+        ]
+        centers: list[tuple[float, float]] = []
+        sizes: list[float] = []
+        for time_seconds in sample_times:
+            resolver = _WorldTransformResolver(state, time_seconds, profile)
+            camera_state = resolver.camera()
+            if camera_state is None:
+                continue
+            camera_transform, focal_length = camera_state
+            transforms = {
+                entity_id: resolver.entity(entity_id)
+                for entity_id in state.entities
+            }
+            center = _projection(
+                state,
+                subject_id,
+                transforms,
+                camera_transform,
+                focal_length,
+                profile,
+            )
+            bounds = _projection_bounds(
+                state,
+                subject_id,
+                transforms,
+                camera_transform,
+                focal_length,
+                profile,
+            )
+            if not all(math.isfinite(item) for item in (*center, *bounds)):
+                continue
+            centers.append((center[0], center[1]))
+            sizes.append(_projected_measurement(bounds, "diameter"))
+        if len(centers) < 2 or len(sizes) < 2:
+            continue
+
+        projected_extent = math.hypot(
+            max(item[0] for item in centers) - min(item[0] for item in centers),
+            max(item[1] for item in centers) - min(item[1] for item in centers),
+        )
+        positive_sizes = [item for item in sizes if item > profile.numeric_tolerance]
+        scale_ratio = (
+            max(positive_sizes) / min(positive_sizes)
+            if positive_sizes
+            else math.inf
+        )
+        if (
+            projected_extent + profile.numeric_tolerance
+            >= profile.minimum_projected_motion_extent
+            or scale_ratio + profile.numeric_tolerance
+            >= profile.minimum_projected_motion_scale_ratio
+        ):
+            continue
+
+        message = (
+            f"主体 {subject_id} 的语义移动在屏幕投影中近似静止；"
+            "请调整运动方向、摄影机距离或摄影机方位，使白模能够辨识该动作"
+        )
+        if explicit_camera:
+            message += "；Brief 已明确摄影机设计，因此仅记录警告而不覆盖用户要求"
+        violation = _violation(
+            "PROJECTED_MOTION_UNREADABLE",
+            message,
+            entity_ids=[subject_id],
+            time_range_seconds=(start, end),
+            expected={
+                "minimum_projected_centroid_extent": (
+                    profile.minimum_projected_motion_extent
+                ),
+                "minimum_projected_scale_ratio": (
+                    profile.minimum_projected_motion_scale_ratio
+                ),
+                "acceptance": "满足任意一项",
+                "purpose": "让控制白模中的主体运动保持可辨识",
+            },
+            actual={
+                "projected_centroid_extent": projected_extent,
+                "projected_scale_ratio": scale_ratio,
+                "sample_count": len(centers),
+                "motion_index": motion.get("motion_index"),
+            },
+            adjustable_variables=[
+                f"motion_tracks.{subject_id}",
+                "camera transform",
+                "camera focal length",
+            ],
+        )
+        violations.append(
+            violation.model_copy(update={"severity": "warning"})
+            if explicit_camera
+            else violation
+        )
     return violations
 
 
@@ -1423,6 +1570,15 @@ def _objective_orbit_pairs(
 def _has_explicit_camera_view(objective_brief: ObjectivePlanningBrief) -> bool:
     return any(
         item.path.startswith("content.camera.view_angle")
+        for item in objective_brief.explicit_requirements
+    )
+
+
+def _has_explicit_camera_staging(
+    objective_brief: ObjectivePlanningBrief,
+) -> bool:
+    return any(
+        item.path.startswith("content.camera")
         for item in objective_brief.explicit_requirements
     )
 

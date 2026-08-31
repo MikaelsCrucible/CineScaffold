@@ -37,6 +37,14 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             ["subject_id", "reference_id", "relation"],
         )
         self.assertEqual(result["data"]["acceptance"]["minimum_soft_score"], 0.75)
+        self.assertEqual(
+            result["data"]["acceptance"]["minimum_projected_motion_extent"],
+            0.08,
+        )
+        self.assertEqual(
+            result["data"]["acceptance"]["minimum_projected_motion_scale_ratio"],
+            1.2,
+        )
         self.assertFalse(result["data"]["acceptance"]["commit_ready"])
         self.assertEqual(result["data"]["coordinate_system"]["up_axis"], "+Z")
         self.assertEqual(
@@ -1163,6 +1171,61 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertTrue(validation["data"]["hard_pass"])
         self.assertEqual(violation["severity"], "warning")
 
+    def test_depth_motion_with_tiny_projection_change_is_rejected(self) -> None:
+        toolkit = _projected_motion_toolkit(end_position=(0.0, 0.0, 0.9))
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertFalse(validation["data"]["hard_pass"])
+        violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "PROJECTED_MOTION_UNREADABLE"
+        )
+        self.assertLess(
+            violation["actual"]["projected_centroid_extent"],
+            violation["expected"]["minimum_projected_centroid_extent"],
+        )
+        self.assertLess(
+            violation["actual"]["projected_scale_ratio"],
+            violation["expected"]["minimum_projected_scale_ratio"],
+        )
+
+    def test_lateral_motion_with_visible_projection_extent_passes(self) -> None:
+        toolkit = _projected_motion_toolkit(end_position=(8.0, 4.0, 0.9))
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertNotIn(
+            "PROJECTED_MOTION_UNREADABLE",
+            {item["code"] for item in validation["violations"]},
+        )
+
+    def test_explicit_camera_keeps_unreadable_motion_as_warning(self) -> None:
+        toolkit = _projected_motion_toolkit(end_position=(0.0, 0.0, 0.9))
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "explicit_requirements": [
+                    *toolkit.objective_brief.explicit_requirements,
+                    ObjectiveRequirement(
+                        path="content.camera.view_angle",
+                        value="正面固定机位",
+                        source_text="正面固定拍摄",
+                    ),
+                ]
+            }
+        )
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "PROJECTED_MOTION_UNREADABLE"
+        )
+        self.assertTrue(validation["data"]["hard_pass"])
+        self.assertEqual(violation["severity"], "warning")
+
     def test_polygon_cannot_masquerade_as_default_orbit(self) -> None:
         toolkit = _relative_motion_toolkit(earth_radius_m=20.0)
 
@@ -1494,6 +1557,91 @@ def _toolkit() -> ScenePlanningToolkit:
         fps_denominator=1,
     )
     return ScenePlanningToolkit(attach_duration_resolution(objective, resolution))
+
+
+def _projected_motion_toolkit(
+    *,
+    end_position: tuple[float, float, float],
+) -> ScenePlanningToolkit:
+    toolkit = _toolkit()
+    toolkit.objective_brief = toolkit.objective_brief.model_copy(
+        update={
+            "translation_parameters": {
+                "motions": [
+                    {
+                        "motion_index": 0,
+                        "subject_id": "man_01",
+                        "motion_type": "moving",
+                        "start_time_seconds": 0.0,
+                        "end_time_seconds": 6.0,
+                    }
+                ]
+            },
+            "explicit_requirements": [
+                item
+                for item in toolkit.objective_brief.explicit_requirements
+                if not item.path.startswith("content.camera")
+            ],
+        }
+    )
+    toolkit.apply_entity_patch([_man_entity()], [])
+    toolkit.apply_motion_patch(
+        [
+            {
+                "track_id": "man_motion",
+                "target_entity_id": "man_01",
+                "type": "transform",
+                "time_range_seconds": [0.0, 6.0],
+                "keyframes": [
+                    {
+                        "time_seconds": 0.0,
+                        "value": {"translation_m": [0.0, 4.0, 0.9]},
+                    },
+                    {
+                        "time_seconds": 143 / 24,
+                        "value": {"translation_m": list(end_position)},
+                    },
+                ],
+                "source_ref": "content.subject_motion[0].action",
+            }
+        ],
+        [],
+    )
+    toolkit.apply_camera_patch(
+        camera_id="camera_main",
+        projection="perspective",
+        active=True,
+        static={
+            "focal_length_mm": 50.0,
+            "sensor_width_mm": 36.0,
+            "focus_target_id": None,
+            "source_refs": [],
+        },
+        tracks=[
+            {
+                "track_id": "camera_transform",
+                "type": "transform",
+                "time_range_seconds": [0.0, 6.0],
+                "keyframes": [
+                    {
+                        "time_seconds": 0.0,
+                        "value": {
+                            "translation_m": [0.0, -48.0, 1.5],
+                            "rotation_quaternion_wxyz": [
+                                0.70710678,
+                                0.70710678,
+                                0.0,
+                                0.0,
+                            ],
+                        },
+                    }
+                ],
+                "source_ref": "agent.camera",
+            }
+        ],
+        remove_track_ids=[],
+    )
+    return toolkit
 
 
 def _man_entity() -> dict:

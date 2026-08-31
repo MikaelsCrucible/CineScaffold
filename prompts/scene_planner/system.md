@@ -25,6 +25,7 @@
    - `counterclockwise/clockwise` 必须从 `+plane_normal` 一侧朝路径中心观察；`relative_position.front/behind` 是规范世界 `-Y/+Y`，摄影机前后关系必须使用 `depth_order`，两者不得混用。
    - 闭合路径用 `cycle_count` 表达 Track 时间段内的循环次数，不得复制控制点伪造多圈。当 Brief 未指定嵌套公转周期时，要优先保证控制白模中的运动可辨识：子轨道不得与父轨道同相锁定，可推断不同循环次数，但不得伪装成用户明确值。
    - 用户未明确指定观察方向时，摄影机必须让关键解析轨道在屏幕投影中保持可辨识，不能把圆/椭圆长期拍成近似直线。`keep_in_frame` 只表示投影包围盒入框，不证明主体未被其他实体遮挡；不得把它表述为可见性或遮挡验证。
+   - 所有量化为 `moving` 的主体动作都必须在各自时间段内产生足够的屏幕轨迹范围或投影尺度变化。沿镜头纵深移动本身合法，但若远距离机位只产生微小尺寸变化，不能把世界坐标位移当作对白模可读；应调整运动方向、摄影机方位或距离。Brief 已明确摄影机设计时保留用户要求，并接受 Validator 的 warning。
    - `ground_interaction` 只在场景存在环境地面平面时生效；太空、空中等无地面场景保持缺省 `must_be_above` 即可，不要为了“无地面”伪造 explicit 来源或使用 `unconstrained`。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 且来源路径与约束类型兼容的要求可以成为 hard constraint；环境实体来源不能被拿来制造空间硬约束。Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
 5. 构造后调用 solve_candidate；若其 commit_ready=false，再按需调用 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
