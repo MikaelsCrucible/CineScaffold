@@ -109,17 +109,17 @@ api_key = 填写 API KEY
 
 配置也可以分别指定 `semantic_provider/model` 和 `planning_provider/model`。完整可选字段及注释见 [`.cinescaffold.example.conf`](.cinescaffold.example.conf)。命令行参数优先于配置文件；未找到配置值时，API Key 仍可从 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 环境变量读取。
 
-Scene Planning 缺省关闭思考，并把单次模型响应上限固定为 8192 tokens。此前依赖 DeepSeek V4 Pro 的供应商思考缺省，真实回归中模型曾产生 30K–39K reasoning tokens；即使降到 `low`，复杂 Solver 结果仍可能耗尽 8192 tokens 而不生成工具调用。常规工具循环因此使用非 thinking 模式，并恢复 13-message 历史窗口。Agent 只读取一次完整 Scene Planning 能力，第二次请求只开放 Entity Patch；实体建立后直接开放 Motion、Camera、Constraint、Solve 与 Validate。Solver/Validator 的完整逐帧证据保留在 Trace 中，回给模型的结果会按错误码、约束和对象合并重复采样。
+Scene Planning 缺省启用思考，但强度固定为 `low`，单次模型响应上限为 8192 tokens。此前依赖 DeepSeek V4 Pro 的供应商缺省 `high`，真实回归中模型在读取完整 Toolkit 后曾产生 30K–39K reasoning tokens，并让第二次请求持续 4–5 分钟。现在 Agent 只读取一次完整 Scene Planning 能力，第二次请求只开放 Entity Patch；实体建立后直接开放 Motion、Camera、Constraint、Solve 与 Validate，不再通过额外能力查询阻塞求解流程。Toolkit 的 section 过滤仍用于直接调用和测试，但常规 Agent 不进行多轮能力浏览。
 
 低延迟基线等价于显式配置：
 
 ```text
-planning_thinking_mode = disabled
+planning_thinking_mode = enabled
 planning_reasoning_effort = low
 planning_model_max_tokens = 8192
 ```
 
-若实验需要专门评估规划思考，可把 `planning_thinking_mode` 改为 `enabled`；此时必须同时冻结 reasoning 强度和输出上限。
+若实验需要完全关闭规划思考，可把 `planning_thinking_mode` 改为 `disabled`。
 
 上述设置只控制复杂的 Scene Planning Agent。自然语言 Semantic Parser 是单轮 JSON 提取任务，DeepSeek V4 的思考模式在此阶段缺省关闭，防止 reasoning 占满 JSON 输出预算；这不会改变 Agent 1 的 thinking 设置。需要专门做语义推理消融时可以单独配置：
 
@@ -133,7 +133,7 @@ semantic_max_tokens = 65536
 
 论文实验应明确冻结思考模式、强度和 token 上限，不能把供应商缺省值视为不变条件。普通规划 Trace 记录 reasoning token 数、请求耗时、停止原因与工具调用，不保存对话/思维原文；`--full-power-diagnostic` 模式额外记录完整对话与逐字思维链（受 `TraceConfig` 字节/字符上限约束，可用 `--trace-max-event-bytes`/`--trace-max-string-chars` 调大）。
 
-若要显式启用低强度思考，开关和强度必须分别填写：
+若要显式冻结低强度思考，开关和强度必须分别填写：
 
 ```text
 planning_thinking_mode = enabled

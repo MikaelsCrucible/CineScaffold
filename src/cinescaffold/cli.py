@@ -340,7 +340,7 @@ def _apply_planning_config(args: argparse.Namespace, config: LoadedConfig) -> No
         "planning",
         "thinking_mode",
         args.thinking_mode,
-    ) or "disabled"
+    ) or "enabled"
     args.reasoning_effort = resolve_stage_option(
         config,
         "planning",

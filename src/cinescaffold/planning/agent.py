@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -280,7 +279,7 @@ class PlanningDeps:
                 revision=current_revision_after,
                 checkpoint=checkpoint_path.name,
             )
-        return _compact_validation_result_for_agent(name, result)
+        return result
 
     def _protocol_rejection(
         self,
@@ -340,51 +339,6 @@ def _protocol_rejected(revision: int, message: str, next_actions: list[str]) -> 
         "capability_gaps": [],
         "next_actions": next_actions,
     }
-
-
-def _compact_validation_result_for_agent(name: str, result: dict[str, Any]) -> dict[str, Any]:
-    """保留 Trace 全量证据，但合并模型上下文中的逐采样重复 violation。"""
-
-    if name not in {"solve_candidate", "validate_candidate"}:
-        return result
-    violations = result.get("violations")
-    if not isinstance(violations, list) or len(violations) < 2:
-        return result
-    grouped: dict[str, dict[str, Any]] = {}
-    for violation in violations:
-        if not isinstance(violation, dict):
-            continue
-        key = json.dumps(
-            {
-                "code": violation.get("code"),
-                "constraint_id": violation.get("constraint_id"),
-                "entity_ids": violation.get("entity_ids"),
-                "message": violation.get("message"),
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        existing = grouped.get(key)
-        if existing is None:
-            existing = deepcopy(violation)
-            existing["occurrence_count"] = 1
-            existing["sampled_time_ranges"] = [violation.get("time_range_seconds")]
-            grouped[key] = existing
-            continue
-        existing["occurrence_count"] += 1
-        sampled = existing["sampled_time_ranges"]
-        time_range = violation.get("time_range_seconds")
-        if time_range not in sampled and len(sampled) < 3:
-            sampled.append(time_range)
-    compacted = deepcopy(result)
-    compacted["violations"] = list(grouped.values())
-    compacted.setdefault("data", {})["violation_compaction"] = {
-        "original_count": len(violations),
-        "grouped_count": len(grouped),
-        "grouping": "code+constraint_id+entity_ids+message",
-    }
-    return compacted
 
 
 async def _prepare_capabilities_tool(
