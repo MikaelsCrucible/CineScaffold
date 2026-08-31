@@ -15,7 +15,7 @@
    - Scene Skeleton 的 `proxy_family` 只表达 ground/human/vehicle/celestial/generic 等代理族，不表达尺寸。
    - `ground_support`、`camera_depth_order`、`relative_position`、`proximity`、`scale_dominance`、`orbit_around` 与 `carried_by` 只表达关系，不自行换算米制间距。
    - 有事件 ID 的关系还要选择 `temporal_mode`：持续成立用 `throughout`，只要求事件开始/结束瞬间成立用 `at_start` / `at_end`。例如“车驶来并停在男人身边”应在抵达事件末端满足 proximity，不能错误要求驶来全程都在三米内。
-   - Motion Phase 只表达 hold/linear_move/orbit/board/carried/visibility、目标、载体、路径族和事件 ID；精确时间从 Objective Brief 事件解析，数值轨迹由 Toolkit 生成。
+   - Motion Phase 只表达 hold/linear_move/orbit/board/carried/visibility、目标、载体、路径族、`slow/medium/fast/stationary/unspecified` 速度意图和事件 ID；Camera Intent 同样只保留符号速度档位。明确速度必须填写独立的 `speed_source_status/speed_source_ref`。精确时间从 Objective Brief 事件解析，米制速度与数值轨迹由 Toolkit 生成。
    - Design Option 会按任务返回精简 `relevant_capabilities`，不得再请求整本通用能力手册。未被 Option 覆盖的能力只有在结构化 capability gap 后才能走低层 Patch 后备路径。
    - 不得依据 Blender、游戏引擎或训练语料的惯例猜坐标轴。所有持续区间使用 `[0, duration_seconds)`；末关键帧不得晚于冻结时间线的最后帧时刻。
 2. 每个 explicit_requirements 路径都必须通过 source_refs 或 source_ref 映射到对应实体、轨道、约束或摄影机字段；不得只为了过审而挂到无关对象。

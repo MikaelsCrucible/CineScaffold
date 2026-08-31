@@ -50,6 +50,14 @@ class PlanningDesignTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ship_01"):
             validate_scene_skeleton(objective, skeleton)
 
+    def test_scene_skeleton_rejects_unknown_timeline_event(self) -> None:
+        objective = project_objective_brief(valid_planning_brief()).objective_brief
+        skeleton = SceneSkeleton.model_validate(_desert_skeleton())
+        skeleton.relations[0].timeline_event_id = "missing_event"
+
+        with self.assertRaisesRegex(ValueError, "missing_event"):
+            validate_scene_skeleton(objective, skeleton)
+
     def test_task_capabilities_are_filtered_by_skeleton(self) -> None:
         skeleton = SceneSkeleton.model_validate(_desert_skeleton())
         result = task_capability_slice(skeleton, PlanningProfile())

@@ -339,6 +339,53 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertEqual(len(scene_ir["camera"]["state_track"]["samples"]), 144)
         self.assertEqual(checkpoint["candidate"]["revision"], result.final_revision)
 
+    def test_mock_design_plans_all_reference_scenarios_in_three_tools(self) -> None:
+        filenames = [
+            "desert_ship_10s.json",
+            "solar_system_10s.json",
+            "roadside_pickup_12s.json",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for filename in filenames:
+                brief = json.loads(
+                    (
+                        ROOT / "examples" / "cinematic_briefs" / filename
+                    ).read_text(encoding="utf-8")
+                )
+                run_dir = root / filename.removesuffix(".json")
+                result = asyncio.run(
+                    InterpreterRunner(
+                        InterpreterRunConfig(
+                            provider="mock",
+                            run_dir=run_dir,
+                            run_id=f"mock_design_{filename}",
+                            system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+                        )
+                    ).run(brief)
+                )
+                trace = [
+                    json.loads(line)
+                    for line in (run_dir / "planning_agent_tool_trace.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ]
+                tool_names = [
+                    item["payload"]["tool_name"]
+                    for item in trace
+                    if item["event_type"] == "tool_call_completed"
+                ]
+
+                self.assertEqual(result.status, "success", (filename, result.error))
+                self.assertEqual(
+                    tool_names,
+                    [
+                        "submit_scene_skeleton",
+                        "request_design_options",
+                        "apply_design_option",
+                    ],
+                )
+
     def test_resume_uses_checkpoint_revision_with_fresh_context(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

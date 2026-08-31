@@ -105,6 +105,11 @@ class SkeletonMotionPhase(StrictModel):
         "catmull_rom",
         "lemniscate",
     ] = "stationary"
+    speed_intent: Literal[
+        "stationary", "slow", "medium", "fast", "unspecified"
+    ] = "unspecified"
+    speed_source_status: SourceStatus | None = None
+    speed_source_ref: str | None = None
     source_status: SourceStatus
     source_ref: str
 
@@ -118,6 +123,8 @@ class SkeletonMotionPhase(StrictModel):
             raise ValueError("普通 orbit 必须使用 circle 或 ellipse")
         if self.kind == "hold" and self.path_family != "stationary":
             raise ValueError("hold 必须使用 stationary")
+        if (self.speed_source_status is None) != (self.speed_source_ref is None):
+            raise ValueError("speed_source_status 与 speed_source_ref 必须同时提供")
         return self
 
 
@@ -129,8 +136,19 @@ class SkeletonCameraIntent(StrictModel):
     view_relation_to_motion: Literal[
         "front", "rear", "side", "three_quarter", "unspecified"
     ] = "unspecified"
+    speed_intent: Literal[
+        "stationary", "slow", "medium", "fast", "unspecified"
+    ] = "unspecified"
+    speed_source_status: SourceStatus | None = None
+    speed_source_ref: str | None = None
     source_status: SourceStatus
     source_ref: str
+
+    @model_validator(mode="after")
+    def validate_speed_source(self) -> SkeletonCameraIntent:
+        if (self.speed_source_status is None) != (self.speed_source_ref is None):
+            raise ValueError("speed_source_status 与 speed_source_ref 必须同时提供")
+        return self
 
 
 class SceneSkeleton(StrictModel):
@@ -186,6 +204,20 @@ def validate_scene_skeleton(
     if missing:
         raise ValueError(f"Scene Skeleton 遗漏 Brief 主体：{', '.join(missing)}")
 
+    known_event_ids = {
+        str(item.get("id"))
+        for item in objective.timeline.get("events", [])
+        if item.get("id") is not None
+    }
+    referenced_event_ids = {
+        item.timeline_event_id
+        for item in [*value.relations, *value.motion_phases]
+        if item.timeline_event_id is not None
+    }
+    unknown_events = sorted(referenced_event_ids - known_event_ids)
+    if unknown_events:
+        raise ValueError(f"Scene Skeleton 引用了未知事件：{', '.join(unknown_events)}")
+
     valid_explicit_refs = {item.path for item in objective.explicit_requirements}
     for source_ref, status in _skeleton_sources(value):
         if status == "explicit" and source_ref not in valid_explicit_refs:
@@ -229,6 +261,13 @@ def task_capability_slice(
         }
     )
     relation_kinds = sorted({item.kind for item in skeleton.relations})
+    speed_intents = {
+        item.speed_intent
+        for item in skeleton.motion_phases
+        if item.speed_intent not in {"stationary", "unspecified"}
+    }
+    if skeleton.camera_intent.speed_intent not in {"stationary", "unspecified"}:
+        speed_intents.add(skeleton.camera_intent.speed_intent)
     return {
         "coordinate_system": {
             "linear_unit": "meter",
@@ -242,6 +281,10 @@ def task_capability_slice(
         },
         "required_relation_kinds": relation_kinds,
         "required_path_families": path_families,
+        "speed_ranges_mps": {
+            intent: list(_speed_range(intent, profile))
+            for intent in sorted(speed_intents)
+        },
         "inspect_views": [
             "summary",
             "entities",
@@ -297,6 +340,7 @@ def build_design_candidate(
         profile,
         strategy,
     )
+    _add_speed_constraints(objective, skeleton, candidate, profile)
     _add_composition_constraints(objective, skeleton, candidate)
     assumptions = _design_assumptions(objective, skeleton, strategy)
     return candidate, _numeric_envelopes(objective, skeleton, candidate), assumptions
@@ -718,8 +762,16 @@ def _build_camera(
 ) -> CameraCandidate:
     parameters = (objective.translation_parameters or {}).get("camera", {})
     focal = float(parameters.get("focal_length_mm") or profile.default_focal_length_mm)
+    movement = skeleton.camera_intent.movement
     start_distance = float(parameters.get("start_distance_m") or profile.default_camera_distance_m)
-    end_distance = float(parameters.get("end_distance_m") or start_distance)
+    if parameters.get("end_distance_m") is not None:
+        end_distance = float(parameters["end_distance_m"])
+    elif movement == "push_in":
+        end_distance = start_distance * 0.5
+    elif movement == "pull_out":
+        end_distance = start_distance * 1.5
+    else:
+        end_distance = start_distance
     distance_scale = {
         "balanced": 1.5,
         "preserve_composition": 2.4,
@@ -748,7 +800,6 @@ def _build_camera(
     start = _camera_position(focus_point, start_distance, height, yaw)
     end = _camera_position(focus_point, end_distance, height, yaw)
     duration = candidate.timeline.duration_seconds
-    movement = skeleton.camera_intent.movement
     tracks: dict[str, TrackSpec] = {}
     if movement in {"push_in", "pull_out"}:
         if movement == "pull_out":
@@ -841,6 +892,80 @@ def _add_composition_constraints(
         candidate.constraints[constraint.constraint_id] = constraint
 
 
+def _add_speed_constraints(
+    objective: ObjectivePlanningBrief,
+    skeleton: SceneSkeleton,
+    candidate: CandidateState,
+    profile: PlanningProfile,
+) -> None:
+    """把符号速度档位映射为冻结 Profile 范围。"""
+
+    duration = candidate.timeline.duration_seconds
+    for phase in skeleton.motion_phases:
+        if phase.speed_intent == "unspecified":
+            continue
+        minimum, maximum = _speed_range(phase.speed_intent, profile)
+        constraint = ConstraintSpec.model_validate(
+            {
+                "constraint_id": f"skeleton_speed_{phase.phase_id}",
+                "type": "speed_range",
+                "strength": (
+                    "hard" if phase.speed_source_status == "explicit" else "soft"
+                ),
+                "subjects": [phase.subject_id],
+                "time_range_seconds": _event_range(
+                    objective,
+                    phase.timeline_event_id,
+                    duration,
+                ),
+                "parameters": {
+                    "target_id": phase.subject_id,
+                    "minimum_mps": minimum,
+                    "maximum_mps": maximum,
+                    "space": "world",
+                },
+                "source_status": phase.speed_source_status or phase.source_status,
+                "source_ref": phase.speed_source_ref or phase.source_ref,
+            }
+        )
+        candidate.constraints[constraint.constraint_id] = constraint
+
+    camera = skeleton.camera_intent
+    if camera.speed_intent == "unspecified":
+        return
+    minimum, maximum = _speed_range(camera.speed_intent, profile)
+    constraint = ConstraintSpec.model_validate(
+        {
+            "constraint_id": "skeleton_camera_speed",
+            "type": "speed_range",
+            "strength": "hard" if camera.speed_source_status == "explicit" else "soft",
+            "subjects": [],
+            "time_range_seconds": [0.0, duration],
+            "parameters": {
+                "target_id": "camera_main",
+                "minimum_mps": minimum,
+                "maximum_mps": maximum,
+                "space": "world",
+            },
+            "source_status": camera.speed_source_status or camera.source_status,
+            "source_ref": camera.speed_source_ref or camera.source_ref,
+        }
+    )
+    candidate.constraints[constraint.constraint_id] = constraint
+
+
+def _speed_range(
+    intent: str,
+    profile: PlanningProfile,
+) -> tuple[float, float]:
+    return {
+        "stationary": (0.0, profile.stationary_speed_max_mps),
+        "slow": profile.slow_speed_range_mps,
+        "medium": profile.medium_speed_range_mps,
+        "fast": profile.fast_speed_range_mps,
+    }[intent]
+
+
 def _numeric_envelopes(
     objective: ObjectivePlanningBrief,
     skeleton: SceneSkeleton,
@@ -915,7 +1040,22 @@ def _skeleton_sources(value: SceneSkeleton) -> list[tuple[str, SourceStatus]]:
         result.extend((source_ref, "explicit") for source_ref in entity.source_refs)
     result.extend((item.source_ref, item.source_status) for item in value.relations)
     result.extend((item.source_ref, item.source_status) for item in value.motion_phases)
+    result.extend(
+        (item.speed_source_ref, item.speed_source_status)
+        for item in value.motion_phases
+        if item.speed_source_ref is not None and item.speed_source_status is not None
+    )
     result.append((value.camera_intent.source_ref, value.camera_intent.source_status))
+    if (
+        value.camera_intent.speed_source_ref is not None
+        and value.camera_intent.speed_source_status is not None
+    ):
+        result.append(
+            (
+                value.camera_intent.speed_source_ref,
+                value.camera_intent.speed_source_status,
+            )
+        )
     return result
 
 

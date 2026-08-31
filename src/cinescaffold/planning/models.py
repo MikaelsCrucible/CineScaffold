@@ -214,6 +214,9 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
         )
 
     relations: list[dict[str, Any]] = []
+    orbit_targets: dict[str, str] = {}
+    proximity_targets: dict[str, str] = {}
+    board_targets: dict[str, str] = {}
     if ground_id:
         for entity_id, category in categories.items():
             if _mock_proxy_family(category) in {"human_capsule", "vehicle_box"}:
@@ -230,6 +233,19 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
     for index, relationship in enumerate(objective.scene_design.get("relationships", [])):
         subject_id = relationship.get("subject_id")
         reference_id = relationship.get("reference_id")
+        relation_type = str(relationship.get("type") or "").lower()
+        if subject_id and not reference_id and ground_id and relation_type == "beside_road":
+            relations.append(
+                {
+                    "relation_id": f"relationship_{index + 1:02d}",
+                    "kind": "ground_support",
+                    "subject_id": subject_id,
+                    "reference_id": ground_id,
+                    "source_status": relationship.get("source_status", "inferred"),
+                    "source_ref": f"content.scene_design.relationships[{index}]",
+                }
+            )
+            continue
         if not subject_id or not reference_id:
             continue
         relation_text = str(relationship.get("type") or relationship.get("strength") or "").lower()
@@ -239,16 +255,47 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
             kind = "orbit_around"
         else:
             kind = "proximity"
-        relations.append(
-            {
-                "relation_id": f"relationship_{index + 1:02d}",
-                "kind": kind,
-                "subject_id": subject_id,
-                "reference_id": reference_id,
-                "source_status": relationship.get("source_status", "inferred"),
-                "source_ref": f"content.scene_design.relationships[{index}]",
-            }
-        )
+        relation_payload = {
+            "relation_id": f"relationship_{index + 1:02d}",
+            "kind": kind,
+            "subject_id": subject_id,
+            "reference_id": reference_id,
+            "source_status": relationship.get("source_status", "inferred"),
+            "source_ref": f"content.scene_design.relationships[{index}]",
+        }
+        if relation_type == "stop_beside":
+            relation_payload.update(
+                {"timeline_event_id": "wait_and_arrive", "temporal_mode": "at_end"}
+            )
+            proximity_targets[str(subject_id)] = str(reference_id)
+        elif relation_type == "board_into":
+            relation_payload.update(
+                {"timeline_event_id": "boarding", "temporal_mode": "throughout"}
+            )
+            board_targets[str(subject_id)] = str(reference_id)
+        relations.append(relation_payload)
+        if kind == "orbit_around":
+            orbit_targets[str(subject_id)] = str(reference_id)
+
+    visual_scales = objective.composition.get("visual_scales", [])
+    subject_ids = list(categories)
+    for index, visual_scale in enumerate(visual_scales):
+        scale = visual_scale.get("scale") if isinstance(visual_scale, dict) else None
+        if not isinstance(scale, dict) or scale.get("source_status") != "explicit":
+            continue
+        subject_id = visual_scale.get("subject_id")
+        reference_id = next((item for item in subject_ids if item != subject_id), None)
+        if subject_id in categories and reference_id is not None:
+            relations.append(
+                {
+                    "relation_id": f"visual_scale_{index + 1:02d}",
+                    "kind": "scale_dominance",
+                    "subject_id": subject_id,
+                    "reference_id": reference_id,
+                    "source_status": "explicit",
+                    "source_ref": f"content.composition.visual_scales[{index}].scale",
+                }
+            )
 
     phases: list[dict[str, Any]] = []
     for index, motion in enumerate(objective.subject_motion):
@@ -259,31 +306,90 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
         motion_type = semantics.get("motion_type")
         action_kind = semantics.get("action_kind")
         path_type = semantics.get("path_type")
-        if path_type == "orbit_around" or action_kind == "orbit":
+        event_id = semantics.get("timeline_event_id") or _mock_motion_event_id(
+            objective,
+            motion,
+        )
+        speed_intent = _mock_speed_intent(
+            _annotated_value(motion.get("speed")),
+            motion_type,
+        )
+        if (
+            path_type == "orbit_around"
+            or action_kind == "orbit"
+            or subject_id in orbit_targets
+        ):
             kind = "orbit"
             path_family = "circle"
             direction_mode = "orbit_around"
-        elif motion_type in {"static", "interactive"}:
+            target_id = semantics.get("target_id") or orbit_targets.get(subject_id)
+            carrier_id = semantics.get("carrier_id")
+        elif (
+            semantics.get("motion_mode") == "carried"
+            or (subject_id in board_targets and event_id == "departure")
+        ):
+            kind = "carried"
+            path_family = "stationary"
+            direction_mode = "none"
+            target_id = None
+            carrier_id = semantics.get("carrier_id") or board_targets.get(subject_id)
+        elif (
+            action_kind == "board"
+            or (subject_id in board_targets and event_id == "boarding")
+        ):
+            kind = "board"
+            path_family = "stationary"
+            direction_mode = "toward_target"
+            target_id = semantics.get("target_id") or board_targets.get(subject_id)
+            carrier_id = None
+        elif (
+            motion_type in {"static", "interactive"}
+            or speed_intent == "stationary"
+            or (subject_id in board_targets and event_id == "wait_and_arrive")
+        ):
             kind = "hold"
             path_family = "stationary"
             direction_mode = "none"
+            target_id = semantics.get("target_id")
+            carrier_id = semantics.get("carrier_id")
         else:
             kind = "linear_move"
             path_family = "linear"
-            direction_mode = (
-                "toward_target" if semantics.get("target_id") else "screen_left_to_right"
+            target_id = semantics.get("target_id") or proximity_targets.get(subject_id)
+            direction_mode = semantics.get("direction_mode") or (
+                "away_from_target"
+                if event_id == "departure" and target_id
+                else "toward_target" if target_id else "screen_left_to_right"
             )
+            carrier_id = semantics.get("carrier_id")
         phases.append(
             {
                 "phase_id": f"motion_{index + 1:02d}",
                 "subject_id": subject_id,
                 "kind": kind,
-                "timeline_event_id": semantics.get("timeline_event_id"),
-                "target_id": semantics.get("target_id"),
-                "carrier_id": semantics.get("carrier_id"),
+                "timeline_event_id": event_id,
+                "target_id": target_id,
+                "carrier_id": carrier_id,
                 "direction_mode": direction_mode,
                 "path_family": path_family,
-                "source_status": semantics.get("source_status", "inferred"),
+                "speed_intent": speed_intent,
+                "speed_source_status": (
+                    motion["speed"].get("source_status")
+                    if isinstance(motion.get("speed"), dict)
+                    and motion["speed"].get("source_status") != "unknown"
+                    else None
+                ),
+                "speed_source_ref": (
+                    f"content.subject_motion[{index}].speed"
+                    if isinstance(motion.get("speed"), dict)
+                    and motion["speed"].get("source_status") != "unknown"
+                    else None
+                ),
+                "source_status": semantics.get("source_status") or (
+                    motion.get("action", {}).get("source_status", "inferred")
+                    if isinstance(motion.get("action"), dict)
+                    else "inferred"
+                ),
                 "source_ref": (
                     f"content.subject_motion[{index}].motion_semantics"
                     if semantics
@@ -306,6 +412,15 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
         if isinstance(objective.camera.get("movement", {}).get("type"), dict)
         else "inferred"
     )
+    if movement_status == "unknown":
+        movement_status = "default"
+    camera_speed = objective.camera.get("movement", {}).get("speed")
+    camera_speed_status = (
+        camera_speed.get("source_status")
+        if isinstance(camera_speed, dict)
+        and camera_speed.get("source_status") != "unknown"
+        else None
+    )
     return {
         "entities": entities,
         "relations": relations,
@@ -314,6 +429,16 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
             "movement": movement,
             "focus_target_id": focus_target,
             "view_relation_to_motion": "unspecified",
+            "speed_intent": _mock_speed_intent(
+                _annotated_value(camera_speed),
+                "static" if movement == "static" else None,
+            ),
+            "speed_source_status": camera_speed_status,
+            "speed_source_ref": (
+                "content.camera.movement.speed"
+                if camera_speed_status is not None
+                else None
+            ),
             "source_status": movement_status,
             "source_ref": "content.camera.movement.type",
         },
@@ -336,6 +461,45 @@ def _mock_scale_intent(subject: dict[str, Any]) -> str:
     if any(marker in rendered for marker in ("巨大", "huge", "giant")):
         return "huge"
     return "human" if _mock_proxy_family(rendered) == "human_capsule" else "unspecified"
+
+
+def _mock_motion_event_id(
+    objective: ObjectivePlanningBrief,
+    motion: dict[str, Any],
+) -> str | None:
+    """Mock 仅按已经结构化的时间边界关联事件。"""
+
+    start = motion.get("start_time_seconds")
+    end = motion.get("end_time_seconds")
+    if start is None or end is None:
+        return None
+    for event in objective.timeline.get("events", []):
+        if (
+            event.get("id")
+            and event.get("start_time_seconds") == start
+            and event.get("end_time_seconds") == end
+        ):
+            return str(event["id"])
+    return None
+
+
+def _mock_speed_intent(value: str | None, motion_type: str | None) -> str:
+    """仅供离线 Mock 夹具把既有类型化速度映射为档位。"""
+
+    if motion_type in {"static", "interactive"}:
+        return "stationary"
+    if motion_type in {"walking", "slow"}:
+        return "slow"
+    if motion_type in {"running", "flying", "fast"}:
+        return "fast"
+    lowered = (value or "").lower()
+    if lowered in {"静止", "0 m/s", "stationary"}:
+        return "stationary"
+    if any(marker in lowered for marker in ("缓慢", "慢", "slow")):
+        return "slow"
+    if any(marker in lowered for marker in ("快速", "快", "fast")):
+        return "fast"
+    return "unspecified"
 
 
 def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str, Any]]]:
