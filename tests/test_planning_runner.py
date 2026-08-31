@@ -399,7 +399,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertEqual(config.max_seconds, 1_200.0)
         self.assertEqual(config.max_commit_attempts, 5)
         self.assertIsNone(config.max_total_tokens)
-        self.assertEqual(config.thinking_mode, "enabled")
+        self.assertEqual(config.thinking_mode, "disabled")
         self.assertEqual(config.reasoning_effort, "low")
         self.assertEqual(config.model_max_tokens, 8192)
         self.assertEqual(

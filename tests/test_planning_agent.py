@@ -25,6 +25,7 @@ from cinescaffold.planning.agent import (
     PlanningDeps,
     TrackPatchInput,
     _compact_tool_call_history,
+    _compact_validation_result_for_agent,
 )
 from cinescaffold.planning.domain import ConstraintSpec, TrackSpec
 from cinescaffold.planning.models import create_planning_model
@@ -35,6 +36,37 @@ from tests.test_planning_toolkit import _man_entity, _solved_toolkit, _toolkit
 
 
 class PlanningProtocolTest(unittest.TestCase):
+    def test_validation_result_compacts_repeated_sample_violations_for_model(self) -> None:
+        violation = {
+            "id": "first",
+            "code": "ENTITY_GROUND_CONTACT_VIOLATED",
+            "severity": "hard",
+            "constraint_id": None,
+            "entity_ids": ["subject_1", "ground"],
+            "time_range_seconds": [0.0, 0.0],
+            "expected": {"clearance": 0.0},
+            "actual": {"penetration": 0.8},
+            "adjustable_variables": ["entity transforms"],
+            "message": "Entity 地面接触失败",
+        }
+        repeated = violation | {
+            "id": "second",
+            "time_range_seconds": [5.0, 5.0],
+        }
+
+        compacted = _compact_validation_result_for_agent(
+            "solve_candidate",
+            {"status": "ok", "data": {}, "violations": [violation, repeated]},
+        )
+
+        self.assertEqual(len(compacted["violations"]), 1)
+        self.assertEqual(compacted["violations"][0]["occurrence_count"], 2)
+        self.assertEqual(
+            compacted["violations"][0]["sampled_time_ranges"],
+            [[0.0, 0.0], [5.0, 5.0]],
+        )
+        self.assertEqual(compacted["data"]["violation_compaction"]["original_count"], 2)
+
     def test_agent_patch_schemas_are_compact_but_domain_validation_stays_strict(self) -> None:
         compact_chars = len(json.dumps(TrackPatchInput.model_json_schema()))
         domain_chars = len(json.dumps(TrackSpec.model_json_schema()))
