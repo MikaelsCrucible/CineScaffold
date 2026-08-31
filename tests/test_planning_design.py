@@ -11,7 +11,9 @@ from cinescaffold.planning.design import (
     validate_scene_skeleton,
 )
 from cinescaffold.planning.domain import PlanningProfile
+from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
 from cinescaffold.planning.objective import project_objective_brief
+from cinescaffold.planning.toolkit import ScenePlanningToolkit
 from tests.helpers import valid_planning_brief
 
 
@@ -54,6 +56,70 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertIn("camera_depth_order", result["required_relation_kinds"])
         self.assertNotIn("constraint_parameter_schemas", result)
         self.assertEqual(result["next_tool"], "apply_design_option")
+
+    def test_design_options_are_read_only_and_validator_predicted(self) -> None:
+        toolkit = _desert_toolkit()
+        accepted = toolkit.submit_scene_skeleton(_desert_skeleton())
+        result = toolkit.request_design_options(
+            preference="preserve_composition",
+            max_options=2,
+        )
+
+        self.assertEqual(accepted["revision_after"], 0)
+        self.assertEqual(result["revision_after"], 0)
+        self.assertEqual(toolkit.store.current_revision, 0)
+        self.assertEqual(len(result["data"]["options"]), 2)
+        self.assertEqual(
+            result["data"]["options"][0]["strategy"],
+            "preserve_composition",
+        )
+        self.assertIn(
+            "camera_distance_m",
+            result["data"]["options"][0]["numeric_envelopes"],
+        )
+        self.assertIn("hard_pass", result["data"]["options"][0]["predicted"])
+
+    def test_apply_design_option_materializes_atomically(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+        suggested = toolkit.request_design_options(max_options=1)
+        option = suggested["data"]["options"][0]
+
+        applied = toolkit.apply_design_option(0, option["option_id"])
+        state = toolkit.store.get()
+
+        self.assertEqual(applied["status"], "ok")
+        self.assertEqual(applied["revision_after"], 1)
+        self.assertEqual(set(state.entities), {"ground", "man_01", "ship_01"})
+        self.assertIsNotNone(state.camera)
+        self.assertTrue(applied["data"]["prediction_matched"])
+        self.assertEqual(
+            applied["changes"][0]["operation"],
+            "materialize_design",
+        )
+
+    def test_design_option_is_stale_after_candidate_changes(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+        suggested = toolkit.request_design_options(max_options=1)
+        option = suggested["data"]["options"][0]
+        toolkit.apply_entity_patch(
+            [
+                {
+                    "entity_id": "temporary",
+                    "role": "subject",
+                    "proxy": {"type": "box", "size_xyz_m": [1.0, 1.0, 1.0]},
+                    "source_refs": [],
+                    "solved_transform": {},
+                }
+            ],
+            [],
+        )
+
+        result = toolkit.apply_design_option(0, option["option_id"])
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("revision 0", result["warnings"][0])
 
 
 def _desert_skeleton() -> dict:
@@ -124,6 +190,16 @@ def _desert_skeleton() -> dict:
             "source_ref": "content.camera.movement.type",
         },
     }
+
+
+def _desert_toolkit() -> ScenePlanningToolkit:
+    objective = project_objective_brief(valid_planning_brief()).objective_brief
+    resolution = freeze_brief_duration(
+        objective.timeline,
+        fps_numerator=24,
+        fps_denominator=1,
+    )
+    return ScenePlanningToolkit(attach_duration_resolution(objective, resolution))
 
 
 if __name__ == "__main__":

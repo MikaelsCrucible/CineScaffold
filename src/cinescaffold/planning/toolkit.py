@@ -22,6 +22,15 @@ from cinescaffold.planning.domain import (
     ValidationReport,
     Violation,
 )
+from cinescaffold.planning.design import (
+    DesignOption,
+    SceneSkeleton,
+    build_design_candidate,
+    design_option_id,
+    skeleton_hash,
+    task_capability_slice,
+    validate_scene_skeleton,
+)
 from cinescaffold.planning.geometry import (
     add,
     cross,
@@ -45,7 +54,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.16"
+TOOLKIT_VERSION = "0.17"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -202,6 +211,20 @@ class ScenePlanningToolkit:
             expected = initial_candidate.model_copy(deep=True)
         self.store = CandidateStore(expected)
         self._repair_suggestions: dict[str, _CameraRepair] = {}
+        self._scene_skeleton: SceneSkeleton | None = None
+        self._design_options: dict[str, DesignOption] = {}
+
+    @property
+    def has_scene_skeleton(self) -> bool:
+        return self._scene_skeleton is not None
+
+    @property
+    def has_design_options(self) -> bool:
+        return bool(self._design_options)
+
+    @property
+    def design_option_applied(self) -> bool:
+        return bool(self.store.get().entities)
 
     @property
     def has_repairable_violations(self) -> bool:
@@ -515,6 +538,172 @@ class ScenePlanningToolkit:
             "event_synchronization_solver",
         ]
         return _envelope(state.revision, state.revision, data=data, capability_gaps=gaps)
+
+    def submit_scene_skeleton(self, skeleton: dict[str, Any]) -> dict[str, Any]:
+        """保存不含数值坐标的符号骨架，Candidate revision 保持不变。"""
+
+        revision = self.store.current_revision
+        if self.store.get().entities:
+            return _rejected(revision, "Candidate 已开始物化，不得重新提交 Scene Skeleton")
+        try:
+            parsed = SceneSkeleton.model_validate(skeleton)
+            validate_scene_skeleton(self.objective_brief, parsed)
+        except (ValidationError, ValueError) as error:
+            return _rejected(revision, _error_message(error))
+        self._scene_skeleton = parsed
+        self._design_options.clear()
+        return _envelope(
+            revision,
+            revision,
+            data={
+                "skeleton_hash": skeleton_hash(parsed),
+                "entity_count": len(parsed.entities),
+                "relation_count": len(parsed.relations),
+                "motion_phase_count": len(parsed.motion_phases),
+                "symbolic_only": True,
+                "next_tool": "request_design_options",
+            },
+        )
+
+    def request_design_options(
+        self,
+        preference: str = "balanced",
+        max_options: int = 3,
+    ) -> dict[str, Any]:
+        """依据骨架生成少量数值候选，并用同一 Validator 预测。"""
+
+        revision = self.store.current_revision
+        if self._scene_skeleton is None:
+            return _rejected(revision, "必须先提交 Scene Skeleton")
+        if self.store.get().entities:
+            return _rejected(revision, "Candidate 已物化；后续请使用 Validator 修复接口")
+        allowed = {
+            "balanced",
+            "preserve_composition",
+            "maximize_motion_readability",
+        }
+        if preference not in allowed:
+            return _rejected(revision, f"未知 design preference：{preference}")
+        if not 1 <= max_options <= 3:
+            return _rejected(revision, "max_options 必须位于 1 到 3")
+        order = [preference, *sorted(allowed - {preference})][:max_options]
+        base = self.store.get()
+        skeleton_sha256 = skeleton_hash(self._scene_skeleton)
+        options: list[DesignOption] = []
+        for strategy in order:
+            try:
+                candidate, envelopes, assumptions = build_design_candidate(
+                    self.objective_brief,
+                    self._scene_skeleton,
+                    base,
+                    self.profile,
+                    strategy,
+                )
+                report = self._validate(candidate, FULL_VALIDATION_CHECKS)
+            except (ValidationError, ValueError):
+                continue
+            option_id = design_option_id(
+                skeleton_sha256=skeleton_sha256,
+                base_revision=revision,
+                strategy=strategy,
+                candidate=candidate,
+            )
+            option = DesignOption(
+                option_id=option_id,
+                base_revision=revision,
+                skeleton_hash=skeleton_sha256,
+                strategy=strategy,
+                candidate=candidate,
+                numeric_envelopes=envelopes,
+                assumptions=assumptions,
+                relevant_capabilities=task_capability_slice(
+                    self._scene_skeleton,
+                    self.profile,
+                ),
+                predicted=_design_report_summary(report, self.profile),
+            )
+            options.append(option)
+            self._design_options[option_id] = option
+        return _envelope(
+            revision,
+            revision,
+            status="ok" if options else "no_change",
+            data={
+                "skeleton_hash": skeleton_sha256,
+                "options": [_design_option_payload(item) for item in options],
+                "selection_rule": (
+                    "先保留 explicit，再比较 hard violation、soft score 与策略偏好"
+                ),
+                "next_tool": "apply_design_option" if options else None,
+            },
+            warnings=[] if options else ["未能从当前符号骨架生成合法数值候选"],
+        )
+
+    def apply_design_option(
+        self,
+        base_revision: int,
+        option_id: str,
+    ) -> dict[str, Any]:
+        """原子物化完整选项，避免模型抄写建议数值。"""
+
+        revision = self.store.current_revision
+        option = self._design_options.get(option_id)
+        if option is None:
+            return _rejected(revision, f"Design Option 不存在或已失效：{option_id}")
+        if base_revision != option.base_revision or revision != option.base_revision:
+            return _rejected(
+                revision,
+                f"Design Option 基于 revision {option.base_revision}；请重新请求选项",
+            )
+        if (
+            self._scene_skeleton is None
+            or skeleton_hash(self._scene_skeleton) != option.skeleton_hash
+        ):
+            return _rejected(revision, "Scene Skeleton 已变化；请重新请求选项")
+
+        def mutate(state: CandidateState):
+            state.entities = deepcopy(option.candidate.entities)
+            state.motion_tracks = deepcopy(option.candidate.motion_tracks)
+            state.constraints = deepcopy(option.candidate.constraints)
+            state.camera = deepcopy(option.candidate.camera)
+            return (
+                [
+                    {
+                        "operation": "materialize_design",
+                        "path": "candidate",
+                        "option_id": option_id,
+                        "strategy": option.strategy,
+                    }
+                ],
+                [],
+            )
+
+        try:
+            mutation = self.store.apply(mutate)
+        except (ValidationError, ValueError) as error:
+            return _rejected(revision, _error_message(error))
+        report = self._validate(self.store.get(), FULL_VALIDATION_CHECKS)
+        self.store.save_validation(report)
+        self._design_options.clear()
+        actual = _design_report_summary(report, self.profile)
+        return _mutation_envelope(
+            mutation,
+            data={
+                "option_id": option_id,
+                "strategy": option.strategy,
+                "predicted": option.predicted,
+                "actual": actual,
+                "prediction_matched": option.predicted == actual,
+                "commit_ready": _commit_ready(report, self.profile),
+                "next_tool": (
+                    "commit_request"
+                    if _commit_ready(report, self.profile)
+                    else "solve_or_repair_candidate"
+                ),
+            },
+            violations=[item.model_dump(mode="json") for item in report.violations],
+            capability_gaps=report.capability_gaps,
+        )
 
     def inspect_candidate(
         self,
@@ -1697,6 +1886,42 @@ def _repair_option_payload(
         "preserves_explicit_requirements": repair.preserves_explicit_requirements,
         "change_cost": round(repair.change_cost, 6),
         "tradeoffs": tradeoffs,
+    }
+
+
+def _design_report_summary(
+    report: ValidationReport,
+    profile: PlanningProfile,
+) -> dict[str, Any]:
+    return {
+        "hard_pass": report.hard_pass,
+        "soft_score": round(report.soft_score, 6),
+        "hard_violation_count": sum(
+            item.severity == "hard" for item in report.violations
+        ),
+        "soft_violation_count": sum(
+            item.severity == "soft" for item in report.violations
+        ),
+        "violation_codes": sorted({item.code for item in report.violations}),
+        "commit_ready": _commit_ready(report, profile),
+        "capability_gaps": report.capability_gaps,
+    }
+
+
+def _design_option_payload(option: DesignOption) -> dict[str, Any]:
+    return {
+        "option_id": option.option_id,
+        "base_revision": option.base_revision,
+        "strategy": option.strategy,
+        "numeric_envelopes": option.numeric_envelopes,
+        "assumptions": list(option.assumptions),
+        "relevant_capabilities": option.relevant_capabilities,
+        "predicted": option.predicted,
+        "tradeoffs": {
+            "balanced": ["折中保持构图与屏幕运动可读性"],
+            "preserve_composition": ["摄影机倾向后移，运动幅度可能较弱"],
+            "maximize_motion_readability": ["斜侧角更大，可能偏离缺省构图"],
+        }[option.strategy],
     }
 
 
