@@ -23,7 +23,7 @@ class SemanticParserConfig:
     model_output_schema_path: Path
     translation_rules_path: Path
     translation_parameters_schema_path: Path
-    prompt_version: str = "semantic-parser-v0.3"
+    prompt_version: str = "semantic-parser-v0.4"
 
 
 def parse_cinematic_brief(
@@ -56,7 +56,7 @@ def parse_cinematic_brief(
 
     rules_bytes = config.rules_path.read_bytes()
     return {
-        "schema_version": "0.2",
+        "schema_version": "0.3",
         "content": content,
         "translation_parameters": translation_parameters,
         "provenance": {

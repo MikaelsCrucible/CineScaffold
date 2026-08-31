@@ -201,7 +201,7 @@ cinescaffold parse \
 
 Mock Provider 不理解文本，只返回指定的模拟响应。未传入 `--mock-response` 时，它仅用于检查 Schema 和 CLI 接口。
 
-语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。解析结果使用 Cinematic Brief v0.2，并附带代码生成的 `translation_parameters`；用户明确要求始终优先于规则推导和缺省值。径向推近/后拉的速度由起止距离和本次实际时长计算，避免固定速度与可变时长矛盾。包含“然后/随后/先…再…”的描述必须生成分段事件；如果模型仍让所有事件覆盖全片，量化器会按事件顺序等分总时长并同步对应主体动作。包含“同时”的持续动作不会被错误拆分。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
+语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。新解析结果使用 Cinematic Brief v0.3：语义模型直接输出类型化的动作、运动模式、目标、载体、路径和后置状态，确定性代码只校验这些字段并查表量化，不再用关键词子串重新猜测动作含义。旧 v0.1/v0.2 Brief 仍可直接进入规划。用户明确要求始终优先于规则推导和缺省值；径向推近/后拉的速度由起止距离和实际时长计算。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
 
 规划门禁不仅检查实体是否在三维世界中移动，还检查每个移动阶段在摄影机投影中的轨迹范围和尺度变化。默认推断机位若让运动在白模里近似静止，Agent 必须调整运动方向、机位或距离；用户明确指定摄影机设计时保留其要求，并把同项降为 warning。
 

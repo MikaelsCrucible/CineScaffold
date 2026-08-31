@@ -39,6 +39,10 @@ class ProviderTest(unittest.TestCase):
 
         self.assertEqual(captured["url"], "https://api.openai.com/v1/responses")
         self.assertEqual(captured["payload"]["text"]["format"]["type"], "json_schema")
+        self.assertEqual(
+            captured["payload"]["text"]["format"]["name"],
+            "cinematic_brief_v0_3",
+        )
         self.assertTrue(captured["payload"]["text"]["format"]["strict"])
         self.assertNotIn("$schema", captured["payload"]["text"]["format"]["schema"])
         self.assertEqual(captured["payload"]["max_output_tokens"], 8192)

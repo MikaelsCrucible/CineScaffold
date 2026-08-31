@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/cinematic_brief_model_output.schema.json",
-  "title": "Cinematic Brief Model Output v0.1",
+  "title": "Cinematic Brief Model Output v0.3",
   "type": "object",
   "properties": {
     "summary": {"type": "string"},
@@ -91,6 +91,7 @@
       "properties": {
         "subject_id": {"type": "string"},
         "action": {"$ref": "#/$defs/annotatedText"},
+        "motion_semantics": {"$ref": "#/$defs/motionSemantics"},
         "direction": {"$ref": "#/$defs/annotatedText"},
         "speed": {"$ref": "#/$defs/annotatedText"},
         "trajectory": {"$ref": "#/$defs/annotatedText"},
@@ -104,6 +105,7 @@
       "required": [
         "subject_id",
         "action",
+        "motion_semantics",
         "direction",
         "speed",
         "trajectory",
@@ -111,6 +113,67 @@
         "end_time_seconds",
         "secondary_motion"
       ],
+      "additionalProperties": false
+    },
+    "motionSemantics": {
+      "type": "object",
+      "properties": {
+        "action_kind": {
+          "type": "string",
+          "enum": [
+            "hold", "locomotion", "approach", "arrive", "stop", "depart",
+            "board", "disembark", "transport", "orbit", "jump", "interact", "other"
+          ]
+        },
+        "motion_type": {
+          "type": "string",
+          "enum": [
+            "static", "interactive", "walking", "running", "flying",
+            "jumping", "moving", "carried"
+          ]
+        },
+        "motion_mode": {
+          "type": "string",
+          "enum": ["stationary", "self_propelled", "carried", "local_interaction"]
+        },
+        "direction_mode": {
+          "type": "string",
+          "enum": [
+            "none", "world_forward", "toward_target", "away_from_target",
+            "relative_to_target"
+          ]
+        },
+        "target_id": {"type": ["string", "null"]},
+        "carrier_id": {"type": ["string", "null"]},
+        "path_type": {
+          "type": "string",
+          "enum": [
+            "stationary", "linear", "circular", "elliptical", "s_curve",
+            "figure_eight", "parabolic", "unspecified"
+          ]
+        },
+        "timeline_event_id": {"type": ["string", "null"]},
+        "postconditions": {"$ref": "#/$defs/motionPostconditions"},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": [
+        "action_kind", "motion_type", "motion_mode", "direction_mode",
+        "target_id", "carrier_id", "path_type", "timeline_event_id",
+        "postconditions", "source_status", "source_text"
+      ],
+      "additionalProperties": false
+    },
+    "motionPostconditions": {
+      "type": "object",
+      "properties": {
+        "contained_by_id": {"type": ["string", "null"]},
+        "external_visibility": {
+          "type": "string",
+          "enum": ["unchanged", "visible", "hidden"]
+        }
+      },
+      "required": ["contained_by_id", "external_visibility"],
       "additionalProperties": false
     },
     "spatialLayer": {

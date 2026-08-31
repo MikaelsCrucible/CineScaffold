@@ -1,4 +1,4 @@
-# 四要素到六维 Cinematic Brief 规则 v0.3
+# 四要素到六维 Cinematic Brief 规则 v0.4
 
 ## 1. 任务边界
 
@@ -48,6 +48,34 @@
 - “走向/跑向某物”记录目标实体；“远离某物”记录背离目标。无目标时世界前方为 `(0,-1,0)`。
 - 默认路径为匀速直线；绕圈、椭圆、蛇形/S 形和 8 字形分别使用相应路径语义。跳跃使用抛物线语义。
 - 没有明确动作时使用“站立/静止”，并标记为 `default`。
+
+#### 类型化运动语义
+
+每条 `subject_motion` 都必须包含 `motion_semantics`。`action.value` 保留便于人类阅读和审计的动作描述；下列类型字段才是后续确定性量化和 Planning Agent 的机器依据。不得因为某个汉字碰巧出现在复合词或实体名中就分类，必须结合整句的施事者、受事者、目标、载体和事件阶段理解。
+
+- `action_kind` 表示这一阶段的事件作用：
+  - 保持状态用 `hold`；普通自主位移用 `locomotion`。
+  - 接近、到达、停止、离开分别用 `approach`、`arrive`、`stop`、`depart`。
+  - 上车/进入载体、下车分别用 `board`、`disembark`。
+  - 被载体携带移动用 `transport`；绕目标运动用 `orbit`；跳跃和局部互动分别用 `jump`、`interact`。
+  - 只有以上均不适合时才可使用 `other`，并在 `uncertainties` 说明。
+- `motion_type` 是量化速度档位，不得从 `action.value` 的子串推导：静止=`static`，局部互动=`interactive`，步行/爬行=`walking`，跑动=`running`，飞行/游动=`flying`，跳跃=`jumping`，其他自主位移=`moving`，被其他主体携带=`carried`。
+- `motion_mode` 表示位移由谁驱动：无整体位移=`stationary`，主体自主运动=`self_propelled`，跟随载体=`carried`，仅局部动作=`local_interaction`。
+- `direction_mode` 只能是 `none`、`world_forward`、`toward_target`、`away_from_target` 或 `relative_to_target`。后三者必须填写 `target_id`；目标 ID 必须来自 `subjects`。
+- `carrier_id` 只在 `motion_mode=carried` 时填写，并必须引用另一个主体；其他模式填 `null`。
+- `path_type` 使用 `stationary`、`linear`、`circular`、`elliptical`、`s_curve`、`figure_eight`、`parabolic` 或 `unspecified`。静止必须使用 `stationary`；已经明确路径时不得使用 `unspecified`。
+- `timeline_event_id` 必须引用承载这一动作阶段的 `timeline.events[].id`；确实没有事件记录时才为 `null`。
+- `postconditions.contained_by_id` 表示该阶段结束后主体进入哪个载体；`postconditions.external_visibility` 表示外部代理在阶段结束后是 `visible`、`hidden` 还是 `unchanged`。
+- `motion_semantics.source_status` 表示类型化解释本身的来源。根据用户明确动作完成的语义归一化通常是 `inferred`，同时在 `source_text` 保存对应原文；系统补全动作则为 `default`。
+
+一致性要求：
+
+- `motion_mode=stationary` 必须配 `motion_type=static`；`local_interaction` 必须配 `interactive`；`carried` 必须配 `motion_type=carried` 和非空 `carrier_id`。
+- `action_kind=board` 应以所进入的载体为 `target_id`，并在阶段结束后设置 `contained_by_id`；代理白模不能表现进入内部时，通常将 `external_visibility` 设为 `hidden`。
+- `action_kind=transport` 表示主体被 `carrier_id` 携带，不是主体步行。其空间运动应继承载体，而不是重新沿世界前方生成一条独立路径。
+- `action_kind=orbit` 必须设置被环绕主体为 `target_id`，使用 `relative_to_target`，并选择圆形或椭圆等路径类型。
+
+示例：“车开来把人接走”至少拆为车辆接近/到达、人物上车、车辆离开、人物由车辆携带四个相关阶段；“接走”不得因为包含“走”而分类为人物步行。
 
 ### 感觉
 

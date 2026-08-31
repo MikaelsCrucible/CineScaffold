@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/semantic_translation_parameters.schema.json",
-  "title": "Semantic Translation Parameters v0.2",
+  "title": "Semantic Translation Parameters v0.3",
   "type": "object",
   "properties": {
-    "schema_version": {"type": "string", "const": "0.2"},
+    "schema_version": {"type": "string", "const": "0.3"},
     "rules_version": {"type": "string"},
     "coordinate_system": {"$ref": "#/$defs/coordinateSystem"},
     "input_slots": {"$ref": "#/$defs/inputSlots"},
@@ -115,19 +115,36 @@
       "properties": {
         "motion_index": {"type": "integer"},
         "subject_id": {"type": ["string", "null"]},
+        "action_kind": {"type": "string"},
         "motion_type": {"type": "string"},
+        "motion_mode": {"type": "string"},
         "speed_range_mps": {"$ref": "#/$defs/numberPair"},
         "direction_mode": {"type": "string"},
         "direction_vector_world": {"$ref": "#/$defs/nullableVector"},
         "target_id": {"type": ["string", "null"]},
+        "carrier_id": {"type": ["string", "null"]},
         "path_type": {"type": "string"},
+        "timeline_event_id": {"type": ["string", "null"]},
+        "postconditions": {
+          "type": "object",
+          "properties": {
+            "contained_by_id": {"type": ["string", "null"]},
+            "external_visibility": {
+              "type": "string",
+              "enum": ["unchanged", "visible", "hidden"]
+            }
+          },
+          "required": ["contained_by_id", "external_visibility"],
+          "additionalProperties": false
+        },
         "start_time_seconds": {"type": "number"},
         "end_time_seconds": {"type": "number"},
         "source_status": {"$ref": "#/$defs/sourceStatus"}
       },
       "required": [
-        "motion_index", "subject_id", "motion_type", "speed_range_mps",
-        "direction_mode", "direction_vector_world", "target_id", "path_type",
+        "motion_index", "subject_id", "action_kind", "motion_type", "motion_mode",
+        "speed_range_mps", "direction_mode", "direction_vector_world", "target_id",
+        "carrier_id", "path_type", "timeline_event_id", "postconditions",
         "start_time_seconds", "end_time_seconds", "source_status"
       ],
       "additionalProperties": false

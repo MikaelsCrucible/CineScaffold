@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-TRANSLATION_PARAMETERS_VERSION = "0.2"
+TRANSLATION_PARAMETERS_VERSION = "0.3"
 
 
 def load_translation_rules(path: Path) -> dict[str, Any]:
@@ -297,6 +297,22 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
             {
                 "subject_id": subject_id,
                 "action": _annotated(defaults["action_label"], "default"),
+                "motion_semantics": {
+                    "action_kind": "hold",
+                    "motion_type": "static",
+                    "motion_mode": "stationary",
+                    "direction_mode": "none",
+                    "target_id": None,
+                    "carrier_id": None,
+                    "path_type": "stationary",
+                    "timeline_event_id": None,
+                    "postconditions": {
+                        "contained_by_id": None,
+                        "external_visibility": "unchanged",
+                    },
+                    "source_status": "default",
+                    "source_text": None,
+                },
                 "direction": _annotated(None, "unknown"),
                 "speed": _annotated("静止", "default"),
                 "trajectory": _annotated(None, "unknown"),
@@ -419,33 +435,11 @@ def _matching_timeline_event(
     motion: dict[str, Any],
     events: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    subject_id = motion.get("subject_id")
-    action = _value(motion.get("action")) or ""
-    source_text = _source_text(motion.get("action")) or ""
-    candidates = [
-        event
-        for event in events
-        if subject_id in event.get("reference_ids", [])
-    ]
-    scored: list[tuple[int, dict[str, Any]]] = []
-    for event in candidates:
-        event_text = " ".join(
-            text
-            for text in (event.get("description"), event.get("source_text"))
-            if isinstance(text, str)
-        )
-        score = 0
-        if action and (action in event_text or event_text in action):
-            score += 2
-        if source_text and (source_text in event_text or event_text in source_text):
-            score += 3
-        scored.append((score, event))
-    positive = [item for item in scored if item[0] > 0]
-    if positive:
-        positive.sort(key=lambda item: item[0], reverse=True)
-        if len(positive) == 1 or positive[0][0] > positive[1][0]:
-            return positive[0][1]
-    return candidates[0] if len(candidates) == 1 else None
+    semantics = motion.get("motion_semantics")
+    event_id = semantics.get("timeline_event_id") if isinstance(semantics, dict) else None
+    if event_id is None:
+        return None
+    return next((event for event in events if event.get("id") == event_id), None)
 
 
 def _classify_emotion(content: dict[str, Any], rules: dict[str, Any]) -> dict[str, Any]:
@@ -521,22 +515,32 @@ def _subject_parameters(content: dict[str, Any], rules: dict[str, Any]) -> list[
 
 def _motion_parameters(content: dict[str, Any], rules: dict[str, Any]) -> list[dict[str, Any]]:
     duration = float(content["timeline"]["duration_seconds"])
-    subjects = content["subjects"]
+    subject_ids = {
+        str(subject["id"])
+        for subject in content["subjects"]
+        if isinstance(subject, dict) and isinstance(subject.get("id"), str)
+    }
+    event_ids = {
+        str(event["id"])
+        for event in content["timeline"].get("events", [])
+        if isinstance(event, dict) and isinstance(event.get("id"), str)
+    }
     result: list[dict[str, Any]] = []
     for index, motion in enumerate(content["subject_motion"]):
-        action = _value(motion.get("action")) or rules["defaults"]["action_label"]
-        motion_type = _motion_type(action, rules)
+        semantics = _validated_motion_semantics(motion, subject_ids, event_ids, index)
+        motion_type = semantics["motion_type"]
         speed_range = deepcopy(rules["speed_ranges_mps"].get(
             motion_type,
             rules["defaults"]["moving_speed_mps"],
         ))
-        target_id, direction_mode = _motion_target(action, motion, subjects)
-        path_type = _path_type(action, _value(motion.get("trajectory")), rules)
+        direction_mode = semantics["direction_mode"]
         result.append(
             {
                 "motion_index": index,
                 "subject_id": motion.get("subject_id"),
+                "action_kind": semantics["action_kind"],
                 "motion_type": motion_type,
+                "motion_mode": semantics["motion_mode"],
                 "speed_range_mps": speed_range,
                 "direction_mode": direction_mode,
                 "direction_vector_world": (
@@ -544,14 +548,107 @@ def _motion_parameters(content: dict[str, Any], rules: dict[str, Any]) -> list[d
                     if direction_mode == "world_forward"
                     else None
                 ),
-                "target_id": target_id,
-                "path_type": path_type,
+                "target_id": semantics["target_id"],
+                "carrier_id": semantics["carrier_id"],
+                "path_type": semantics["path_type"],
+                "timeline_event_id": semantics["timeline_event_id"],
+                "postconditions": deepcopy(semantics["postconditions"]),
                 "start_time_seconds": _number_or(motion.get("start_time_seconds"), 0.0),
                 "end_time_seconds": _number_or(motion.get("end_time_seconds"), duration),
-                "source_status": "inferred" if _status(motion.get("action")) != "default" else "default",
+                "source_status": semantics["source_status"],
             }
         )
     return result
+
+
+def _validated_motion_semantics(
+    motion: dict[str, Any],
+    subject_ids: set[str],
+    event_ids: set[str],
+    index: int,
+) -> dict[str, Any]:
+    """校验模型给出的类型语义；量化层不重新解释动作文本。"""
+    semantics = motion.get("motion_semantics")
+    if not isinstance(semantics, dict):
+        raise ValueError(f"subject_motion[{index}] 缺少 motion_semantics")
+
+    subject_id = motion.get("subject_id")
+    if subject_id not in subject_ids:
+        raise ValueError(f"subject_motion[{index}].subject_id 未引用有效主体")
+
+    motion_type = semantics.get("motion_type")
+    motion_mode = semantics.get("motion_mode")
+    expected_type = {
+        "stationary": "static",
+        "local_interaction": "interactive",
+        "carried": "carried",
+    }.get(motion_mode)
+    if expected_type is not None and motion_type != expected_type:
+        raise ValueError(
+            f"subject_motion[{index}] 的 motion_mode={motion_mode} "
+            f"必须使用 motion_type={expected_type}"
+        )
+    if motion_mode == "self_propelled" and motion_type in {
+        "static",
+        "interactive",
+        "carried",
+    }:
+        raise ValueError(f"subject_motion[{index}] 的自主运动类型不一致")
+
+    target_id = semantics.get("target_id")
+    direction_mode = semantics.get("direction_mode")
+    if direction_mode in {
+        "toward_target",
+        "away_from_target",
+        "relative_to_target",
+    } and target_id not in subject_ids:
+        raise ValueError(f"subject_motion[{index}] 的相对方向缺少有效 target_id")
+    if target_id == subject_id:
+        raise ValueError(f"subject_motion[{index}] 不能以自身作为 target_id")
+
+    carrier_id = semantics.get("carrier_id")
+    if motion_mode == "carried":
+        if carrier_id not in subject_ids or carrier_id == subject_id:
+            raise ValueError(f"subject_motion[{index}] 的 carried 运动缺少有效 carrier_id")
+    elif carrier_id is not None:
+        raise ValueError(f"subject_motion[{index}] 仅 carried 运动可设置 carrier_id")
+
+    postconditions = semantics.get("postconditions")
+    contained_by_id = (
+        postconditions.get("contained_by_id")
+        if isinstance(postconditions, dict)
+        else None
+    )
+    if contained_by_id is not None and (
+        contained_by_id not in subject_ids or contained_by_id == subject_id
+    ):
+        raise ValueError(f"subject_motion[{index}] 的 contained_by_id 无效")
+    if semantics.get("action_kind") == "board":
+        if target_id is None or contained_by_id != target_id:
+            raise ValueError(
+                f"subject_motion[{index}] 的 board 阶段必须把 target_id 写入 contained_by_id"
+            )
+    if semantics.get("action_kind") == "transport" and motion_mode != "carried":
+        raise ValueError(f"subject_motion[{index}] 的 transport 阶段必须使用 carried 模式")
+    if semantics.get("action_kind") == "orbit":
+        if direction_mode != "relative_to_target" or semantics.get("path_type") not in {
+            "circular",
+            "elliptical",
+        }:
+            raise ValueError(
+                f"subject_motion[{index}] 的 orbit 阶段必须声明相对目标和圆/椭圆路径"
+            )
+
+    path_type = semantics.get("path_type")
+    if motion_mode == "stationary" and path_type != "stationary":
+        raise ValueError(f"subject_motion[{index}] 的静止阶段必须使用 stationary 路径")
+    if motion_mode == "self_propelled" and path_type == "stationary":
+        raise ValueError(f"subject_motion[{index}] 的自主运动不能使用 stationary 路径")
+
+    timeline_event_id = semantics.get("timeline_event_id")
+    if timeline_event_id is not None and timeline_event_id not in event_ids:
+        raise ValueError(f"subject_motion[{index}] 的 timeline_event_id 未引用有效事件")
+    return semantics
 
 
 def _scene_parameters(content: dict[str, Any], rules: dict[str, Any]) -> dict[str, Any]:
@@ -736,54 +833,6 @@ def _subject_quantity(text: str) -> tuple[int, str]:
     return 1, "default"
 
 
-def _motion_type(action: str, rules: dict[str, Any]) -> str:
-    # 长词优先，避免“飞行”被“飞”提前截断。
-    for motion_type in (
-        "jumping",
-        "running",
-        "walking",
-        "flying",
-        "moving",
-        "interactive",
-        "static",
-    ):
-        keywords = sorted(rules["action_classes"][motion_type], key=len, reverse=True)
-        if any(keyword in action for keyword in keywords):
-            return motion_type
-    return "moving"
-
-
-def _motion_target(
-    action: str,
-    motion: dict[str, Any],
-    subjects: list[dict[str, Any]],
-) -> tuple[str | None, str]:
-    direction = _value(motion.get("direction")) or ""
-    combined = f"{action} {direction}"
-    target_id: str | None = None
-    for subject in subjects:
-        subject_id = subject.get("id")
-        if subject_id == motion.get("subject_id"):
-            continue
-        category = _value(subject.get("category")) or ""
-        if category and category in combined:
-            target_id = str(subject_id)
-            break
-    if target_id and any(word in combined for word in ("远离", "背离", "逃离")):
-        return target_id, "away_from_target"
-    if target_id and any(word in combined for word in ("走向", "跑向", "朝", "接近", "驶到", "进入", "上车", "绕")):
-        return target_id, "toward_or_relative_to_target"
-    return None, "world_forward"
-
-
-def _path_type(action: str, trajectory: str | None, rules: dict[str, Any]) -> str:
-    text = f"{action} {trajectory or ''}"
-    for path_type, keywords in rules["path_keywords"].items():
-        if keywords and any(keyword in text for keyword in keywords):
-            return path_type
-    return "linear"
-
-
 def _add_default_uncertainty(content: dict[str, Any], field: str, selected: str) -> None:
     uncertainties = content.setdefault("uncertainties", [])
     if any(item.get("field") == field for item in uncertainties if isinstance(item, dict)):
@@ -898,9 +947,7 @@ def _validate_rule_table(value: Any) -> None:
         "defaults",
         "subject_heights_m",
         "major_object_defaults",
-        "action_classes",
         "speed_ranges_mps",
-        "path_keywords",
         "scene_assets",
         "scene_dimensions_m",
         "timeline",

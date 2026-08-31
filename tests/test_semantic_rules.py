@@ -27,7 +27,17 @@ class SemanticRulesTest(unittest.TestCase):
                 "attributes": [],
             }
         ]
-        content["subject_motion"] = [self._motion("man_01", "站立")]
+        content["subject_motion"] = [
+            self._motion(
+                "man_01",
+                "站立",
+                action_kind="hold",
+                motion_type="static",
+                motion_mode="stationary",
+                direction_mode="none",
+                path_type="stationary",
+            )
+        ]
         content["scene_design"]["environment"] = self._annotated("荒漠", "荒漠里")
         content["mood"]["emotional_tones"] = [
             self._statement("孤独", "感觉很孤独")
@@ -158,14 +168,25 @@ class SemanticRulesTest(unittest.TestCase):
                 "attributes": [],
             },
         ]
-        content["subject_motion"] = [self._motion("man", "走向飞船")]
+        content["subject_motion"] = [
+            self._motion(
+                "man",
+                "走向飞船",
+                action_kind="approach",
+                motion_type="walking",
+                motion_mode="self_propelled",
+                direction_mode="toward_target",
+                target_id="ship",
+                path_type="linear",
+            )
+        ]
 
         _, parameters = apply_translation_rules(content, self.rules)
 
         motion = parameters["motions"][0]
         self.assertEqual(motion["motion_type"], "walking")
         self.assertEqual(motion["target_id"], "ship")
-        self.assertEqual(motion["direction_mode"], "toward_or_relative_to_target")
+        self.assertEqual(motion["direction_mode"], "toward_target")
         self.assertIsNone(motion["direction_vector_world"])
         self.assertEqual(parameters["subjects"][1]["minimum_footprint_m"], [10.0, 10.0])
         self.assertEqual(parameters["subjects"][1]["default_scene_depth_ratio"], 0.5)
@@ -189,8 +210,27 @@ class SemanticRulesTest(unittest.TestCase):
             },
         ]
         content["subject_motion"] = [
-            self._motion("person", "等待"),
-            self._motion("car", "驶来并接走"),
+            self._motion(
+                "person",
+                "等待",
+                action_kind="hold",
+                motion_type="static",
+                motion_mode="stationary",
+                direction_mode="none",
+                path_type="stationary",
+                timeline_event_id="waiting",
+            ),
+            self._motion(
+                "car",
+                "驶来并接走",
+                action_kind="approach",
+                motion_type="moving",
+                motion_mode="self_propelled",
+                direction_mode="toward_target",
+                target_id="person",
+                path_type="linear",
+                timeline_event_id="pickup",
+            ),
         ]
         for motion in content["subject_motion"]:
             motion["start_time_seconds"] = 0.0
@@ -255,6 +295,84 @@ class SemanticRulesTest(unittest.TestCase):
         )
         self.assertEqual(uncertainty["resolution"], "use_inference")
 
+    def test_transport_semantics_are_not_reparsed_as_walking(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": "person",
+                "category": self._annotated("人", "一个人"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+            {
+                "id": "car",
+                "category": self._annotated("车辆", "一辆车"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+        ]
+        content["subject_motion"] = [
+            self._motion(
+                "person",
+                "被车接走并随车离开",
+                action_kind="transport",
+                motion_type="carried",
+                motion_mode="carried",
+                direction_mode="relative_to_target",
+                target_id="car",
+                carrier_id="car",
+                path_type="stationary",
+                contained_by_id="car",
+                external_visibility="hidden",
+            )
+        ]
+
+        _, parameters = apply_translation_rules(content, self.rules)
+
+        motion = parameters["motions"][0]
+        self.assertEqual(motion["motion_type"], "carried")
+        self.assertEqual(motion["motion_mode"], "carried")
+        self.assertEqual(motion["carrier_id"], "car")
+        self.assertEqual(motion["speed_range_mps"], [0.0, 0.0])
+        self.assertEqual(motion["postconditions"]["external_visibility"], "hidden")
+
+    def test_inconsistent_carried_semantics_fail_before_planning(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": "person",
+                "category": self._annotated("人", "一个人"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+            {
+                "id": "car",
+                "category": self._annotated("车辆", "一辆车"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+        ]
+        content["subject_motion"] = [
+            self._motion(
+                "person",
+                "被车接走",
+                action_kind="transport",
+                motion_type="walking",
+                motion_mode="carried",
+                direction_mode="relative_to_target",
+                target_id="car",
+                carrier_id="car",
+                path_type="stationary",
+            )
+        ]
+
+        with self.assertRaisesRegex(ValueError, "必须使用 motion_type=carried"):
+            apply_translation_rules(content, self.rules)
+
     def test_simultaneous_full_timeline_events_remain_concurrent(self) -> None:
         content = valid_model_output()
         content["timeline"].update(
@@ -312,10 +430,41 @@ class SemanticRulesTest(unittest.TestCase):
         return {"value": None, "source_status": "unknown", "source_text": None}
 
     @classmethod
-    def _motion(cls, subject_id: str, action: str) -> dict:
+    def _motion(
+        cls,
+        subject_id: str,
+        action: str,
+        *,
+        action_kind: str,
+        motion_type: str,
+        motion_mode: str,
+        direction_mode: str,
+        target_id: str | None = None,
+        carrier_id: str | None = None,
+        path_type: str,
+        timeline_event_id: str | None = None,
+        contained_by_id: str | None = None,
+        external_visibility: str = "unchanged",
+    ) -> dict:
         return {
             "subject_id": subject_id,
             "action": cls._annotated(action, action),
+            "motion_semantics": {
+                "action_kind": action_kind,
+                "motion_type": motion_type,
+                "motion_mode": motion_mode,
+                "direction_mode": direction_mode,
+                "target_id": target_id,
+                "carrier_id": carrier_id,
+                "path_type": path_type,
+                "timeline_event_id": timeline_event_id,
+                "postconditions": {
+                    "contained_by_id": contained_by_id,
+                    "external_visibility": external_visibility,
+                },
+                "source_status": "inferred",
+                "source_text": action,
+            },
             "direction": cls._unknown(),
             "speed": cls._unknown(),
             "trajectory": cls._unknown(),

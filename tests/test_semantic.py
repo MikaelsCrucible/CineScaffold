@@ -21,7 +21,7 @@ class SemanticParserTest(unittest.TestCase):
         )
         result = parse_cinematic_brief("测试自然语言", provider, config)
 
-        self.assertEqual(result["schema_version"], "0.2")
+        self.assertEqual(result["schema_version"], "0.3")
         self.assertEqual(result["provenance"]["provider"], "mock")
         self.assertEqual(result["provenance"]["source_prompt"], "测试自然语言")
         self.assertEqual(result["translation_parameters"]["emotion_class"]["class_id"], "E6")

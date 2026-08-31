@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/cinematic_brief.schema.json",
-  "title": "Cinematic Brief v0.2",
+  "title": "Cinematic Brief v0.3",
   "type": "object",
   "properties": {
-    "schema_version": {"type": "string", "const": "0.2"},
+    "schema_version": {"type": "string", "const": "0.3"},
     "content": {"$ref": "cinematic_brief_model_output.schema.json"},
     "translation_parameters": {"$ref": "semantic_translation_parameters.schema.json"},
     "provenance": {

@@ -591,7 +591,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         summary["stages"]["semantic"] = {
             "status": "success",
             "provider": semantic_args.provider,
-            "model": semantic_args.model or "mock-cinematic-brief-v0.1",
+            "model": semantic_args.model or "mock-cinematic-brief-v0.3",
         }
         summary["artifacts"]["cinematic_brief"] = str(brief_path)
     elif args.brief is not None:

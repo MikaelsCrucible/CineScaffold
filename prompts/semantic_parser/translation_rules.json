@@ -1,5 +1,5 @@
 {
-  "version": "semantic-translation-v0.4",
+  "version": "semantic-translation-v0.5",
   "coordinate_system": {
     "handedness": "right",
     "up_axis": "+Z",
@@ -30,15 +30,6 @@
     "大楼": {"minimum_footprint_m": null, "minimum_height_m": 20.0, "default_scene_depth_ratio": 0.5},
     "建筑": {"minimum_footprint_m": null, "minimum_height_m": 20.0, "default_scene_depth_ratio": 0.5}
   },
-  "action_classes": {
-    "static": ["站", "坐", "躺", "望", "等", "停", "立", "靠", "静止"],
-    "interactive": ["举", "握", "推", "拉", "指"],
-    "walking": ["走", "步行", "漫步", "踱步", "爬"],
-    "running": ["跑", "奔", "冲刺", "追赶", "追", "逃"],
-    "flying": ["飞行", "飞", "游"],
-    "jumping": ["跳", "跃"],
-    "moving": ["移动", "驶", "开走", "靠近", "离开"]
-  },
   "speed_ranges_mps": {
     "static": [0.0, 0.0],
     "interactive": [0.0, 0.0],
@@ -46,15 +37,8 @@
     "running": [4.0, 6.0],
     "flying": [6.0, 10.0],
     "jumping": [1.2, 1.2],
-    "moving": [1.2, 1.2]
-  },
-  "path_keywords": {
-    "circular": ["绕圈", "圆形", "公转"],
-    "elliptical": ["椭圆"],
-    "s_curve": ["蛇形", "S形", "S 型", "S型"],
-    "figure_eight": ["8字", "8 字", "无限大", "∞"],
-    "parabolic": ["跳", "跃"],
-    "linear": []
+    "moving": [1.2, 1.2],
+    "carried": [0.0, 0.0]
   },
   "scene_assets": {
     "desert": ["荒漠", "沙漠"],

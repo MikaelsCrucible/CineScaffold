@@ -51,7 +51,7 @@ class OpenAIProvider:
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "name": "cinematic_brief_v0_1",
+                    "name": "cinematic_brief_v0_3",
                     "strict": True,
                     "schema": _prepare_api_schema(schema),
                 }
