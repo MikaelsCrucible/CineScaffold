@@ -20,7 +20,10 @@ from cinescaffold.planning.domain import (
     TrackSpec,
     TransformValue,
 )
-from cinescaffold.planning.geometry import look_at_camera_quaternion
+from cinescaffold.planning.geometry import (
+    look_at_camera_quaternion,
+    sample_transform_track,
+)
 from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import canonical_hash
 
@@ -133,7 +136,6 @@ class SkeletonMotionPhase(StrictModel):
         "hold",
         "linear_move",
         "orbit",
-        "board",
         "carried",
         "visibility",
     ]
@@ -161,12 +163,14 @@ class SkeletonMotionPhase(StrictModel):
     ] = "unspecified"
     speed_source_status: SourceStatus | None = None
     speed_source_ref: str | None = None
+    visibility_state: Literal["visible", "hidden"] | None = None
+    transition_at: Literal["at_start", "at_end"] | None = None
     source_status: SourceStatus
     source_ref: str
 
     @model_validator(mode="after")
     def validate_motion_shape(self) -> SkeletonMotionPhase:
-        if self.kind in {"orbit", "board"} and self.target_id is None:
+        if self.kind == "orbit" and self.target_id is None:
             raise ValueError(f"{self.kind} 必须提供 target_id")
         if self.kind == "carried" and self.carrier_id is None:
             raise ValueError("carried 必须提供 carrier_id")
@@ -174,6 +178,17 @@ class SkeletonMotionPhase(StrictModel):
             raise ValueError("普通 orbit 必须使用 circle 或 ellipse")
         if self.kind == "hold" and self.path_family != "stationary":
             raise ValueError("hold 必须使用 stationary")
+        visibility_fields = (self.visibility_state, self.transition_at)
+        if self.kind == "visibility" and any(item is None for item in visibility_fields):
+            raise ValueError("visibility 必须提供 visibility_state 与 transition_at")
+        if self.kind == "visibility" and (
+            self.path_family != "stationary"
+            or self.direction_mode != "none"
+            or self.speed_intent != "unspecified"
+        ):
+            raise ValueError("visibility 只能改变可见性，不接受路径、方向或速度")
+        if self.kind != "visibility" and any(item is not None for item in visibility_fields):
+            raise ValueError(f"{self.kind} 不接受 visibility_state 或 transition_at")
         if (self.speed_source_status is None) != (self.speed_source_ref is None):
             raise ValueError("speed_source_status 与 speed_source_ref 必须同时提供")
         return self
@@ -760,7 +775,10 @@ def _build_relation_constraints(
                     "components": ["translation", "rotation", "scale"],
                 },
             }
-        elif phase.kind == "linear_move":
+        elif phase.kind == "linear_move" and phase.direction_mode in {
+            "screen_left_to_right",
+            "screen_right_to_left",
+        }:
             payload = common | {
                 "type": "motion_direction",
                 "parameters": {
@@ -774,7 +792,33 @@ def _build_relation_constraints(
                     "minimum_displacement_m": 0.5,
                 },
             }
+        elif (
+            phase.kind == "linear_move"
+            and phase.target_id is not None
+            and phase.direction_mode in {"toward_target", "away_from_target"}
+        ):
+            start, end = _event_range(
+                objective,
+                phase.timeline_event_id,
+                duration,
+            )
+            frame_step = (
+                candidate.timeline.fps_denominator
+                / candidate.timeline.fps_numerator
+            )
+            toward = phase.direction_mode == "toward_target"
+            payload = common | {
+                "type": "distance_range",
+                "subjects": [phase.subject_id, phase.target_id],
+                "time_range_seconds": [max(start, end - frame_step), end],
+                "parameters": {
+                    "entity_ids": [phase.subject_id, phase.target_id],
+                    "minimum_meters": 0.0 if toward else 5.0,
+                    "maximum_meters": 3.0 if toward else 1000000.0,
+                },
+            }
         else:
+            # 其他阶段没有可独立验证的位移方向。
             continue
         constraint = ConstraintSpec.model_validate(payload)
         constraints[constraint.constraint_id] = constraint
@@ -797,7 +841,18 @@ def _build_motion(
     for phase in skeleton.motion_phases:
         grouped.setdefault(phase.subject_id, []).append(phase)
 
-    for subject_id, phases in grouped.items():
+    grouped_items = sorted(
+        grouped.items(),
+        key=lambda item: min(
+            (
+                _event_range(objective, phase.timeline_event_id, duration)[0]
+                for phase in item[1]
+                if phase.kind == "linear_move"
+            ),
+            default=math.inf,
+        ),
+    )
+    for subject_id, phases in grouped_items:
         orbit = next((item for item in phases if item.kind == "orbit"), None)
         if orbit is not None and orbit.target_id is not None:
             depth = 2 if orbit.target_id in orbit_subjects else 1
@@ -849,7 +904,12 @@ def _build_motion(
                 or (0.0, 0.0, _proxy_half_height(candidate.entities[subject_id]))
             )
             first = moving[0]
-            if first.direction_mode == "toward_target":
+            first_start = _event_range(
+                objective,
+                first.timeline_event_id,
+                duration,
+            )[0]
+            if first.direction_mode == "toward_target" and first_start == 0.0:
                 position[0] -= 8.0
                 candidate.entities[subject_id].solved_transform = candidate.entities[
                     subject_id
@@ -871,7 +931,21 @@ def _build_motion(
                         interpolation="smooth",
                     )
                 )
-                position = _linear_phase_endpoint(candidate, phase, position)
+                hidden_at_end = any(
+                    item.kind == "visibility"
+                    and item.timeline_event_id == phase.timeline_event_id
+                    and item.visibility_state == "hidden"
+                    and item.transition_at == "at_end"
+                    for item in phases
+                )
+                position = _linear_phase_endpoint(
+                    candidate,
+                    phase,
+                    position,
+                    tracks,
+                    _track_end_time(candidate, end),
+                    hidden_at_end=hidden_at_end,
+                )
                 keyframes.append(
                     TrackKeyframe(
                         time_seconds=_track_end_time(candidate, end),
@@ -890,34 +964,41 @@ def _build_motion(
             )
             tracks[track.track_id] = track
 
-        hidden_times: list[tuple[float, str]] = []
-        for phase in phases:
-            if phase.kind == "board":
-                hidden_times.append(
+        visibility_phases = [item for item in phases if item.kind == "visibility"]
+        if visibility_phases:
+            transitions: list[tuple[float, bool, str]] = []
+            for phase in visibility_phases:
+                start, end = _event_range(
+                    objective,
+                    phase.timeline_event_id,
+                    duration,
+                )
+                transition_time = start if phase.transition_at == "at_start" else end
+                transitions.append(
                     (
-                        _event_range(objective, phase.timeline_event_id, duration)[1],
+                        _track_end_time(candidate, transition_time),
+                        phase.visibility_state == "visible",
                         phase.source_ref,
                     )
                 )
-            elif phase.kind == "carried":
-                hidden_times.append(
-                    (
-                        _event_range(objective, phase.timeline_event_id, duration)[0],
-                        phase.source_ref,
-                    )
-                )
-        if hidden_times:
-            hidden_at, source_ref = min(hidden_times)
-            hidden_at = _track_end_time(candidate, hidden_at)
+            transitions.sort(key=lambda item: item[0])
+            source_ref = transitions[0][2]
             track = TrackSpec(
                 track_id=f"design_visibility_{subject_id}",
                 target_entity_id=subject_id,
                 type="visibility",
                 time_range_seconds=(0.0, duration),
-                keyframes=[
-                    TrackKeyframe(time_seconds=0.0, value=True, interpolation="step"),
-                    TrackKeyframe(time_seconds=hidden_at, value=False, interpolation="step"),
-                ],
+                keyframes=_deduplicate_keyframes(
+                    [TrackKeyframe(time_seconds=0.0, value=True, interpolation="step")]
+                    + [
+                        TrackKeyframe(
+                            time_seconds=time_seconds,
+                            value=visible,
+                            interpolation="step",
+                        )
+                        for time_seconds, visible, _ in transitions
+                    ]
+                ),
                 interpolation="step",
                 source_ref=source_ref,
             )
@@ -1353,13 +1434,31 @@ def _linear_phase_endpoint(
     candidate: CandidateState,
     phase: SkeletonMotionPhase,
     position: list[float],
+    tracks: dict[str, TrackSpec],
+    sample_time: float,
+    *,
+    hidden_at_end: bool,
 ) -> list[float]:
     endpoint = list(position)
     if phase.direction_mode == "toward_target" and phase.target_id:
-        target = candidate.entities[phase.target_id].solved_transform.translation_m
+        target_entity = candidate.entities[phase.target_id]
+        target_track = tracks.get(f"design_motion_{phase.target_id}")
+        target = sample_transform_track(
+            target_track,
+            sample_time,
+            target_entity.solved_transform,
+        ).translation_m
         if target is not None:
-            endpoint[0] = target[0] - 2.5
-            endpoint[1] = target[1]
+            delta_x = target[0] - position[0]
+            delta_y = target[1] - position[1]
+            distance = math.hypot(delta_x, delta_y)
+            if distance > 1e-9:
+                clearance = 0.0 if hidden_at_end else (
+                    _proxy_horizontal_radius(candidate.entities[phase.subject_id])
+                    + _proxy_horizontal_radius(target_entity)
+                )
+                endpoint[0] = target[0] - delta_x / distance * clearance
+                endpoint[1] = target[1] - delta_y / distance * clearance
     elif phase.direction_mode == "away_from_target":
         endpoint[0] += 8.0
     elif phase.direction_mode == "screen_right_to_left":
@@ -1367,6 +1466,17 @@ def _linear_phase_endpoint(
     else:
         endpoint[0] += 8.0
     return endpoint
+
+
+def _proxy_horizontal_radius(entity: EntitySpec) -> float:
+    proxy = entity.proxy
+    if proxy.type == "box":
+        return max(proxy.size_xyz_m[0], proxy.size_xyz_m[1]) / 2.0
+    if proxy.type in {"sphere", "capsule", "cylinder"}:
+        return proxy.radius_m
+    if proxy.type == "cone":
+        return max(proxy.radius_bottom_m, proxy.radius_top_m)
+    return max(proxy.size_xy_m) / 2.0
 
 
 def _deduplicate_keyframes(values: list[TrackKeyframe]) -> list[TrackKeyframe]:

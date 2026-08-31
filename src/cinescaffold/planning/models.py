@@ -270,7 +270,7 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
             proximity_targets[str(subject_id)] = str(reference_id)
         elif relation_type == "board_into":
             relation_payload.update(
-                {"timeline_event_id": "boarding", "temporal_mode": "throughout"}
+                {"timeline_event_id": "boarding", "temporal_mode": "at_end"}
             )
             board_targets[str(subject_id)] = str(reference_id)
         relations.append(relation_payload)
@@ -337,8 +337,8 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
             action_kind == "board"
             or (subject_id in board_targets and event_id == "boarding")
         ):
-            kind = "board"
-            path_family = "stationary"
+            kind = "linear_move"
+            path_family = "linear"
             direction_mode = "toward_target"
             target_id = semantics.get("target_id") or board_targets.get(subject_id)
             carrier_id = None
@@ -397,6 +397,30 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
                 ),
             }
         )
+        postconditions = semantics.get("postconditions")
+        if (
+            isinstance(postconditions, dict)
+            and postconditions.get("external_visibility") in {"visible", "hidden"}
+        ):
+            phases.append(
+                {
+                    "phase_id": f"motion_{index + 1:02d}_visibility",
+                    "subject_id": subject_id,
+                    "kind": "visibility",
+                    "timeline_event_id": event_id,
+                    "target_id": None,
+                    "carrier_id": None,
+                    "direction_mode": "none",
+                    "path_family": "stationary",
+                    "speed_intent": "unspecified",
+                    "speed_source_status": None,
+                    "speed_source_ref": None,
+                    "visibility_state": postconditions["external_visibility"],
+                    "transition_at": "at_end",
+                    "source_status": semantics.get("source_status", "inferred"),
+                    "source_ref": f"content.subject_motion[{index}].motion_semantics",
+                }
+            )
 
     focus_target = _annotated_value(objective.camera.get("focus_target_id"))
     if not focus_target:

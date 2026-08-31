@@ -14,6 +14,7 @@ from cinescaffold.planning.design import (
 )
 from cinescaffold.planning.domain import PlanningProfile
 from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
+from cinescaffold.planning.models import _mock_scene_skeleton
 from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.toolkit import ScenePlanningToolkit
 from tests.helpers import valid_planning_brief
@@ -275,7 +276,7 @@ class PlanningDesignTest(unittest.TestCase):
             state.entities["moon"].proxy.radius_m,
         )
 
-    def test_pickup_option_preserves_arrive_wait_board_depart_sequence(self) -> None:
+    def test_pickup_option_composes_boarding_from_generic_motion(self) -> None:
         toolkit = _example_toolkit("roadside_pickup_12s.json")
         toolkit.submit_scene_skeleton(_pickup_skeleton())
 
@@ -284,15 +285,76 @@ class PlanningDesignTest(unittest.TestCase):
         applied = toolkit.apply_design_option(0, option["option_id"])
         state = toolkit.store.get()
         car_track = state.motion_tracks["design_motion_car"]
+        man_track = state.motion_tracks["design_motion_man"]
         visibility = state.motion_tracks["design_visibility_man"]
 
         self.assertTrue(applied["data"]["commit_ready"], applied["violations"])
+        self.assertEqual(set(state.entities), {"road", "man", "car"})
         self.assertEqual(
             [item.time_seconds for item in car_track.keyframes],
             [0.0, 4.0, 7.0, 11.958333333333334],
         )
+        self.assertEqual(
+            [item.time_seconds for item in man_track.keyframes],
+            [4.0, 7.0],
+        )
+        self.assertNotEqual(
+            man_track.keyframes[0].value.translation_m,
+            man_track.keyframes[-1].value.translation_m,
+        )
         self.assertFalse(visibility.keyframes[-1].value)
         self.assertAlmostEqual(visibility.keyframes[-1].time_seconds, 7.0)
+
+    def test_scene_skeleton_rejects_special_board_motion_kind(self) -> None:
+        value = _pickup_skeleton()
+        value["motion_phases"][2]["kind"] = "board"
+
+        with self.assertRaises(ValidationError):
+            SceneSkeleton.model_validate(value)
+
+    def test_mock_decomposes_board_semantics_without_extra_entity(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+        objective = toolkit.objective_brief.model_copy(deep=True)
+        objective.subject_motion[2]["motion_semantics"] = {
+            "action_kind": "board",
+            "motion_type": "walking",
+            "motion_mode": "self_propelled",
+            "target_id": "car",
+            "carrier_id": None,
+            "path_type": "linear",
+            "direction_mode": "toward_target",
+            "timeline_event_id": "boarding",
+            "postconditions": {
+                "contained_by_id": "car",
+                "external_visibility": "hidden",
+            },
+            "source_status": "explicit",
+        }
+        skeleton = _mock_scene_skeleton(objective)
+        phases = skeleton["motion_phases"]
+
+        self.assertEqual(
+            {item["entity_id"] for item in skeleton["entities"]},
+            {"environment_ground", "man", "car"},
+        )
+        self.assertNotIn("board", {item["kind"] for item in phases})
+        self.assertTrue(
+            any(
+                item["subject_id"] == "man"
+                and item["kind"] == "linear_move"
+                and item["timeline_event_id"] == "boarding"
+                and item["target_id"] == "car"
+                for item in phases
+            )
+        )
+        self.assertTrue(
+            any(
+                item["subject_id"] == "man"
+                and item["kind"] == "visibility"
+                and item["visibility_state"] == "hidden"
+                for item in phases
+            )
+        )
 
 
 def _desert_skeleton() -> dict:
@@ -452,6 +514,7 @@ def _pickup_skeleton() -> dict:
                 "subject_id": "man",
                 "reference_id": "car",
                 "timeline_event_id": "boarding",
+                "temporal_mode": "at_end",
                 "source_status": "explicit",
                 "source_ref": "content.scene_design.relationships[2]",
             },
@@ -469,13 +532,26 @@ def _pickup_skeleton() -> dict:
                 path="linear",
             ),
             _symbolic_phase(
-                "man_board",
+                "man_approach_car",
                 "man",
-                "board",
+                "linear_move",
                 2,
                 event="boarding",
                 target_id="car",
+                direction="toward_target",
+                path="linear",
             ),
+            {
+                **_symbolic_phase(
+                    "man_hidden_after_entry",
+                    "man",
+                    "visibility",
+                    2,
+                    event="boarding",
+                ),
+                "visibility_state": "hidden",
+                "transition_at": "at_end",
+            },
             _symbolic_phase(
                 "car_wait", "car", "hold", 3, event="boarding", status="inferred"
             ),

@@ -16,7 +16,7 @@
    - 连续薄表面应使用 `ground_plane`，需要独立定位或厚度的薄片代理应使用 `generic_box + flat`，不得把表面退化成等边立方体。该约定适用于任意平台、带状表面或薄板，不是场景名称查表。
    - `ground_support`、`camera_depth_order`、`relative_position`、`proximity`、`scale_dominance`、`orbit_around` 与 `carried_by` 只表达关系，不自行换算米制间距。
    - 有事件 ID 的关系还要选择 `temporal_mode`：持续成立用 `throughout`，只要求事件开始/结束瞬间成立用 `at_start` / `at_end`。例如“车驶来并停在男人身边”应在抵达事件末端满足 proximity，不能错误要求驶来全程都在三米内。
-   - Motion Phase 只表达 hold/linear_move/orbit/board/carried/visibility、目标、载体、路径族、`slow/medium/fast/stationary/unspecified` 速度意图和事件 ID；Camera Intent 同样只保留符号速度档位。明确速度必须填写独立的 `speed_source_status/speed_source_ref`。精确时间从 Objective Brief 事件解析，米制速度与数值轨迹由 Toolkit 生成。
+   - Motion Phase 只表达 hold/linear_move/orbit/carried/visibility、目标、载体、路径族、`slow/medium/fast/stationary/unspecified` 速度意图和事件 ID；Camera Intent 同样只保留符号速度档位。明确速度必须填写独立的 `speed_source_status/speed_source_ref`。精确时间从 Objective Brief 事件解析，米制速度与数值轨迹由 Toolkit 生成。
    - Design Option 会按任务返回精简 `relevant_capabilities`，不得再请求整本通用能力手册。若首批 Option 返回的实体尺寸范围说明内置尺度/比例仍不足，可再次调用 `request_design_options`，在 `custom_size_requests` 中为实体提交 X/Y/Z 完整包围盒尺寸范围和理由；这是数值建议请求，不是直接修改 Candidate。Toolkit 会让旧 option 失效、保留 Brief explicit 尺寸优先级、按策略选值并完整验证；不得重复完全相同的请求。未被 Option 覆盖的能力只有在结构化 capability gap 后才能走低层 Patch 后备路径。
    - 不得依据 Blender、游戏引擎或训练语料的惯例猜坐标轴。所有持续区间使用 `[0, duration_seconds)`；末关键帧不得晚于冻结时间线的最后帧时刻。
 2. 每个 explicit_requirements 路径都必须通过 source_refs 或 source_ref 映射到对应实体、轨道、约束或摄影机字段；不得只为了过审而挂到无关对象。
@@ -35,7 +35,7 @@
    - 所有量化为 `moving` 的主体动作都必须在各自时间段内产生足够的屏幕轨迹范围或投影尺度变化。沿镜头纵深移动本身合法，但若远距离机位只产生微小尺寸变化，不能把世界坐标位移当作对白模可读；应调整运动方向、摄影机方位或距离。Brief 已明确摄影机设计时保留用户要求，并接受 Validator 的 warning。
    - 用户未明确要求迎面拍摄或背面跟拍时，摄影机不得与线性主体运动方向近似共线。使用 capability 返回的最小斜视夹角，并优先选择能同时表达位移和空间关系的斜侧机位；不得只靠主体尺寸变大或变小走捷径。Brief 已明确摄影机方向时保留用户要求，并接受 Validator 的 warning。
    - v0.3+ `motion_semantics` 是语义模型已经完成的类型化解释。`motion_type` 决定速度档位，`direction_mode/target_id` 决定相对方向，`path_type` 决定路径族；不得再从 `action.value`、实体名称或中文子串推断这些字段。
-   - `motion_mode=carried` 时主体不能生成独立的步行或世界前向轨迹。使用 `carrier_id` 建立父级/目标相对关系；若上车阶段的 `postconditions.external_visibility=hidden`，从该阶段结束时隐藏外部人物代理。`board` 的 `contained_by_id` 和后续 `transport.carrier_id` 必须保持一致。
+   - `motion_mode=carried` 时主体不能生成独立的步行或世界前向轨迹。使用 `carrier_id` 建立父级/目标相对关系。Brief 中的 `action_kind=board` 只是上游语义标签，不是 Scene Skeleton 的专用操作：把它拆成朝 `target_id` 的 `linear_move`、事件末端的 `proximity`，以及仅在 `postconditions.external_visibility` 明确要求时添加的通用 `visibility` 阶段。不得为上车创建额外实体，也不得用“到点隐藏”代替人物走向车辆的位移。`contained_by_id` 和后续 `transport.carrier_id` 必须保持一致。
    - `ground_interaction` 只在场景存在环境地面平面时生效；太空、空中等无地面场景保持缺省 `must_be_above` 即可，不要为了“无地面”伪造 explicit 来源或使用 `unconstrained`。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 且来源路径与约束类型兼容的要求可以成为 hard constraint；环境实体来源不能被拿来制造空间硬约束。Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
 5. `apply_design_option` 已使用同一 Validator 预测并完整复验。若其 commit_ready=false，再按需调用 solve_candidate 或 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
