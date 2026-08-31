@@ -2014,6 +2014,13 @@ def _hard_semantic_violations(
         for track in state.camera.tracks.values():
             if track.source_ref:
                 locations.setdefault(track.source_ref, set()).add("camera_track")
+    # 同一运动可能在动作、空间关系和时间事件中重复表达，统一继承其映射证据。
+    for equivalent_refs in _equivalent_motion_source_refs(objective_brief):
+        equivalent_locations = set().union(
+            *(locations.get(source_ref, set()) for source_ref in equivalent_refs)
+        )
+        for source_ref in equivalent_refs:
+            locations.setdefault(source_ref, set()).update(equivalent_locations)
     violations: list[Violation] = []
     for source_ref in state.required_source_refs:
         actual = locations.get(source_ref, set())
@@ -2057,6 +2064,60 @@ def _hard_semantic_violations(
                 )
             )
     return violations
+
+
+def _equivalent_motion_source_refs(
+    objective_brief: ObjectivePlanningBrief,
+) -> list[set[str]]:
+    """识别同一客观运动在 Brief 中的等价来源路径。"""
+    explicit_refs = {item.path for item in objective_brief.explicit_requirements}
+    relationships = objective_brief.scene_design.get("relationships", [])
+    events = objective_brief.timeline.get("events", [])
+    groups: list[set[str]] = []
+    for motion_index, motion in enumerate(objective_brief.subject_motion):
+        if not isinstance(motion, dict):
+            continue
+        semantics = motion.get("motion_semantics")
+        if not isinstance(semantics, dict):
+            continue
+        subject_id = motion.get("subject_id")
+        target_id = semantics.get("target_id")
+        action_kind = semantics.get("action_kind")
+        refs = {
+            ref
+            for ref in (
+                f"content.subject_motion[{motion_index}].action",
+                f"content.subject_motion[{motion_index}].motion_semantics",
+            )
+            if ref in explicit_refs
+        }
+        event_id = semantics.get("timeline_event_id")
+        if isinstance(event_id, str):
+            for event_index, event in enumerate(events):
+                if isinstance(event, dict) and event.get("id") == event_id:
+                    ref = f"content.timeline.events[{event_index}]"
+                    if ref in explicit_refs:
+                        refs.add(ref)
+        if action_kind == "orbit" and isinstance(subject_id, str) and isinstance(target_id, str):
+            for relation_index, relationship in enumerate(relationships):
+                if not isinstance(relationship, dict):
+                    continue
+                relation_type = str(relationship.get("type", "")).strip().lower()
+                is_orbit = any(
+                    marker in relation_type
+                    for marker in ("orbit", "公转", "环绕", "绕")
+                )
+                if (
+                    is_orbit
+                    and relationship.get("subject_id") == subject_id
+                    and relationship.get("reference_id") == target_id
+                ):
+                    ref = f"content.scene_design.relationships[{relation_index}]"
+                    if ref in explicit_refs:
+                        refs.add(ref)
+        if len(refs) > 1:
+            groups.append(refs)
+    return groups
 
 
 def _required_constraint_types(

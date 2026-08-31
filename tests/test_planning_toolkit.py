@@ -985,6 +985,83 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             any(item["code"] == "UNMAPPED_EXPLICIT_REQUIREMENT" for item in validation["violations"])
         )
 
+    def test_equivalent_orbit_action_relationship_and_event_share_mapping(self) -> None:
+        toolkit = _toolkit()
+        action_ref = "content.subject_motion[0].action"
+        relationship_ref = "content.scene_design.relationships[0]"
+        event_ref = "content.timeline.events[0]"
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "subject_motion": [
+                    {
+                        "subject_id": "man_01",
+                        "action": _annotated("围绕飞船公转", "男人围绕飞船公转"),
+                        "motion_semantics": {
+                            "action_kind": "orbit",
+                            "target_id": "ship_01",
+                            "timeline_event_id": "event_orbit",
+                        },
+                    }
+                ],
+                "scene_design": {
+                    "relationships": [
+                        {
+                            "type": "orbits",
+                            "subject_id": "man_01",
+                            "reference_id": "ship_01",
+                            "source_status": "explicit",
+                        }
+                    ]
+                },
+                "timeline": toolkit.objective_brief.timeline
+                | {
+                    "events": [
+                        {
+                            "id": "event_orbit",
+                            "source_status": "explicit",
+                        }
+                    ]
+                },
+                "explicit_requirements": [
+                    ObjectiveRequirement(path=action_ref, value="围绕飞船公转"),
+                    ObjectiveRequirement(path=relationship_ref, value={"type": "orbits"}),
+                    ObjectiveRequirement(path=event_ref, value={"id": "event_orbit"}),
+                ],
+            }
+        )
+
+        def replace_required_refs(state):
+            state.required_source_refs = [action_ref, relationship_ref, event_ref]
+            state.runner_mapped_source_refs = []
+            return ([{"operation": "replace", "path": "required_source_refs"}], [])
+
+        toolkit.store.apply(replace_required_refs)
+        toolkit.apply_entity_patch([_man_entity(), _ship_entity()], [])
+        result = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "orbit_ship",
+                    "target_entity_id": "man_01",
+                    "type": "path_follow",
+                    "time_range_seconds": [0.0, 6.0],
+                    "path": {
+                        "representation": "circle",
+                        "space": "target_relative",
+                        "target_id": "ship_01",
+                        "radius_m": 3.0,
+                        "cycle_count": 1.0,
+                    },
+                    "source_ref": action_ref,
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["hard_semantics"])
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
+
     def test_push_in_uses_target_distance_instead_of_world_axis(self) -> None:
         toolkit = _toolkit()
         toolkit.apply_entity_patch([_man_entity()], [])
