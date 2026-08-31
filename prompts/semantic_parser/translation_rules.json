@@ -1,5 +1,5 @@
 {
-  "version": "semantic-translation-v0.2",
+  "version": "semantic-translation-v0.3",
   "coordinate_system": {
     "handedness": "right",
     "up_axis": "+Z",
@@ -84,42 +84,42 @@
     "E1": {
       "label": "渺小",
       "keywords": ["孤独", "渺小", "无助", "寂寥", "落寞", "被遗忘", "微不足道"],
-      "camera": {"height_m": 1.2, "focal_length_mm": 50.0, "movement": "push_in", "speed_mps": 0.67, "start_distance_m": 15.0, "end_distance_m": 5.0, "focus": "primary_subject", "pitch_degrees": 5.0},
+      "camera": {"height_m": 1.2, "focal_length_mm": 50.0, "movement": "push_in", "speed_policy": "derive_from_distance_and_duration", "speed_mps": null, "start_distance_m": 15.0, "end_distance_m": 5.0, "focus": "primary_subject", "pitch_degrees": 5.0},
       "composition": {"subject_frame_ratio": [0.01, 0.05], "negative_space_ratio": [0.7, 1.0], "horizon_from_bottom_ratio": 0.3, "subject_horizontal": "center", "major_object_frame_ratio": [0.1, 0.3]},
       "lighting": {"key_vertical_angle_degrees": -90.0, "ambient_intensity": 0.2, "shadow_hardness": 0.9, "key_intensity": null}
     },
     "E2": {
       "label": "压迫",
       "keywords": ["压迫", "危险", "窒息", "恐惧", "威胁", "沉重", "逼近"],
-      "camera": {"height_m": 0.8, "focal_length_mm": 85.0, "movement": "push_in", "speed_mps": 3.33, "start_distance_m": 15.0, "end_distance_m": 3.0, "focus": "largest_object", "pitch_degrees": 15.0},
+      "camera": {"height_m": 0.8, "focal_length_mm": 85.0, "movement": "push_in", "speed_policy": "derive_from_distance_and_duration", "speed_mps": null, "start_distance_m": 15.0, "end_distance_m": 3.0, "focus": "largest_object", "pitch_degrees": 15.0},
       "composition": {"subject_frame_ratio": [0.1, 0.2], "negative_space_ratio": [0.4, 0.5], "horizon_from_bottom_ratio": 0.45, "subject_horizontal": "center", "major_object_frame_ratio": [0.5, 0.7]},
       "lighting": {"key_vertical_angle_degrees": 30.0, "ambient_intensity": 0.1, "shadow_hardness": 1.0, "key_intensity": null}
     },
     "E3": {
       "label": "开阔",
       "keywords": ["开阔", "自由", "平静", "安宁", "释然", "舒展"],
-      "camera": {"height_m": 2.0, "focal_length_mm": 35.0, "movement": "pull_out", "speed_mps": 0.67, "start_distance_m": 15.0, "end_distance_m": 30.0, "focus": "ahead_of_primary_subject", "pitch_degrees": -5.0},
+      "camera": {"height_m": 2.0, "focal_length_mm": 35.0, "movement": "pull_out", "speed_policy": "derive_from_distance_and_duration", "speed_mps": null, "start_distance_m": 15.0, "end_distance_m": 30.0, "focus": "ahead_of_primary_subject", "pitch_degrees": -5.0},
       "composition": {"subject_frame_ratio": [0.01, 0.03], "negative_space_ratio": [0.8, 1.0], "horizon_from_bottom_ratio": 0.5, "subject_horizontal": "left_golden_ratio", "major_object_frame_ratio": [0.05, 0.15]},
       "lighting": {"key_vertical_angle_degrees": 0.0, "ambient_intensity": 0.8, "shadow_hardness": 0.2, "key_intensity": null}
     },
     "E4": {
       "label": "紧张",
       "keywords": ["紧张", "急促", "冲突", "追逐", "慌乱", "焦虑"],
-      "camera": {"height_m": 1.0, "focal_length_mm": 85.0, "movement": "follow", "speed_mps": null, "start_distance_m": 5.0, "end_distance_m": null, "focus": "primary_subject", "pitch_degrees": 10.0},
+      "camera": {"height_m": 1.0, "focal_length_mm": 85.0, "movement": "follow", "speed_policy": "match_subject", "speed_mps": null, "start_distance_m": 5.0, "end_distance_m": null, "focus": "primary_subject", "pitch_degrees": 10.0},
       "composition": {"subject_frame_ratio": [0.15, 0.25], "negative_space_ratio": [0.3, 0.4], "horizon_from_bottom_ratio": 0.5, "subject_horizontal": "opposite_motion_third", "major_object_frame_ratio": [0.2, 0.4]},
       "lighting": {"key_vertical_angle_degrees": -45.0, "ambient_intensity": 0.4, "shadow_hardness": 0.6, "key_intensity": null}
     },
     "E5": {
       "label": "浪漫",
       "keywords": ["浪漫", "温柔", "梦幻", "希望", "温暖", "柔和"],
-      "camera": {"height_m": 1.5, "focal_length_mm": 85.0, "movement": "orbit", "speed_mps": 0.5, "start_distance_m": 10.0, "end_distance_m": 8.0, "focus": "primary_subject", "pitch_degrees": 0.0},
+      "camera": {"height_m": 1.5, "focal_length_mm": 85.0, "movement": "orbit", "speed_policy": "fixed", "speed_mps": 0.5, "start_distance_m": 10.0, "end_distance_m": 8.0, "focus": "primary_subject", "pitch_degrees": 0.0},
       "composition": {"subject_frame_ratio": [0.08, 0.15], "negative_space_ratio": [0.5, 0.6], "horizon_from_bottom_ratio": 0.4, "subject_horizontal": "golden_ratio", "major_object_frame_ratio": [0.15, 0.3]},
       "lighting": {"key_vertical_angle_degrees": 45.0, "ambient_intensity": 0.6, "shadow_hardness": 0.3, "key_intensity": null}
     },
     "E6": {
       "label": "中性",
       "keywords": [],
-      "camera": {"height_m": 1.5, "focal_length_mm": 50.0, "movement": "static", "speed_mps": 0.0, "start_distance_m": 15.0, "end_distance_m": 15.0, "focus": "scene_center", "pitch_degrees": 0.0},
+      "camera": {"height_m": 1.5, "focal_length_mm": 50.0, "movement": "static", "speed_policy": "static", "speed_mps": 0.0, "start_distance_m": 15.0, "end_distance_m": 15.0, "focus": "scene_center", "pitch_degrees": 0.0},
       "composition": {"subject_frame_ratio": [0.05, 0.1], "negative_space_ratio": [0.6, 0.7], "horizon_from_bottom_ratio": 0.45, "subject_horizontal": "center", "major_object_frame_ratio": [0.15, 0.3]},
       "lighting": {"key_vertical_angle_degrees": -30.0, "ambient_intensity": 0.5, "shadow_hardness": 0.5, "key_intensity": null}
     }

@@ -191,7 +191,7 @@ cinescaffold parse \
 
 Mock Provider 不理解文本，只返回指定的模拟响应。未传入 `--mock-response` 时，它仅用于检查 Schema 和 CLI 接口。
 
-语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。解析结果使用 Cinematic Brief v0.2，并附带代码生成的 `translation_parameters`；用户明确要求始终优先于规则推导和缺省值。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
+语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。解析结果使用 Cinematic Brief v0.2，并附带代码生成的 `translation_parameters`；用户明确要求始终优先于规则推导和缺省值。径向推近/后拉的速度由起止距离和本次实际时长计算，避免固定速度与可变时长矛盾。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
 
 #### 2. Cinematic Brief 转 Scene IR
 

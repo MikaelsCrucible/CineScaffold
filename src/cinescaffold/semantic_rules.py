@@ -27,12 +27,18 @@ def apply_translation_rules(
     rules: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """补齐缺省语义，并生成可审计的确定性量化快照。"""
+    _validate_rule_table(rules)
     content = deepcopy(model_content)
     _apply_semantic_defaults(content, rules)
 
     emotion = _classify_emotion(content, rules)
     profile = rules["emotion_classes"][emotion["class_id"]]
-    _apply_emotion_semantics(content, profile, emotion)
+    resolved_profile = deepcopy(profile)
+    resolved_profile["camera"] = _resolve_camera_profile(
+        profile["camera"],
+        float(content["timeline"]["duration_seconds"]),
+    )
+    _apply_emotion_semantics(content, resolved_profile, emotion)
     subjects = _subject_parameters(content, rules)
     motions = _motion_parameters(content, rules)
     scene = _scene_parameters(content, rules)
@@ -48,7 +54,7 @@ def apply_translation_rules(
         "motions": motions,
         "scene": scene,
         "camera": {
-            **deepcopy(profile["camera"]),
+            **deepcopy(resolved_profile["camera"]),
             "source_status": emotion["derived_status"],
         },
         "composition": {
@@ -493,6 +499,20 @@ def _camera_speed_text(camera: dict[str, Any]) -> str:
     return f"{float(speed):g} m/s"
 
 
+def _resolve_camera_profile(
+    camera: dict[str, Any],
+    duration_seconds: float,
+) -> dict[str, Any]:
+    """按冻结时长解析摄影机速度，避免距离与速度互相矛盾。"""
+    resolved = deepcopy(camera)
+    policy = resolved.pop("speed_policy")
+    if policy == "derive_from_distance_and_duration":
+        start = float(resolved["start_distance_m"])
+        end = float(resolved["end_distance_m"])
+        resolved["speed_mps"] = abs(end - start) / duration_seconds
+    return resolved
+
+
 def _camera_trajectory(movement: str) -> str:
     if movement == "orbit":
         return "圆形环绕"
@@ -754,6 +774,49 @@ def _validate_rule_table(value: Any) -> None:
         raise ValueError("语义量化表必须遵守 CineScaffold 的 -Y 世界前方约定")
     if set(value["emotion_classes"]) != {"E1", "E2", "E3", "E4", "E5", "E6"}:
         raise ValueError("语义量化表必须完整定义 E1-E6")
+    for class_id, profile in value["emotion_classes"].items():
+        camera = profile.get("camera")
+        if not isinstance(camera, dict):
+            raise ValueError(f"情绪类别 {class_id} 缺少摄影机规则")
+        _validate_camera_rule(class_id, camera)
     for asset_key in value["scene_assets"]:
         if asset_key not in value["scene_dimensions_m"]:
             raise ValueError(f"场景资产 {asset_key} 缺少尺寸规则")
+
+
+def _validate_camera_rule(class_id: str, camera: dict[str, Any]) -> None:
+    policy = camera.get("speed_policy")
+    supported = {
+        "derive_from_distance_and_duration",
+        "match_subject",
+        "fixed",
+        "static",
+    }
+    if policy not in supported:
+        raise ValueError(f"情绪类别 {class_id} 的摄影机速度策略无效")
+
+    start = camera.get("start_distance_m")
+    end = camera.get("end_distance_m")
+    speed = camera.get("speed_mps")
+    if not _is_number(start) or float(start) < 0:
+        raise ValueError(f"情绪类别 {class_id} 的摄影机起始距离必须是非负数")
+
+    if policy == "derive_from_distance_and_duration":
+        if camera.get("movement") not in {"push_in", "pull_out"}:
+            raise ValueError(f"情绪类别 {class_id} 的径向速度策略只适用于推近或后拉")
+        if not _is_number(end) or float(end) < 0:
+            raise ValueError(f"情绪类别 {class_id} 的径向运镜必须给出非负终止距离")
+        if speed is not None:
+            raise ValueError(f"情绪类别 {class_id} 的径向运镜不得同时写死速度")
+        return
+
+    if policy == "match_subject":
+        if speed is not None:
+            raise ValueError(f"情绪类别 {class_id} 的跟拍速度应由主体运动决定")
+        return
+
+    if not _is_number(speed) or float(speed) < 0:
+        raise ValueError(f"情绪类别 {class_id} 的固定摄影机速度必须是非负数")
+    if policy == "static":
+        if float(speed) != 0 or not _is_number(end) or float(end) != float(start):
+            raise ValueError(f"情绪类别 {class_id} 的静止摄影机距离和速度必须保持不变")

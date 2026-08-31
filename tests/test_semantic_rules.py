@@ -48,12 +48,49 @@ class SemanticRulesTest(unittest.TestCase):
         )
         self.assertEqual(parameters["emotion_class"]["class_id"], "E1")
         self.assertEqual(parameters["camera"]["height_m"], 1.2)
+        self.assertEqual(parameters["camera"]["speed_mps"], 1.0)
+        self.assertEqual(normalized["camera"]["movement"]["speed"]["value"], "1 m/s")
         self.assertEqual(parameters["composition"]["subject_frame_ratio"], [0.01, 0.05])
         self.assertEqual(parameters["scene"]["asset_key"], "desert")
         self.assertEqual(parameters["subjects"][0]["reference_height_m"], 1.75)
         self.assertEqual(parameters["subjects"][0]["facing_direction_world"], [0.0, -1.0, 0.0])
         self.assertEqual(parameters["lighting"]["application_scope"], "final_video_generation_only")
         self.assertFalse(parameters["lighting"]["applied_to_blender_preview"])
+
+    def test_radial_camera_speed_uses_actual_duration(self) -> None:
+        cases = (
+            ("孤独", 15.0, 10.0 / 15.0),
+            ("压迫", 10.0, 1.2),
+            ("开阔", 10.0, 1.5),
+        )
+        for feeling, duration, expected_speed in cases:
+            with self.subTest(feeling=feeling, duration=duration):
+                content = valid_model_output()
+                content["mood"]["emotional_tones"] = [
+                    self._statement(feeling, f"感觉{feeling}")
+                ]
+                content["timeline"].update(
+                    {
+                        "duration_seconds": duration,
+                        "duration_source_status": "explicit",
+                    }
+                )
+
+                _, parameters = apply_translation_rules(content, self.rules)
+
+                self.assertAlmostEqual(
+                    parameters["camera"]["speed_mps"],
+                    expected_speed,
+                )
+
+    def test_invalid_radial_camera_rule_cannot_write_fixed_speed(self) -> None:
+        rules = load_translation_rules(
+            ROOT / "prompts/semantic_parser/translation_rules.json"
+        )
+        rules["emotion_classes"]["E1"]["camera"]["speed_mps"] = 0.67
+
+        with self.assertRaisesRegex(ValueError, "不得同时写死速度"):
+            apply_translation_rules(valid_model_output(), rules)
 
     def test_missing_slots_use_declared_defaults(self) -> None:
         content = valid_model_output()
