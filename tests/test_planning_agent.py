@@ -212,40 +212,25 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertIn("get_capabilities", result["warnings"][0])
 
-    def test_capabilities_are_disclosed_one_section_after_entities_exist(self) -> None:
+    def test_capabilities_are_read_once_before_entities(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             deps = _deps(Path(directory), _toolkit())
-            bulk = deps.call_tool(
-                "get_capabilities",
-                {"sections": ["entities", "tracks"]},
-                lambda: deps.toolkit.get_capabilities(["entities", "tracks"]),
-            )
             entities = deps.call_tool(
+                "get_capabilities",
+                {"sections": ["entities", "constraints", "tracks", "camera", "validators", "limits"]},
+                lambda: deps.toolkit.get_capabilities(
+                    ["entities", "constraints", "tracks", "camera", "validators", "limits"]
+                ),
+            )
+            duplicate = deps.call_tool(
                 "get_capabilities",
                 {"sections": ["entities"]},
                 lambda: deps.toolkit.get_capabilities(["entities"]),
             )
-            premature = deps.call_tool(
-                "get_capabilities",
-                {"sections": ["tracks"]},
-                lambda: deps.toolkit.get_capabilities(["tracks"]),
-            )
-            deps.call_tool(
-                "apply_entity_patch",
-                {"upserts": [_man_entity()], "remove_ids": []},
-                lambda: deps.toolkit.apply_entity_patch([_man_entity()], []),
-            )
-            tracks = deps.call_tool(
-                "get_capabilities",
-                {"sections": ["tracks"]},
-                lambda: deps.toolkit.get_capabilities(["tracks"]),
-            )
 
-        self.assertEqual(bulk["status"], "rejected")
         self.assertEqual(entities["status"], "ok")
-        self.assertEqual(premature["status"], "rejected")
-        self.assertEqual(tracks["status"], "ok")
-        self.assertEqual(deps.capability_sections_read, {"entities", "tracks"})
+        self.assertEqual(duplicate["status"], "rejected")
+        self.assertTrue(deps.capabilities_read)
 
     def test_identical_inspect_is_rejected_without_checkpoint(self) -> None:
         checkpoints: list[int] = []
@@ -335,8 +320,10 @@ def _context(deps: PlanningDeps):
 def _read_capabilities(deps: PlanningDeps) -> None:
     deps.call_tool(
         "get_capabilities",
-        {"sections": ["entities"]},
-        lambda: deps.toolkit.get_capabilities(["entities"]),
+        {"sections": ["entities", "constraints", "tracks", "camera", "validators", "limits"]},
+        lambda: deps.toolkit.get_capabilities(
+            ["entities", "constraints", "tracks", "camera", "validators", "limits"]
+        ),
     )
 
 
