@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -68,11 +70,12 @@ def create_planning_model(
 
 
 def _create_mock_model(objective: ObjectivePlanningBrief) -> FunctionModel:
-    actions = _mock_actions(objective)
+    actions = _mock_design_actions(objective)
 
     def callback(messages: list, info: AgentInfo) -> ModelResponse:
         returns = _tool_returns(messages)
         action_index = len(returns)
+        available_tools = {item.name for item in info.function_tools}
         usage = RequestUsage(
             input_tokens=120 + action_index * 10,
             output_tokens=30,
@@ -80,17 +83,47 @@ def _create_mock_model(objective: ObjectivePlanningBrief) -> FunctionModel:
         )
         commit_ready = any(
             isinstance(item.content, dict)
-            and item.content.get("data", {}).get("acceptance", {}).get("commit_ready") is True
+            and (
+                item.content.get("data", {}).get("commit_ready") is True
+                or item.content.get("data", {})
+                .get("acceptance", {})
+                .get("commit_ready")
+                is True
+            )
             for item in returns
         )
-        if action_index < len(actions) and not commit_ready:
-            name, arguments = actions[action_index]
+        next_action = next(
+            (
+                item
+                for item in actions[action_index:]
+                if item[0] in available_tools
+            ),
+            None,
+        )
+        if next_action is not None and not commit_ready:
+            name, arguments = next_action
+            if name == "apply_design_option":
+                options = next(
+                    (
+                        item.content.get("data", {}).get("options", [])
+                        for item in reversed(returns)
+                        if isinstance(item.content, dict)
+                        and item.tool_name == "request_design_options"
+                    ),
+                    [],
+                )
+                if not options:
+                    raise ValueError("Mock Agent 未收到 Design Options")
+                arguments = {
+                    "base_revision": options[0]["base_revision"],
+                    "option_id": options[0]["option_id"],
+                }
             return ModelResponse(
                 parts=[ToolCallPart(name, arguments, tool_call_id=f"mock_call_{action_index:03d}")],
                 usage=usage,
                 finish_reason="tool_call",
             )
-        revision = _latest_revision(returns)
+        revision = max(_latest_revision(returns), _prompt_revision(messages))
         output_tool = next(
             item for item in info.output_tools if item.name.endswith("CommitRequest")
         )
@@ -111,6 +144,198 @@ def _create_mock_model(objective: ObjectivePlanningBrief) -> FunctionModel:
         )
 
     return FunctionModel(callback, model_name="mock-scene-planner-v0.1")
+
+
+def _mock_design_actions(
+    objective: ObjectivePlanningBrief,
+) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        ("submit_scene_skeleton", {"skeleton": _mock_scene_skeleton(objective)}),
+        (
+            "request_design_options",
+            {"preference": "balanced", "max_options": 3},
+        ),
+        ("apply_design_option", {}),
+        (
+            "solve_candidate",
+            {
+                "scope": "all",
+                "constraint_ids": [],
+                "allowed_variables": [],
+                "locked_variables": [],
+                "profile": "research_default",
+                "strategy": "auto",
+            },
+        ),
+    ]
+
+
+def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
+    """Mock 只做确定性夹具，不代表正式语义推断实现。"""
+
+    entities: list[dict[str, Any]] = []
+    categories: dict[str, str] = {}
+    for index, subject in enumerate(objective.subjects):
+        entity_id = str(subject.get("id") or f"entity_{index + 1:02d}")
+        category = _annotated_value(subject.get("category")) or "object"
+        categories[entity_id] = category
+        entities.append(
+            {
+                "entity_id": entity_id,
+                "semantic_type": category,
+                "role": _annotated_value(subject.get("narrative_role")) or "subject",
+                "proxy_family": _mock_proxy_family(category),
+                "scale_intent": _mock_scale_intent(subject),
+                "source_refs": [
+                    item.path
+                    for item in objective.explicit_requirements
+                    if item.path.startswith(f"content.subjects[{index}]")
+                ],
+            }
+        )
+    environment = _annotated_value(objective.scene_design.get("environment"))
+    ground_id = None
+    if environment:
+        ground_id = "environment_ground"
+        entities.insert(
+            0,
+            {
+                "entity_id": ground_id,
+                "semantic_type": environment,
+                "role": "environment",
+                "proxy_family": "ground_plane",
+                "scale_intent": "large",
+                "source_refs": [
+                    item.path
+                    for item in objective.explicit_requirements
+                    if item.path.startswith("content.scene_design.environment")
+                ],
+            },
+        )
+
+    relations: list[dict[str, Any]] = []
+    if ground_id:
+        for entity_id, category in categories.items():
+            if _mock_proxy_family(category) in {"human_capsule", "vehicle_box"}:
+                relations.append(
+                    {
+                        "relation_id": f"ground_{entity_id}",
+                        "kind": "ground_support",
+                        "subject_id": entity_id,
+                        "reference_id": ground_id,
+                        "source_status": "inferred",
+                        "source_ref": "translation_parameters.scene.asset_key",
+                    }
+                )
+    for index, relationship in enumerate(objective.scene_design.get("relationships", [])):
+        subject_id = relationship.get("subject_id")
+        reference_id = relationship.get("reference_id")
+        if not subject_id or not reference_id:
+            continue
+        relation_text = str(relationship.get("type") or relationship.get("strength") or "").lower()
+        if any(marker in relation_text for marker in ("远", "far", "background", "distant")):
+            kind = "camera_depth_order"
+        elif any(marker in relation_text for marker in ("orbit", "公转", "绕")):
+            kind = "orbit_around"
+        else:
+            kind = "proximity"
+        relations.append(
+            {
+                "relation_id": f"relationship_{index + 1:02d}",
+                "kind": kind,
+                "subject_id": subject_id,
+                "reference_id": reference_id,
+                "source_status": relationship.get("source_status", "inferred"),
+                "source_ref": f"content.scene_design.relationships[{index}]",
+            }
+        )
+
+    phases: list[dict[str, Any]] = []
+    for index, motion in enumerate(objective.subject_motion):
+        subject_id = motion.get("subject_id")
+        if not subject_id:
+            continue
+        semantics = motion.get("motion_semantics") if isinstance(motion.get("motion_semantics"), dict) else {}
+        motion_type = semantics.get("motion_type")
+        action_kind = semantics.get("action_kind")
+        path_type = semantics.get("path_type")
+        if path_type == "orbit_around" or action_kind == "orbit":
+            kind = "orbit"
+            path_family = "circle"
+            direction_mode = "orbit_around"
+        elif motion_type in {"static", "interactive"}:
+            kind = "hold"
+            path_family = "stationary"
+            direction_mode = "none"
+        else:
+            kind = "linear_move"
+            path_family = "linear"
+            direction_mode = (
+                "toward_target" if semantics.get("target_id") else "screen_left_to_right"
+            )
+        phases.append(
+            {
+                "phase_id": f"motion_{index + 1:02d}",
+                "subject_id": subject_id,
+                "kind": kind,
+                "timeline_event_id": semantics.get("timeline_event_id"),
+                "target_id": semantics.get("target_id"),
+                "carrier_id": semantics.get("carrier_id"),
+                "direction_mode": direction_mode,
+                "path_family": path_family,
+                "source_status": semantics.get("source_status", "inferred"),
+                "source_ref": (
+                    f"content.subject_motion[{index}].motion_semantics"
+                    if semantics
+                    else f"content.subject_motion[{index}].action"
+                ),
+            }
+        )
+
+    focus_target = _annotated_value(objective.camera.get("focus_target_id"))
+    if not focus_target:
+        focus_target = next(iter(categories), entities[0]["entity_id"])
+    movement_value = _annotated_value(objective.camera.get("movement", {}).get("type")) or ""
+    movement = (
+        "push_in"
+        if any(marker in movement_value.lower() for marker in ("推", "push"))
+        else "static"
+    )
+    movement_status = (
+        objective.camera.get("movement", {}).get("type", {}).get("source_status", "inferred")
+        if isinstance(objective.camera.get("movement", {}).get("type"), dict)
+        else "inferred"
+    )
+    return {
+        "entities": entities,
+        "relations": relations,
+        "motion_phases": phases,
+        "camera_intent": {
+            "movement": movement,
+            "focus_target_id": focus_target,
+            "view_relation_to_motion": "unspecified",
+            "source_status": movement_status,
+            "source_ref": "content.camera.movement.type",
+        },
+    }
+
+
+def _mock_proxy_family(category: str) -> str:
+    lowered = category.lower()
+    if any(marker in lowered for marker in ("人", "man", "woman", "person", "human")):
+        return "human_capsule"
+    if any(marker in lowered for marker in ("太阳", "地球", "月", "sun", "earth", "moon", "planet")):
+        return "celestial_sphere"
+    if any(marker in lowered for marker in ("车", "飞船", "vehicle", "ship", "car")):
+        return "vehicle_box"
+    return "generic_box"
+
+
+def _mock_scale_intent(subject: dict[str, Any]) -> str:
+    rendered = json.dumps(subject, ensure_ascii=False).lower()
+    if any(marker in rendered for marker in ("巨大", "huge", "giant")):
+        return "huge"
+    return "human" if _mock_proxy_family(rendered) == "human_capsule" else "unspecified"
 
 
 def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str, Any]]]:
@@ -405,6 +630,22 @@ def _latest_revision(returns: list[ToolReturnPart]) -> int:
     for item in reversed(returns):
         if isinstance(item.content, dict) and isinstance(item.content.get("revision_after"), int):
             return item.content["revision_after"]
+    return 0
+
+
+def _prompt_revision(messages: list) -> int:
+    """恢复测试从首条用户提示读取可信 Candidate revision。"""
+
+    for message in messages:
+        if not isinstance(message, ModelRequest):
+            continue
+        for part in message.parts:
+            content = getattr(part, "content", None)
+            if not isinstance(content, str):
+                continue
+            match = re.search(r"Candidate revision (\d+)", content)
+            if match:
+                return int(match.group(1))
     return 0
 
 

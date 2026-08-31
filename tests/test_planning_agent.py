@@ -25,14 +25,19 @@ from cinescaffold.planning.agent import (
     PlanningDeps,
     TrackPatchInput,
     _compact_tool_call_history,
+    _prepare_candidate_tool,
+    _prepare_design_apply_tool,
+    _prepare_design_options_tool,
     _prepare_repair_apply_tool,
     _prepare_repair_suggestion_tool,
+    _prepare_scene_skeleton_tool,
 )
 from cinescaffold.planning.domain import ConstraintSpec, TrackSpec
 from cinescaffold.planning.models import create_planning_model
 from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.trace import TraceRecorder
 from tests.helpers import valid_planning_brief
+from tests.test_planning_design import _desert_skeleton
 from tests.test_planning_toolkit import (
     _man_entity,
     _projected_motion_toolkit,
@@ -207,7 +212,7 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertIsInstance(compacted[-1], ModelRequest)
         self.assertIn("model_history_compacted", trace)
 
-    def test_capabilities_must_be_read_before_other_tools(self) -> None:
+    def test_scene_skeleton_must_precede_candidate_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             deps = _deps(Path(directory), _toolkit())
             result = deps.call_tool(
@@ -217,7 +222,62 @@ class PlanningProtocolTest(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "rejected")
-        self.assertIn("get_capabilities", result["warnings"][0])
+        self.assertIn("Scene Skeleton", result["warnings"][0])
+
+    def test_design_tools_are_exposed_in_symbolic_then_numeric_order(self) -> None:
+        sentinel = object()
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), _toolkit())
+            context = _context(deps)
+
+            self.assertIs(
+                asyncio.run(_prepare_scene_skeleton_tool(context, sentinel)),
+                sentinel,
+            )
+            self.assertIsNone(
+                asyncio.run(_prepare_design_options_tool(context, sentinel))
+            )
+            deps.call_tool(
+                "submit_scene_skeleton",
+                {"skeleton": _desert_skeleton()},
+                lambda: deps.toolkit.submit_scene_skeleton(_desert_skeleton()),
+            )
+            self.assertIsNone(
+                asyncio.run(_prepare_scene_skeleton_tool(context, sentinel))
+            )
+            self.assertIs(
+                asyncio.run(_prepare_design_options_tool(context, sentinel)),
+                sentinel,
+            )
+
+            options = deps.call_tool(
+                "request_design_options",
+                {"preference": "balanced", "max_options": 1},
+                lambda: deps.toolkit.request_design_options(max_options=1),
+            )
+            option = options["data"]["options"][0]
+            self.assertIs(
+                asyncio.run(_prepare_design_apply_tool(context, sentinel)),
+                sentinel,
+            )
+            applied = deps.call_tool(
+                "apply_design_option",
+                {
+                    "base_revision": option["base_revision"],
+                    "option_id": option["option_id"],
+                },
+                lambda: deps.toolkit.apply_design_option(
+                    option["base_revision"], option["option_id"]
+                ),
+            )
+
+            self.assertTrue(applied["data"]["commit_ready"])
+            self.assertIsNone(
+                asyncio.run(_prepare_design_apply_tool(context, sentinel))
+            )
+            self.assertIsNone(
+                asyncio.run(_prepare_candidate_tool(context, sentinel))
+            )
 
     def test_identical_inspect_is_rejected_without_checkpoint(self) -> None:
         checkpoints: list[int] = []

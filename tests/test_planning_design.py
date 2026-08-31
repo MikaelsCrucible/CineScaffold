@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -121,6 +123,51 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertIn("revision 0", result["warnings"][0])
 
+    def test_nested_orbit_option_is_commit_ready_and_target_relative(self) -> None:
+        toolkit = _example_toolkit("solar_system_10s.json")
+        toolkit.submit_scene_skeleton(_solar_skeleton())
+
+        result = toolkit.request_design_options(
+            preference="maximize_motion_readability",
+            max_options=1,
+        )
+        option = result["data"]["options"][0]
+        applied = toolkit.apply_design_option(0, option["option_id"])
+        state = toolkit.store.get()
+
+        self.assertTrue(applied["data"]["commit_ready"], applied["violations"])
+        self.assertEqual(
+            state.motion_tracks["design_orbit_earth"].path.target_id,
+            "sun",
+        )
+        self.assertEqual(
+            state.motion_tracks["design_orbit_moon"].path.target_id,
+            "earth",
+        )
+        self.assertGreater(
+            state.motion_tracks["design_orbit_moon"].path.cycle_count,
+            state.motion_tracks["design_orbit_earth"].path.cycle_count,
+        )
+
+    def test_pickup_option_preserves_arrive_wait_board_depart_sequence(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+        toolkit.submit_scene_skeleton(_pickup_skeleton())
+
+        result = toolkit.request_design_options(max_options=1)
+        option = result["data"]["options"][0]
+        applied = toolkit.apply_design_option(0, option["option_id"])
+        state = toolkit.store.get()
+        car_track = state.motion_tracks["design_motion_car"]
+        visibility = state.motion_tracks["design_visibility_man"]
+
+        self.assertTrue(applied["data"]["commit_ready"], applied["violations"])
+        self.assertEqual(
+            [item.time_seconds for item in car_track.keyframes],
+            [0.0, 4.0, 7.0, 11.958333333333334],
+        )
+        self.assertFalse(visibility.keyframes[-1].value)
+        self.assertAlmostEqual(visibility.keyframes[-1].time_seconds, 7.0)
+
 
 def _desert_skeleton() -> dict:
     return {
@@ -200,6 +247,206 @@ def _desert_toolkit() -> ScenePlanningToolkit:
         fps_denominator=1,
     )
     return ScenePlanningToolkit(attach_duration_resolution(objective, resolution))
+
+
+def _example_toolkit(filename: str) -> ScenePlanningToolkit:
+    root = Path(__file__).resolve().parents[1]
+    brief = json.loads(
+        (root / "examples" / "cinematic_briefs" / filename).read_text(encoding="utf-8")
+    )
+    objective = project_objective_brief(brief).objective_brief
+    resolution = freeze_brief_duration(
+        objective.timeline,
+        fps_numerator=24,
+        fps_denominator=1,
+    )
+    return ScenePlanningToolkit(attach_duration_resolution(objective, resolution))
+
+
+def _solar_skeleton() -> dict:
+    return {
+        "entities": [
+            _symbolic_entity("sun", "sun", "center", "celestial_sphere", "large", 0),
+            _symbolic_entity("earth", "earth", "planet", "celestial_sphere", "small", 1),
+            _symbolic_entity("moon", "moon", "satellite", "celestial_sphere", "tiny", 2),
+        ],
+        "relations": [
+            _symbolic_relation("earth_sun", "orbit_around", "earth", "sun", 0),
+            _symbolic_relation("moon_earth", "orbit_around", "moon", "earth", 1),
+        ],
+        "motion_phases": [
+            _symbolic_phase("sun_hold", "sun", "hold", 0, status="inferred"),
+            _symbolic_phase(
+                "earth_orbit", "earth", "orbit", 1, target_id="sun", path="circle"
+            ),
+            _symbolic_phase(
+                "moon_orbit", "moon", "orbit", 2, target_id="earth", path="circle"
+            ),
+        ],
+        "camera_intent": _symbolic_camera("sun"),
+    }
+
+
+def _pickup_skeleton() -> dict:
+    return {
+        "entities": [
+            {
+                "entity_id": "road",
+                "semantic_type": "road",
+                "role": "environment",
+                "proxy_family": "ground_plane",
+                "scale_intent": "large",
+                "source_refs": [],
+            },
+            _symbolic_entity("man", "human", "passenger", "human_capsule", "human", 0),
+            _symbolic_entity("car", "car", "vehicle", "vehicle_box", "large", 1),
+        ],
+        "relations": [
+            {
+                "relation_id": "man_road",
+                "kind": "ground_support",
+                "subject_id": "man",
+                "reference_id": "road",
+                "source_status": "explicit",
+                "source_ref": "content.scene_design.relationships[0]",
+            },
+            {
+                "relation_id": "car_stops_beside_man",
+                "kind": "proximity",
+                "subject_id": "car",
+                "reference_id": "man",
+                "timeline_event_id": "wait_and_arrive",
+                "temporal_mode": "at_end",
+                "source_status": "explicit",
+                "source_ref": "content.scene_design.relationships[1]",
+            },
+            {
+                "relation_id": "man_boards_car",
+                "kind": "proximity",
+                "subject_id": "man",
+                "reference_id": "car",
+                "timeline_event_id": "boarding",
+                "source_status": "explicit",
+                "source_ref": "content.scene_design.relationships[2]",
+            },
+        ],
+        "motion_phases": [
+            _symbolic_phase("man_wait", "man", "hold", 0, event="wait_and_arrive"),
+            _symbolic_phase(
+                "car_arrive",
+                "car",
+                "linear_move",
+                1,
+                event="wait_and_arrive",
+                target_id="man",
+                direction="toward_target",
+                path="linear",
+            ),
+            _symbolic_phase(
+                "man_board",
+                "man",
+                "board",
+                2,
+                event="boarding",
+                target_id="car",
+            ),
+            _symbolic_phase(
+                "car_wait", "car", "hold", 3, event="boarding", status="inferred"
+            ),
+            _symbolic_phase(
+                "car_depart",
+                "car",
+                "linear_move",
+                4,
+                event="departure",
+                target_id="man",
+                direction="away_from_target",
+                path="linear",
+            ),
+            _symbolic_phase(
+                "man_carried",
+                "man",
+                "carried",
+                5,
+                event="departure",
+                carrier_id="car",
+                status="inferred",
+            ),
+        ],
+        "camera_intent": _symbolic_camera("car"),
+    }
+
+
+def _symbolic_entity(
+    entity_id: str,
+    semantic_type: str,
+    role: str,
+    proxy_family: str,
+    scale_intent: str,
+    subject_index: int,
+) -> dict:
+    return {
+        "entity_id": entity_id,
+        "semantic_type": semantic_type,
+        "role": role,
+        "proxy_family": proxy_family,
+        "scale_intent": scale_intent,
+        "source_refs": [f"content.subjects[{subject_index}].category"],
+    }
+
+
+def _symbolic_relation(
+    relation_id: str,
+    kind: str,
+    subject_id: str,
+    reference_id: str,
+    relation_index: int,
+) -> dict:
+    return {
+        "relation_id": relation_id,
+        "kind": kind,
+        "subject_id": subject_id,
+        "reference_id": reference_id,
+        "source_status": "explicit",
+        "source_ref": f"content.scene_design.relationships[{relation_index}]",
+    }
+
+
+def _symbolic_phase(
+    phase_id: str,
+    subject_id: str,
+    kind: str,
+    motion_index: int,
+    *,
+    event: str | None = None,
+    target_id: str | None = None,
+    carrier_id: str | None = None,
+    direction: str = "none",
+    path: str = "stationary",
+    status: str = "explicit",
+) -> dict:
+    return {
+        "phase_id": phase_id,
+        "subject_id": subject_id,
+        "kind": kind,
+        "timeline_event_id": event,
+        "target_id": target_id,
+        "carrier_id": carrier_id,
+        "direction_mode": "orbit_around" if kind == "orbit" else direction,
+        "path_family": path,
+        "source_status": status,
+        "source_ref": f"content.subject_motion[{motion_index}].action",
+    }
+
+
+def _symbolic_camera(focus_target_id: str) -> dict:
+    return {
+        "movement": "static",
+        "focus_target_id": focus_target_id,
+        "view_relation_to_motion": "unspecified",
+        "source_status": "inferred",
+        "source_ref": "content.camera.movement.type",
+    }
 
 
 if __name__ == "__main__":

@@ -320,7 +320,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "tool_call_completed" for item in trace))
         self.assertTrue(any(item["event_type"] == "commit_gate_completed" for item in trace))
         run_started = next(item for item in trace if item["event_type"] == "run_started")
-        self.assertEqual(run_started["payload"]["toolkit_version"], "0.16")
+        self.assertEqual(run_started["payload"]["toolkit_version"], "0.17")
         self.assertNotIn("孤独", "\n".join(trace_lines))
         # 普通运行保持精简日志：不记录对话内容，response 只记类型与规模。
         request_started = next(
@@ -373,7 +373,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertEqual(second.final_revision, first.final_revision)
         self.assertIn("candidate_checkpoint_loaded", trace)
 
-    def test_commit_repair_attempts_use_distinct_agent_run_ids(self) -> None:
+    def test_design_option_handles_explicit_environment_without_repair_retry(self) -> None:
         brief = valid_planning_brief()
         brief["content"]["scene_design"]["environment"] = {
             "value": "荒漠",
@@ -390,7 +390,7 @@ class InterpreterRunnerTest(unittest.TestCase):
 
             result = asyncio.run(InterpreterRunner(config).run(brief))
 
-        self.assertEqual(result.status, "commit_rejected")
+        self.assertEqual(result.status, "success")
         self.assertIsNone(result.error)
 
     def test_default_limits_distinguish_context_from_cumulative_usage(self) -> None:
@@ -450,7 +450,7 @@ class InterpreterRunnerTest(unittest.TestCase):
             for item in completed["payload"]["response_parts"]
             if item["kind"] == "tool-call"
         )
-        self.assertIn("sections", json.dumps(first_call.get("args"), ensure_ascii=False))
+        self.assertIn("skeleton", json.dumps(first_call.get("args"), ensure_ascii=False))
 
 
 if __name__ == "__main__":

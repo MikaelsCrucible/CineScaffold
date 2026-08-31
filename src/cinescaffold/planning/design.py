@@ -62,6 +62,7 @@ class SkeletonRelation(StrictModel):
         "left", "right", "front", "behind", "below", "above"
     ] | None = None
     timeline_event_id: str | None = None
+    temporal_mode: Literal["throughout", "at_start", "at_end"] = "throughout"
     source_status: SourceStatus
     source_ref: str
 
@@ -241,6 +242,16 @@ def task_capability_slice(
         },
         "required_relation_kinds": relation_kinds,
         "required_path_families": path_families,
+        "inspect_views": [
+            "summary",
+            "entities",
+            "camera",
+            "constraints",
+            "violations",
+            "timeline",
+            "diff",
+            "full_ir",
+        ],
         "acceptance": {
             "requires_hard_pass": True,
             "minimum_soft_score": profile.minimum_soft_score,
@@ -432,7 +443,12 @@ def _build_relation_constraints(
     constraints: dict[str, ConstraintSpec] = {}
     duration = candidate.timeline.duration_seconds
     for relation in skeleton.relations:
-        time_range = _event_range(objective, relation.timeline_event_id, duration)
+        time_range = _relation_time_range(
+            objective,
+            relation,
+            candidate,
+            duration,
+        )
         strength = "hard" if relation.source_status == "explicit" else "soft"
         common = {
             "constraint_id": f"skeleton_{relation.relation_id}",
@@ -485,33 +501,66 @@ def _build_relation_constraints(
                     "maximum_ratio": 20.0,
                 },
             }
+        elif relation.kind == "orbit_around":
+            subject = candidate.entities[relation.subject_id]
+            reference = candidate.entities[relation.reference_id]
+            radius = max(
+                2.0,
+                _proxy_bounding_radius(subject)
+                + _proxy_bounding_radius(reference)
+                + 2.0,
+            )
+            payload = common | {
+                "type": "distance_range",
+                "parameters": {
+                    "entity_ids": [relation.subject_id, relation.reference_id],
+                    "minimum_meters": radius * 0.95,
+                    "maximum_meters": radius * 1.05,
+                },
+            }
         else:
             continue
         constraint = ConstraintSpec.model_validate(payload)
         constraints[constraint.constraint_id] = constraint
 
     for phase in skeleton.motion_phases:
-        if phase.kind != "hold":
-            continue
-        constraint = ConstraintSpec.model_validate(
-            {
-                "constraint_id": f"skeleton_hold_{phase.phase_id}",
+        common = {
+            "constraint_id": f"skeleton_motion_{phase.phase_id}",
+            "strength": "hard" if phase.source_status == "explicit" else "soft",
+            "subjects": [phase.subject_id],
+            "time_range_seconds": _event_range(
+                objective,
+                phase.timeline_event_id,
+                duration,
+            ),
+            "source_status": phase.source_status,
+            "source_ref": phase.source_ref,
+        }
+        if phase.kind == "hold":
+            payload = common | {
                 "type": "hold",
-                "strength": "hard" if phase.source_status == "explicit" else "soft",
-                "subjects": [phase.subject_id],
-                "time_range_seconds": _event_range(
-                    objective,
-                    phase.timeline_event_id,
-                    duration,
-                ),
                 "parameters": {
                     "target_id": phase.subject_id,
                     "components": ["translation", "rotation", "scale"],
                 },
-                "source_status": phase.source_status,
-                "source_ref": phase.source_ref,
             }
-        )
+        elif phase.kind == "linear_move":
+            payload = common | {
+                "type": "motion_direction",
+                "parameters": {
+                    "target_id": phase.subject_id,
+                    "direction": (
+                        "left"
+                        if phase.direction_mode == "screen_right_to_left"
+                        else "right"
+                    ),
+                    "space": "world",
+                    "minimum_displacement_m": 0.5,
+                },
+            }
+        else:
+            continue
+        constraint = ConstraintSpec.model_validate(payload)
         constraints[constraint.constraint_id] = constraint
     return constraints
 
@@ -679,6 +728,13 @@ def _build_camera(
     start_distance *= distance_scale
     end_distance *= distance_scale
     height = float(parameters.get("height_m") or 1.5)
+    has_orbit = any(item.kind == "orbit" for item in skeleton.motion_phases)
+    if has_orbit and "height_m" not in parameters:
+        # 缺省轨道镜头提高俯视夹角，避免圆轨道投影成直线往返。
+        focus_height = _proxy_half_height(
+            candidate.entities[skeleton.camera_intent.focus_target_id]
+        )
+        height = focus_height + start_distance * 0.75
     view = skeleton.camera_intent.view_relation_to_motion
     yaw = {
         "front": 0.0,
@@ -942,6 +998,21 @@ def _event_range(
                 if 0.0 <= start < end <= duration:
                     return (start, end)
     return (0.0, duration)
+
+
+def _relation_time_range(
+    objective: ObjectivePlanningBrief,
+    relation: SkeletonRelation,
+    candidate: CandidateState,
+    duration: float,
+) -> tuple[float, float]:
+    start, end = _event_range(objective, relation.timeline_event_id, duration)
+    frame_step = candidate.timeline.fps_denominator / candidate.timeline.fps_numerator
+    if relation.temporal_mode == "at_start":
+        return (start, min(end, start + frame_step))
+    if relation.temporal_mode == "at_end":
+        return (max(start, end - frame_step), end)
+    return (start, end)
 
 
 def _track_end_time(candidate: CandidateState, end: float) -> float:

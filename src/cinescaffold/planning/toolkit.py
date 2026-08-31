@@ -3129,6 +3129,14 @@ def _hard_semantic_violations(
     for entity in state.entities.values():
         for source_ref in entity.source_refs:
             locations.setdefault(source_ref, set()).add("entity")
+        if (
+            entity.ground_interaction is not None
+            and entity.ground_interaction.source_ref
+        ):
+            locations.setdefault(
+                entity.ground_interaction.source_ref,
+                set(),
+            ).add("ground_interaction")
     for track in state.motion_tracks.values():
         if track.source_ref:
             locations.setdefault(track.source_ref, set()).add("entity_track")
@@ -3284,7 +3292,7 @@ def _compatible_locations(source_ref: str) -> set[str]:
     if source_ref.startswith("content.subject_motion["):
         return {"entity_track", "constraint:*"}
     if source_ref.startswith("content.scene_design.relationships["):
-        return {"constraint:*", "entity_track"}
+        return {"constraint:*", "entity_track", "ground_interaction"}
     if source_ref.startswith("content.scene_design.environment"):
         return {"entity"}
     if source_ref.startswith("content.composition"):

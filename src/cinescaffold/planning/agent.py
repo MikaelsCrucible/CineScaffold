@@ -31,6 +31,7 @@ from cinescaffold.planning.domain import (
     StrictModel,
     TrackKeyframe,
 )
+from cinescaffold.planning.design import SceneSkeleton
 from cinescaffold.planning.toolkit import TOOLKIT_VERSION, ScenePlanningToolkit
 from cinescaffold.planning.trace import TraceRecorder
 
@@ -57,7 +58,7 @@ class ConstraintPatchInput(StrictModel):
     subjects: list[str] = Field(default_factory=list)
     time_range_seconds: tuple[float, float]
     parameters: dict[str, Any] = Field(
-        description="字段必须遵循 get_capabilities.constraint_parameter_schemas 中对应 type 的契约"
+        description="字段必须遵循 Design Option relevant_capabilities 或工具错误返回的对应契约"
     )
     source_status: Literal["explicit", "inferred", "default", "agent_selected", "unknown"]
     source_ref: str
@@ -289,14 +290,38 @@ class PlanningDeps:
         arguments: dict[str, Any],
         revision: int,
     ) -> dict[str, Any] | None:
-        if name != "get_capabilities" and not self.capabilities_read:
-            return _protocol_rejected(revision, "必须先读取一次 get_capabilities", ["调用 get_capabilities"])
         if name == "get_capabilities" and self.capabilities_read:
             return _protocol_rejected(
                 revision,
                 "能力清单在本次上下文中已经读取，不得重复调用",
                 ["使用已有能力结果继续构造或提交"],
             )
+        if name == "get_capabilities":
+            # 仅保留给兼容测试和显式低层诊断；正常 Agent 工具表不会暴露。
+            return None
+        if not self.capabilities_read and not self.toolkit.design_option_applied:
+            if not self.toolkit.has_scene_skeleton and name != "submit_scene_skeleton":
+                return _protocol_rejected(
+                    revision,
+                    "必须先提交只含符号关系的 Scene Skeleton",
+                    ["调用 submit_scene_skeleton"],
+                )
+            if (
+                self.toolkit.has_scene_skeleton
+                and not self.toolkit.has_design_options
+                and name != "request_design_options"
+            ):
+                return _protocol_rejected(
+                    revision,
+                    "Scene Skeleton 已接受；下一步必须请求数值设计选项",
+                    ["调用 request_design_options"],
+                )
+            if self.toolkit.has_design_options and name != "apply_design_option":
+                return _protocol_rejected(
+                    revision,
+                    "Design Options 已生成；请选择并原子应用一个 option_id",
+                    ["调用 apply_design_option"],
+                )
         validation = self.toolkit.store.get().validation
         if (
             name != "get_capabilities"
@@ -347,8 +372,38 @@ async def _prepare_capabilities_tool(
     ctx: RunContext[PlanningDeps],
     tool_definition: ToolDefinition,
 ) -> ToolDefinition | None:
-    # 能力读取后从模型工具表移除，避免重复调用浪费请求。
-    return None if ctx.deps.capabilities_read else tool_definition
+    # 正常流程由 Design Options 返回任务相关能力，不再付费读取整本手册。
+    del ctx, tool_definition
+    return None
+
+
+async def _prepare_scene_skeleton_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    if ctx.deps.capabilities_read or ctx.deps.toolkit.design_option_applied:
+        return None
+    return None if ctx.deps.toolkit.has_scene_skeleton else tool_definition
+
+
+async def _prepare_design_options_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    toolkit = ctx.deps.toolkit
+    if ctx.deps.capabilities_read or toolkit.design_option_applied:
+        return None
+    return tool_definition if toolkit.has_scene_skeleton and not toolkit.has_design_options else None
+
+
+async def _prepare_design_apply_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    toolkit = ctx.deps.toolkit
+    if ctx.deps.capabilities_read or toolkit.design_option_applied:
+        return None
+    return tool_definition if toolkit.has_design_options else None
 
 
 async def _prepare_candidate_tool(
@@ -356,7 +411,7 @@ async def _prepare_candidate_tool(
     tool_definition: ToolDefinition,
 ) -> ToolDefinition | None:
     # 首次能力读取前只暴露能力工具；可提交后只允许结构化终止。
-    if not ctx.deps.capabilities_read:
+    if not (ctx.deps.capabilities_read or ctx.deps.toolkit.design_option_applied):
         return None
     validation = ctx.deps.toolkit.store.get().validation
     if (
@@ -366,6 +421,19 @@ async def _prepare_candidate_tool(
     ):
         return None
     return tool_definition
+
+
+async def _prepare_manual_mutation_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    prepared = await _prepare_candidate_tool(ctx, tool_definition)
+    if prepared is None:
+        return None
+    toolkit = ctx.deps.toolkit
+    if toolkit.has_repairable_violations or toolkit.has_current_repair_suggestions:
+        return None
+    return prepared
 
 
 async def _prepare_repair_suggestion_tool(
@@ -401,6 +469,51 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         end_strategy="exhaustive",
         capabilities=[ProcessHistory(_compact_tool_call_history)],
     )
+
+    @agent.tool(sequential=True, prepare=_prepare_scene_skeleton_tool)
+    async def submit_scene_skeleton(
+        ctx: RunContext[PlanningDeps],
+        skeleton: SceneSkeleton,
+    ) -> dict[str, Any]:
+        """提交实体、关系、动作阶段和摄影机意图；不得包含坐标或尺寸。"""
+        arguments = {"skeleton": skeleton.model_dump(mode="json")}
+        return ctx.deps.call_tool(
+            "submit_scene_skeleton",
+            arguments,
+            lambda: ctx.deps.toolkit.submit_scene_skeleton(arguments["skeleton"]),
+        )
+
+    @agent.tool(sequential=True, prepare=_prepare_design_options_tool)
+    async def request_design_options(
+        ctx: RunContext[PlanningDeps],
+        preference: Literal[
+            "balanced",
+            "preserve_composition",
+            "maximize_motion_readability",
+        ] = "balanced",
+        max_options: int = 3,
+    ) -> dict[str, Any]:
+        """让 Toolkit 联合求解数值范围、候选策略和下一步相关能力。"""
+        arguments = {"preference": preference, "max_options": max_options}
+        return ctx.deps.call_tool(
+            "request_design_options",
+            arguments,
+            lambda: ctx.deps.toolkit.request_design_options(**arguments),
+        )
+
+    @agent.tool(sequential=True, prepare=_prepare_design_apply_tool)
+    async def apply_design_option(
+        ctx: RunContext[PlanningDeps],
+        base_revision: int,
+        option_id: str,
+    ) -> dict[str, Any]:
+        """按 option_id 原子物化数值 Candidate，不手抄范围或坐标。"""
+        arguments = {"base_revision": base_revision, "option_id": option_id}
+        return ctx.deps.call_tool(
+            "apply_design_option",
+            arguments,
+            lambda: ctx.deps.toolkit.apply_design_option(**arguments),
+        )
 
     @agent.tool(sequential=True, prepare=_prepare_capabilities_tool)
     async def get_capabilities(
@@ -468,7 +581,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.inspect_candidate(**arguments),
         )
 
-    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
+    @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
     async def apply_entity_patch(
         ctx: RunContext[PlanningDeps],
         upserts: list[EntityPatchInput],
@@ -486,7 +599,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.apply_entity_patch(**arguments),
         )
 
-    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
+    @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
     async def apply_constraint_patch(
         ctx: RunContext[PlanningDeps],
         upserts: list[ConstraintPatchInput],
@@ -503,7 +616,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.apply_constraint_patch(**arguments),
         )
 
-    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
+    @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
     async def apply_motion_patch(
         ctx: RunContext[PlanningDeps],
         upserts: list[TrackPatchInput],
@@ -520,7 +633,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.apply_motion_patch(**arguments),
         )
 
-    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
+    @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
     async def apply_camera_patch(
         ctx: RunContext[PlanningDeps],
         camera_id: str,
@@ -545,7 +658,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.apply_camera_patch(**arguments),
         )
 
-    @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
+    @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
     async def solve_candidate(
         ctx: RunContext[PlanningDeps],
         scope: Literal["layout", "camera", "motion", "all"] = "all",

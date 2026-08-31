@@ -441,9 +441,17 @@ def _initial_agent_prompt(
         if resumed
         else f"当前 Candidate revision 为 {current_revision}。"
     )
+    workflow = (
+        "请继续验证或修复已恢复的 Candidate；不得重新提交 Scene Skeleton。"
+        if resumed
+        else (
+            "先提交不含数值的 Scene Skeleton，再请求并应用 Toolkit Design Option；"
+            "不要处理或猜测已剥离的主观字段。"
+        )
+    )
     return (
         "请根据以下只含客观内容的 Objective Planning Brief 建立并验证 Candidate。"
-        "先检查能力，再通过工具构造；不要处理或猜测已剥离的主观字段。"
+        + workflow
         + continuation
         + (
             "恢复摘要如下；不得重复读取 summary，只在修复需要时读取更具体的枚举视图。\n"
