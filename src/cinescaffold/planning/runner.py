@@ -71,9 +71,9 @@ class InterpreterRunConfig(BaseModel):
     max_total_tokens: int | None = Field(default=None, ge=1)
     max_seconds: float = Field(default=DEFAULT_MAX_SECONDS, gt=0)
     max_commit_attempts: int = Field(default=DEFAULT_MAX_COMMIT_ATTEMPTS, ge=1)
-    thinking_mode: Literal["enabled", "disabled"] | None = "enabled"
-    reasoning_effort: Literal["low", "high", "max"] | None = "low"
-    model_max_tokens: int | None = Field(default=8192, ge=1)
+    thinking_mode: Literal["enabled", "disabled"] | None = None
+    reasoning_effort: Literal["low", "high", "max"] | None = None
+    model_max_tokens: int | None = Field(default=None, ge=1)
     full_power_diagnostic: bool = False
     trace_config: TraceConfig = Field(default_factory=TraceConfig)
     cost_rates: CostRates | None = None

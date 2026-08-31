@@ -11,14 +11,10 @@ class TerminalReporterTest(unittest.TestCase):
         stream = io.StringIO()
         reporter = TerminalReporter(color=False, stream=stream)
 
-        reporter.event(
-            "model_request_started",
-            {"request_index": 2, "message_count": 3, "function_tools": ["apply_entity_patch"]},
-        )
+        reporter.event("model_request_started", {"request_index": 2, "message_count": 3})
 
         rendered = stream.getvalue()
         self.assertIn("模型请求", rendered)
-        self.assertIn("1 个函数工具", rendered)
         self.assertNotIn("模型思考", rendered)
 
     def test_non_tool_text_compaction_is_visible(self) -> None:
@@ -43,11 +39,7 @@ class TerminalReporterTest(unittest.TestCase):
             "model_request_completed",
             {
                 "request_index": 3,
-                "usage": {
-                    "input_tokens": 1234,
-                    "output_tokens": 56,
-                    "details": {"reasoning_tokens": 42},
-                },
+                "usage": {"input_tokens": 1234, "output_tokens": 56},
                 "duration_ms": 1250,
             },
         )
@@ -56,7 +48,6 @@ class TerminalReporterTest(unittest.TestCase):
         self.assertIn("模型响应", rendered)
         self.assertIn("输入 1,234", rendered)
         self.assertIn("输出 56 tokens", rendered)
-        self.assertIn("reasoning 42", rendered)
         self.assertIn("1.25s", rendered)
 
     def test_quiet_reporter_emits_nothing(self) -> None:

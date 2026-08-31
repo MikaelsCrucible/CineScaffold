@@ -169,7 +169,14 @@ class ScenePlanningToolkit:
 
     def get_capabilities(self, sections: list[str] | None = None) -> dict[str, Any]:
         state = self.store.get()
-        requested = sections or ["entities"]
+        requested = sections or [
+            "entities",
+            "constraints",
+            "tracks",
+            "camera",
+            "validators",
+            "limits",
+        ]
         data: dict[str, Any] = {
             "versions": {
                 "toolkit": TOOLKIT_VERSION,
@@ -417,45 +424,6 @@ class ScenePlanningToolkit:
                 "camera_track_ids": sorted(state.camera.tracks) if state.camera else [],
             },
         }
-        section_keys = {
-            "entities": {
-                "supported_geometry",
-                "supported_ground_interactions",
-                "ground_interaction_guidance",
-            },
-            "tracks": {
-                "supported_tracks",
-                "supported_path_representations",
-                "reference_frames",
-            },
-            "camera": {"semantic_distinctions"},
-            "constraints": {
-                "supported_constraints",
-                "constraint_parameter_schemas",
-                "constraint_guidance",
-            },
-            "validators": {"validators"},
-            "limits": set(),
-        }
-        unknown = sorted(set(requested) - section_keys.keys())
-        if unknown:
-            return _rejected(
-                state.revision,
-                f"未知或不属于 Scene Planning 的 capability section：{', '.join(unknown)}",
-            )
-        # 每次查询只返回稳定核心协议与所请求领域，避免 sections 仅作为标签却泄漏整份目录。
-        core_keys = {
-            "versions",
-            "coordinate_system",
-            "sections",
-            "inspect_views",
-            "acceptance",
-            "timeline",
-            "current_counts",
-            "semantic_distinctions",
-        }
-        selected_keys = core_keys | set().union(*(section_keys[item] for item in requested))
-        data = {key: value for key, value in data.items() if key in selected_keys}
         gaps = [
             "compound_proxy_geometry",
             "occlusion_fraction_validator",

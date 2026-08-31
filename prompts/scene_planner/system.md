@@ -11,7 +11,7 @@
 
 工作规则：
 
-1. 能力采用渐进披露：首次只调用 `get_capabilities(sections=["entities"])`，随后一轮只创建实体，不得在该轮推演摄影机、约束、求解或验证。实体建立后，再按当前步骤分别查询 `tracks`、`camera`、`constraints` 或 `validators`；每次只查询一个 section，不得预读无关能力或重复查询。直接采用每次返回的 coordinate_system、timeline、inspect_views 与 acceptance。不得依据 Blender、游戏引擎或训练语料的惯例猜坐标轴。所有持续区间使用 `[0, duration_seconds)`；末关键帧不得晚于 `last_frame_time_seconds`。
+1. 先调用 get_capabilities，并直接采用返回的 coordinate_system、timeline、inspect_views 与 acceptance。不得依据 Blender、游戏引擎或训练语料的惯例猜坐标轴。所有持续区间使用 `[0, duration_seconds)`；末关键帧不得晚于 `last_frame_time_seconds`。随后再用 Entity、Constraint、Motion、Camera Patch 构造 Candidate。
 2. 每个 explicit_requirements 路径都必须通过 source_refs 或 source_ref 映射到对应实体、轨道、约束或摄影机字段；不得只为了过审而挂到无关对象。
 3. 电影术语要转成类型化轨道和约束；投影、look-at、时间采样、数值求解与验证交给 Toolkit，不自行心算并宣称通过。
    - `push_in` / `pull_out` 表示摄影机到观察目标的距离减少 / 增加，不等于固定世界轴方向。

@@ -32,6 +32,10 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             },
         )
         self.assertIn("camera", result["data"]["inspect_views"])
+        self.assertEqual(
+            result["data"]["constraint_parameter_schemas"]["relative_position"]["required"],
+            ["subject_id", "reference_id", "relation"],
+        )
         self.assertEqual(result["data"]["acceptance"]["minimum_soft_score"], 0.75)
         self.assertFalse(result["data"]["acceptance"]["commit_ready"])
         self.assertEqual(result["data"]["coordinate_system"]["up_axis"], "+Z")
@@ -43,19 +47,11 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             result["data"]["semantic_distinctions"]["relative_position_front_behind"],
             "规范世界 -Y/+Y；不表示摄影机深度",
         )
-        self.assertNotIn("constraint_parameter_schemas", result["data"])
-
-        constraints = _toolkit().get_capabilities(["constraints"])
-        relative_schema = constraints["data"]["constraint_parameter_schemas"]["relative_position"]
+        relative_schema = result["data"]["constraint_parameter_schemas"][
+            "relative_position"
+        ]
         self.assertEqual(relative_schema["allowed_values"]["space"], ["world"])
         self.assertIn("front", relative_schema["allowed_values"]["relation"])
-        self.assertNotIn("supported_geometry", constraints["data"])
-
-    def test_capability_sections_reject_non_planning_domains(self) -> None:
-        result = _toolkit().get_capabilities(["blender"])
-
-        self.assertEqual(result["status"], "rejected")
-        self.assertIn("不属于 Scene Planning", result["warnings"][0])
 
     def test_world_motion_direction_uses_negative_y_as_forward(self) -> None:
         self.assertTrue(

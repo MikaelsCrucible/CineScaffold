@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 from pydantic import Field
 from pydantic_ai import Agent, RunContext
@@ -153,9 +153,6 @@ class TrackPatchInput(StrictModel):
 
 MAX_AGENT_HISTORY_MESSAGES = 13
 NON_TOOL_TEXT_MARKER = "[已省略不符合协议的无工具正文；请按重试指令调用工具。]"
-PLANNING_CAPABILITY_SECTIONS = frozenset(
-    {"entities", "tracks", "camera", "constraints", "validators"}
-)
 
 
 def _compact_tool_call_history(
@@ -217,7 +214,7 @@ class PlanningDeps:
     trace: TraceRecorder
     deadline_monotonic: float | None
     checkpoint_writer: Callable[[CandidateState], Path] | None = None
-    capability_sections_read: set[str] = field(default_factory=set)
+    capabilities_read: bool = False
     inspected_calls: set[str] = field(default_factory=set)
     compacted_non_tool_responses: set[str] = field(default_factory=set)
     preserve_complete_thinking_history: bool = False
@@ -274,7 +271,7 @@ class PlanningDeps:
             result=result,
         )
         if name == "get_capabilities" and result.get("status") == "ok":
-            self.capability_sections_read.update(arguments.get("sections", []))
+            self.capabilities_read = True
         if name == "inspect_candidate" and result.get("status") == "ok":
             self.inspected_calls.add(self._inspect_key(arguments, revision_before))
         if self.checkpoint_writer is not None and current_revision_after != revision_before:
@@ -292,54 +289,13 @@ class PlanningDeps:
         arguments: dict[str, Any],
         revision: int,
     ) -> dict[str, Any] | None:
-        if name != "get_capabilities" and "entities" not in self.capability_sections_read:
+        if name != "get_capabilities" and not self.capabilities_read:
             return _protocol_rejected(revision, "必须先读取一次 get_capabilities", ["调用 get_capabilities"])
-        if name == "get_capabilities":
-            sections = set(arguments.get("sections", []))
-            if not sections or not sections <= PLANNING_CAPABILITY_SECTIONS:
-                return _protocol_rejected(
-                    revision,
-                    "每次必须查询一个有效的 Scene Planning capability section",
-                    ["首次查询 entities；后续按当前阶段查询 tracks/camera/constraints/validators"],
-                )
-            if len(sections) != 1:
-                return _protocol_rejected(
-                    revision,
-                    "每次只允许查询一个 capability section，避免一次注入完整能力目录",
-                    ["首次只查询 entities"],
-                )
-            section = next(iter(sections))
-            if not self.capability_sections_read and section != "entities":
-                return _protocol_rejected(
-                    revision,
-                    "首次 capability 查询必须是 entities",
-                    ["调用 get_capabilities(sections=['entities'])"],
-                )
-            if self.capability_sections_read and not self.toolkit.store.get().entities:
-                return _protocol_rejected(
-                    revision,
-                    "读取 entities 能力后必须先创建实体，再查询后续领域",
-                    ["调用 apply_entity_patch"],
-                )
-            if section in self.capability_sections_read:
-                return _protocol_rejected(
-                    revision,
-                    f"capability section 已读取，不得重复查询：{section}",
-                    ["使用已有能力结果继续构造 Candidate"],
-                )
-        if name != "get_capabilities" and not self._tool_capability_ready(name):
-            required = {
-                "apply_entity_patch": "entities",
-                "apply_motion_patch": "tracks",
-                "apply_camera_patch": "camera",
-                "apply_constraint_patch": "constraints",
-                "solve_candidate": "validators",
-                "validate_candidate": "validators",
-            }.get(name)
+        if name == "get_capabilities" and self.capabilities_read:
             return _protocol_rejected(
                 revision,
-                f"使用 {name} 前必须按需读取 {required} capability",
-                [f"调用 get_capabilities(sections=['{required}'])"],
+                "能力清单在本次上下文中已经读取，不得重复调用",
+                ["使用已有能力结果继续构造或提交"],
             )
         validation = self.toolkit.store.get().validation
         if (
@@ -362,17 +318,6 @@ class PlanningDeps:
                     ["使用已有结果，或先产生新 revision"],
                 )
         return None
-
-    def _tool_capability_ready(self, name: str) -> bool:
-        required = {
-            "apply_entity_patch": "entities",
-            "apply_motion_patch": "tracks",
-            "apply_camera_patch": "camera",
-            "apply_constraint_patch": "constraints",
-            "solve_candidate": "validators",
-            "validate_candidate": "validators",
-        }.get(name)
-        return required is None or required in self.capability_sections_read
 
     @staticmethod
     def _inspect_key(arguments: dict[str, Any], current_revision: int) -> str:
@@ -402,12 +347,8 @@ async def _prepare_capabilities_tool(
     ctx: RunContext[PlanningDeps],
     tool_definition: ToolDefinition,
 ) -> ToolDefinition | None:
-    # 实体构造前只允许实体能力与实体 Patch，形成明确的第二轮边界。
-    if ctx.deps.capability_sections_read and not ctx.deps.toolkit.store.get().entities:
-        return None
-    if PLANNING_CAPABILITY_SECTIONS <= ctx.deps.capability_sections_read:
-        return None
-    return tool_definition
+    # 能力读取后从模型工具表移除，避免重复调用浪费请求。
+    return None if ctx.deps.capabilities_read else tool_definition
 
 
 async def _prepare_candidate_tool(
@@ -415,7 +356,7 @@ async def _prepare_candidate_tool(
     tool_definition: ToolDefinition,
 ) -> ToolDefinition | None:
     # 首次能力读取前只暴露能力工具；可提交后只允许结构化终止。
-    if "entities" not in ctx.deps.capability_sections_read:
+    if not ctx.deps.capabilities_read:
         return None
     validation = ctx.deps.toolkit.store.get().validation
     if (
@@ -423,11 +364,6 @@ async def _prepare_candidate_tool(
         and validation.hard_pass
         and validation.soft_score >= ctx.deps.toolkit.profile.minimum_soft_score
     ):
-        return None
-    if not ctx.deps._tool_capability_ready(tool_definition.name):
-        return None
-    # 实体创建前不暴露其他大 Schema，避免读取能力后的首次 Mutation 发生全局规划。
-    if not ctx.deps.toolkit.store.get().entities and tool_definition.name != "apply_entity_patch":
         return None
     return tool_definition
 
@@ -447,20 +383,27 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
     @agent.tool(sequential=True, prepare=_prepare_capabilities_tool)
     async def get_capabilities(
         ctx: RunContext[PlanningDeps],
-        sections: Annotated[
-            list[
-                Literal[
-                    "entities",
-                    "constraints",
-                    "tracks",
-                    "camera",
-                    "validators",
-                ]
-            ],
-            Field(min_length=1, max_length=1),
+        sections: list[
+            Literal[
+                "entities",
+                "constraints",
+                "tracks",
+                "camera",
+                "validators",
+                "limits",
+                "timeline",
+                "profiles",
+                "constraint_types",
+                "resources",
+                "mcp",
+                "blender",
+                "executor",
+                "scene_ir",
+                "render",
+            ]
         ],
     ) -> dict[str, Any]:
-        """按需读取一个能力领域；首次只查询 entities，创建实体后再查询其他领域。"""
+        """读取版本化能力、约束、轨道、验证器和当前资源状态。"""
         return ctx.deps.call_tool(
             "get_capabilities",
             {"sections": sections},

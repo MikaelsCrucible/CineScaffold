@@ -340,19 +340,19 @@ def _apply_planning_config(args: argparse.Namespace, config: LoadedConfig) -> No
         "planning",
         "thinking_mode",
         args.thinking_mode,
-    ) or "enabled"
+    )
     args.reasoning_effort = resolve_stage_option(
         config,
         "planning",
         "reasoning_effort",
         args.reasoning_effort,
-    ) or "low"
+    )
     args.model_max_tokens = resolve_stage_option(
         config,
         "planning",
         "model_max_tokens",
         args.model_max_tokens,
-    ) or 8192
+    )
 
 
 def _apply_semantic_config(args: argparse.Namespace, config: LoadedConfig) -> None:
