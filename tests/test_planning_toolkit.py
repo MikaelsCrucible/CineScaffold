@@ -1440,6 +1440,134 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertFalse(validation["data"]["hard_pass"])
         self.assertEqual(violation["severity"], "hard")
 
+    def test_repair_suggestions_are_read_only_and_fix_camera_collinearity(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(0.0, 0.0, 0.9),
+            camera_position=(0.0, -10.0, 1.5),
+        )
+        revision = toolkit.store.current_revision
+
+        suggested = toolkit.suggest_repairs(
+            preference="minimize_change",
+            max_options=2,
+        )
+
+        self.assertEqual(toolkit.store.current_revision, revision)
+        self.assertEqual(suggested["status"], "ok")
+        self.assertGreater(suggested["data"]["evaluated_candidates"], 0)
+        self.assertEqual(len(suggested["data"]["options"]), 2)
+        option = suggested["data"]["options"][0]
+        self.assertEqual(option["base_revision"], revision)
+        self.assertEqual(option["predicted"]["target_violation_count"], 0)
+
+        applied = toolkit.apply_repair(revision, option["suggestion_id"])
+
+        self.assertEqual(applied["status"], "ok")
+        self.assertTrue(applied["data"]["prediction_matched"])
+        self.assertEqual(applied["data"]["after"]["target_violation_count"], 0)
+        self.assertNotIn(
+            "CAMERA_MOTION_NEAR_COLLINEAR",
+            {item["code"] for item in applied["violations"]},
+        )
+
+    def test_repair_suggestion_rejects_stale_revision(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(0.0, 0.0, 0.9),
+            camera_position=(0.0, -10.0, 1.5),
+        )
+        suggested = toolkit.suggest_repairs(max_options=1)
+        option = suggested["data"]["options"][0]
+        toolkit.apply_entity_patch([_ship_entity()], [])
+
+        applied = toolkit.apply_repair(
+            option["base_revision"],
+            option["suggestion_id"],
+        )
+
+        self.assertEqual(applied["status"], "rejected")
+        self.assertIn("当前为", applied["warnings"][0])
+
+    def test_repair_suggestion_can_make_depth_motion_readable(self) -> None:
+        toolkit = _projected_motion_toolkit(end_position=(0.0, 0.0, 0.9))
+        validation = toolkit.validate_candidate(checks=["motion"])
+        violation_id = next(
+            item["id"]
+            for item in validation["violations"]
+            if item["code"] == "PROJECTED_MOTION_UNREADABLE"
+        )
+
+        suggested = toolkit.suggest_repairs(
+            violation_ids=[violation_id],
+            preference="maximize_motion_readability",
+            max_options=1,
+        )
+
+        self.assertEqual(suggested["status"], "ok")
+        self.assertEqual(
+            suggested["data"]["options"][0]["predicted"]["target_violation_count"],
+            0,
+        )
+
+    def test_repair_suggestions_cover_framing_and_projected_size(self) -> None:
+        cases = [
+            (
+                "keep_in_frame",
+                {"entity_id": "man_01", "minimum_inside_fraction": 1.0},
+                "ENTITY_OUT_OF_FRAME",
+            ),
+            (
+                "projected_size",
+                {
+                    "entity_id": "man_01",
+                    "measurement": "height",
+                    "minimum": 0.4,
+                    "maximum": 0.8,
+                },
+                "PROJECTED_SIZE_VIOLATED",
+            ),
+        ]
+        for constraint_type, parameters, expected_code in cases:
+            with self.subTest(constraint_type=constraint_type):
+                toolkit = _projected_motion_toolkit(
+                    end_position=(8.0, 4.0, 0.9),
+                    camera_position=(0.0, -10.0, 1.5),
+                )
+                toolkit.apply_constraint_patch(
+                    [
+                        {
+                            "constraint_id": f"repair_{constraint_type}",
+                            "type": constraint_type,
+                            "strength": "soft",
+                            "weight": 1.0,
+                            "subjects": ["man_01"],
+                            "time_range_seconds": [0.0, 6.0],
+                            "parameters": parameters,
+                            "source_status": "agent_selected",
+                            "source_ref": "agent.repair_test",
+                        }
+                    ],
+                    [],
+                )
+                validation = toolkit.validate_candidate()
+                violation_id = next(
+                    item["id"]
+                    for item in validation["violations"]
+                    if item["code"] == expected_code
+                )
+
+                suggested = toolkit.suggest_repairs(
+                    violation_ids=[violation_id],
+                    max_options=1,
+                )
+
+                self.assertEqual(suggested["status"], "ok")
+                self.assertEqual(
+                    suggested["data"]["options"][0]["predicted"][
+                        "target_violation_count"
+                    ],
+                    0,
+                )
+
     def test_polygon_cannot_masquerade_as_default_orbit(self) -> None:
         toolkit = _relative_motion_toolkit(earth_radius_m=20.0)
 

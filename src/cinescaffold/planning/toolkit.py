@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from copy import deepcopy
+from dataclasses import dataclass, replace
 from statistics import median
 from typing import Any
 
@@ -44,7 +45,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.15"
+TOOLKIT_VERSION = "0.16"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -89,6 +90,40 @@ INSPECT_VIEWS = [
 ]
 CAMERA_SINGLETON_TRACK_TYPES = {"transform", "path_follow", "look_at", "focal_length"}
 ENTITY_SINGLETON_TRACK_TYPES = {"transform", "path_follow", "visibility", "look_at"}
+REPAIRABLE_VIOLATION_CODES = {
+    "CAMERA_MOTION_NEAR_COLLINEAR",
+    "ENTITY_OUT_OF_FRAME",
+    "PROJECTED_MOTION_UNREADABLE",
+    "PROJECTED_SIZE_VIOLATED",
+}
+REPAIR_PREFERENCES = {
+    "balanced",
+    "maximize_motion_readability",
+    "minimize_change",
+    "preserve_composition",
+}
+
+
+@dataclass(frozen=True)
+class _CameraRepair:
+    suggestion_id: str
+    base_revision: int
+    base_candidate_hash: str
+    focus_entity_id: str
+    focus_point_m: tuple[float, float, float]
+    yaw_degrees: float
+    distance_scale: float
+    focal_scale: float
+    strategy: str
+    target_codes: tuple[str, ...]
+    predicted_report: ValidationReport | None
+    predicted_candidate_hash: str | None
+    camera_anchor_before_m: tuple[float, float, float]
+    camera_anchor_after_m: tuple[float, float, float]
+    focal_length_before_mm: float
+    focal_length_after_mm: float
+    change_cost: float
+    preserves_explicit_requirements: bool
 
 
 def _commit_ready(report: ValidationReport | None, profile: PlanningProfile) -> bool:
@@ -166,6 +201,7 @@ class ScenePlanningToolkit:
             _validate_initial_candidate(initial_candidate, expected)
             expected = initial_candidate.model_copy(deep=True)
         self.store = CandidateStore(expected)
+        self._repair_suggestions: dict[str, _CameraRepair] = {}
 
     def get_capabilities(self, sections: list[str] | None = None) -> dict[str, Any]:
         state = self.store.get()
@@ -282,6 +318,14 @@ class ScenePlanningToolkit:
                 "default_camera_motion_obliqueness": (
                     "未明确摄影机方向时，线性主体运动不得采用近似迎面或背后共线机位；"
                     "明确机位保留用户要求并降为 warning"
+                ),
+            },
+            "repair_suggestions": {
+                "supported_violation_codes": sorted(REPAIRABLE_VIOLATION_CODES),
+                "preferences": sorted(REPAIR_PREFERENCES),
+                "contract": (
+                    "Agent 选择整体策略；Toolkit 确定性搜索具体摄影机数值，"
+                    "suggest_repairs 不修改 Candidate，apply_repair 原子应用已验证建议"
                 ),
             },
             "inspect_views": INSPECT_VIEWS,
@@ -839,6 +883,265 @@ class ScenePlanningToolkit:
             capability_gaps=report.capability_gaps,
         )
 
+    def suggest_repairs(
+        self,
+        revision: int | None = None,
+        violation_ids: list[str] | None = None,
+        preference: str = "balanced",
+        max_options: int = 3,
+    ) -> dict[str, Any]:
+        """只读搜索少量摄影机修复方案，具体数值由 Validator 复验。"""
+
+        selected_revision = self.store.current_revision if revision is None else revision
+        if selected_revision != self.store.current_revision:
+            return _rejected(
+                self.store.current_revision,
+                "修复建议只能针对当前 revision；历史 revision 请先 restore_candidate",
+            )
+        if preference not in REPAIR_PREFERENCES:
+            return _rejected(
+                selected_revision,
+                f"未知 repair preference：{preference}",
+            )
+        if not 1 <= max_options <= 3:
+            return _rejected(selected_revision, "max_options 必须位于 1 到 3")
+
+        state = self.store.get(selected_revision)
+        report = self._validate(state, FULL_VALIDATION_CHECKS)
+        requested_ids = set(violation_ids or [])
+        known_ids = {item.id for item in report.violations}
+        unknown_ids = sorted(requested_ids - known_ids)
+        if unknown_ids:
+            return _rejected(
+                selected_revision,
+                f"Violation 不存在于当前 revision：{', '.join(unknown_ids)}",
+            )
+        selected = [
+            item
+            for item in report.violations
+            if item.code in REPAIRABLE_VIOLATION_CODES
+            and item.severity != "warning"
+            and (not requested_ids or item.id in requested_ids)
+        ]
+        if not selected:
+            return _envelope(
+                selected_revision,
+                selected_revision,
+                status="no_change",
+                data={
+                    "baseline": _repair_report_summary(report, ()),
+                    "options": [],
+                    "evaluated_candidates": 0,
+                },
+                warnings=["当前 revision 没有可由建议接口处理的非 warning violation"],
+            )
+
+        gap = _camera_repair_capability_gap(state)
+        if gap is not None:
+            return _envelope(
+                selected_revision,
+                selected_revision,
+                status="unsupported",
+                data={
+                    "baseline": _repair_report_summary(
+                        report,
+                        tuple(sorted({item.code for item in selected})),
+                    ),
+                    "options": [],
+                    "evaluated_candidates": 0,
+                },
+                capability_gaps=[gap],
+            )
+
+        target_codes = tuple(sorted({item.code for item in selected}))
+        repairs, evaluated = self._search_camera_repairs(
+            state,
+            report,
+            selected,
+            preference,
+            max_options,
+        )
+        for repair in repairs:
+            self._repair_suggestions[repair.suggestion_id] = repair
+        return _envelope(
+            selected_revision,
+            selected_revision,
+            status="ok" if repairs else "no_change",
+            data={
+                "baseline": _repair_report_summary(report, target_codes),
+                "options": [_repair_option_payload(item, self.profile) for item in repairs],
+                "evaluated_candidates": evaluated,
+                "selection_rule": (
+                    "先减少目标 hard violation，再避免新增非目标 hard violation，"
+                    "最后按 preference 与最小改动排序"
+                ),
+            },
+            warnings=(
+                []
+                if repairs
+                else ["冻结搜索空间内没有找到比当前 Candidate 更好的摄影机方案"]
+            ),
+        )
+
+    def apply_repair(
+        self,
+        base_revision: int,
+        suggestion_id: str,
+    ) -> dict[str, Any]:
+        """原子应用建议；revision 或内容变化后建议立即失效。"""
+
+        repair = self._repair_suggestions.get(suggestion_id)
+        current_revision = self.store.current_revision
+        if repair is None:
+            return _rejected(current_revision, f"修复建议不存在或已失效：{suggestion_id}")
+        if base_revision != repair.base_revision or current_revision != repair.base_revision:
+            return _rejected(
+                current_revision,
+                (
+                    f"修复建议基于 revision {repair.base_revision}，"
+                    f"当前为 {current_revision}；请重新 suggest_repairs"
+                ),
+            )
+        current = self.store.get()
+        if _candidate_hash(current) != repair.base_candidate_hash:
+            return _rejected(current_revision, "Candidate 内容已变化；请重新 suggest_repairs")
+
+        preview = current.model_copy(deep=True)
+        _apply_camera_repair(preview, repair)
+        if _candidate_hash(preview) != repair.predicted_candidate_hash:
+            return _rejected(current_revision, "建议重放结果与预测不一致；拒绝写入")
+        before_report = self._validate(current, FULL_VALIDATION_CHECKS)
+
+        def mutate(state: CandidateState):
+            _apply_camera_repair(state, repair)
+            return (
+                [
+                    {
+                        "operation": "repair",
+                        "path": "camera",
+                        "suggestion_id": suggestion_id,
+                        "strategy": repair.strategy,
+                    }
+                ],
+                [],
+            )
+
+        try:
+            mutation = self.store.apply(mutate)
+        except (ValidationError, ValueError) as error:
+            return _rejected(self.store.current_revision, _error_message(error))
+        after = self.store.get()
+        after_report = self._validate(after, FULL_VALIDATION_CHECKS)
+        self.store.save_validation(after_report)
+        self._repair_suggestions.clear()
+        return _mutation_envelope(
+            mutation,
+            data={
+                "suggestion_id": suggestion_id,
+                "strategy": repair.strategy,
+                "before": _repair_report_summary(before_report, repair.target_codes),
+                "after": _repair_report_summary(after_report, repair.target_codes),
+                "prediction_matched": (
+                    _repair_report_summary(after_report, repair.target_codes)
+                    == _repair_report_summary(
+                        repair.predicted_report,
+                        repair.target_codes,
+                    )
+                ),
+                "commit_ready": _commit_ready(after_report, self.profile),
+            },
+            violations=[
+                item.model_dump(mode="json") for item in after_report.violations
+            ],
+            capability_gaps=after_report.capability_gaps,
+        )
+
+    def _search_camera_repairs(
+        self,
+        state: CandidateState,
+        baseline_report: ValidationReport,
+        selected: list[Violation],
+        preference: str,
+        max_options: int,
+    ) -> tuple[list[_CameraRepair], int]:
+        target_codes = tuple(sorted({item.code for item in selected}))
+        focus_ids = _repair_focus_entity_ids(state, selected)
+        baseline_target_count = _target_violation_count(
+            baseline_report,
+            target_codes,
+        )
+        baseline_non_target_hard = _non_target_hard_count(
+            baseline_report,
+            target_codes,
+        )
+        base_hash = _candidate_hash(state)
+        candidates: list[_CameraRepair] = []
+        evaluated = 0
+        for focus_id in focus_ids:
+            focus_time = _repair_focus_time(state, selected, focus_id)
+            resolver = _WorldTransformResolver(state, focus_time, self.profile)
+            camera_state = resolver.camera()
+            if camera_state is None:
+                continue
+            camera_transform, focal_before = camera_state
+            focus_point = resolver.entity(focus_id).translation_m
+            for yaw_degrees in (0.0, -30.0, 30.0, -45.0, 45.0, -60.0, 60.0, -90.0, 90.0):
+                for distance_scale in (0.5, 0.7, 0.85, 1.0, 1.2, 1.4):
+                    for focal_scale in (0.7, 0.85, 1.0, 1.15, 1.3, 1.6):
+                        if (
+                            abs(yaw_degrees) < 1e-9
+                            and abs(distance_scale - 1.0) < 1e-9
+                            and abs(focal_scale - 1.0) < 1e-9
+                        ):
+                            continue
+                        preview = state.model_copy(deep=True)
+                        try:
+                            repair = _build_camera_repair(
+                                preview,
+                                base_hash=base_hash,
+                                focus_entity_id=focus_id,
+                                focus_point_m=focus_point,
+                                yaw_degrees=yaw_degrees,
+                                distance_scale=distance_scale,
+                                focal_scale=focal_scale,
+                                target_codes=target_codes,
+                                profile=self.profile,
+                            )
+                            _apply_camera_repair(preview, repair)
+                            _validate_reference_frame_graph(preview, self.profile)
+                        except (ValidationError, ValueError, ZeroDivisionError):
+                            continue
+                        evaluated += 1
+                        predicted = self._validate(preview, FULL_VALIDATION_CHECKS)
+                        if _target_violation_count(predicted, target_codes) >= baseline_target_count:
+                            continue
+                        if _non_target_hard_count(predicted, target_codes) > baseline_non_target_hard:
+                            continue
+                        candidates.append(
+                            _finish_camera_repair(
+                                repair,
+                                preview,
+                                predicted,
+                                baseline_report,
+                            )
+                        )
+
+        ranked = sorted(
+            candidates,
+            key=lambda item: _repair_sort_key(item, preference, self.profile),
+        )
+        distinct: list[_CameraRepair] = []
+        seen_strategies: set[tuple[str, str]] = set()
+        for item in ranked:
+            key = (item.strategy, item.focus_entity_id)
+            if key in seen_strategies:
+                continue
+            seen_strategies.add(key)
+            distinct.append(item)
+            if len(distinct) >= max_options:
+                break
+        return distinct, evaluated
+
     def restore_candidate(self, source_revision: int, reason: str) -> dict[str, Any]:
         if not reason.strip():
             return _rejected(self.store.current_revision, "restore 必须记录 reason")
@@ -928,6 +1231,415 @@ class ScenePlanningToolkit:
             violations=violations,
             capability_gaps=sorted(set(gaps)),
         )
+
+
+def _candidate_hash(state: CandidateState) -> str:
+    return canonical_hash(
+        state.model_dump(mode="json", exclude={"revision", "validation"})
+    )
+
+
+def _camera_repair_capability_gap(state: CandidateState) -> str | None:
+    if state.camera is None:
+        return "repair:camera_missing"
+    path_tracks = [
+        track for track in state.camera.tracks.values() if track.type == "path_follow"
+    ]
+    if path_tracks:
+        return "repair:camera_path_follow_not_supported_v0.1"
+    transform_tracks = [
+        track for track in state.camera.tracks.values() if track.type == "transform"
+    ]
+    for track in transform_tracks:
+        for keyframe in track.keyframes:
+            value = keyframe.value
+            if (
+                not isinstance(value, TransformValue)
+                or value.space != "world"
+                or value.translation_m is None
+            ):
+                return "repair:camera_transform_requires_world_translation"
+    return None
+
+
+def _repair_focus_entity_ids(
+    state: CandidateState,
+    violations: list[Violation],
+) -> list[str]:
+    ordered: list[str] = []
+    for violation in violations:
+        for entity_id in violation.entity_ids:
+            entity = state.entities.get(entity_id)
+            if entity is not None and not _is_environment_entity(entity):
+                if entity_id not in ordered:
+                    ordered.append(entity_id)
+    if (
+        state.camera is not None
+        and state.camera.static.focus_target_id in state.entities
+        and state.camera.static.focus_target_id not in ordered
+    ):
+        ordered.append(state.camera.static.focus_target_id)
+    if not ordered:
+        ordered.extend(
+            entity_id
+            for entity_id, entity in state.entities.items()
+            if not _is_environment_entity(entity)
+        )
+    return ordered[:3]
+
+
+def _repair_focus_time(
+    state: CandidateState,
+    violations: list[Violation],
+    focus_entity_id: str,
+) -> float:
+    ranges = [
+        item.time_range_seconds
+        for item in violations
+        if focus_entity_id in item.entity_ids and item.time_range_seconds is not None
+    ]
+    if not ranges:
+        return max(0.0, state.timeline.duration_seconds / 2.0)
+    start = min(item[0] for item in ranges)
+    end = max(item[1] for item in ranges)
+    frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
+    return min((start + end) / 2.0, state.timeline.duration_seconds - frame_step)
+
+
+def _build_camera_repair(
+    state: CandidateState,
+    *,
+    base_hash: str,
+    focus_entity_id: str,
+    focus_point_m: tuple[float, float, float],
+    yaw_degrees: float,
+    distance_scale: float,
+    focal_scale: float,
+    target_codes: tuple[str, ...],
+    profile: PlanningProfile,
+) -> _CameraRepair:
+    if state.camera is None:
+        raise ValueError("摄影机不存在")
+    camera_state = _WorldTransformResolver(state, 0.0, profile).camera()
+    if camera_state is None:
+        raise ValueError("摄影机不可求值")
+    anchor_before, focal_before = camera_state
+    minimum_focal, maximum_focal = _camera_focal_limits(state)
+    focal_after = min(maximum_focal, max(minimum_focal, focal_before * focal_scale))
+    actual_focal_scale = focal_after / focal_before
+    anchor_after = _repair_camera_position(
+        anchor_before.translation_m,
+        focus_point_m,
+        yaw_degrees,
+        distance_scale,
+    )
+    change_cost = (
+        length(subtract(anchor_after, anchor_before.translation_m))
+        / max(profile.default_camera_distance_m, 1.0)
+        + abs(math.log(max(actual_focal_scale, 1e-9)))
+    )
+    strategy = _camera_repair_strategy(
+        yaw_degrees,
+        distance_scale,
+        actual_focal_scale,
+    )
+    identity = {
+        "base_candidate_hash": base_hash,
+        "focus_entity_id": focus_entity_id,
+        "focus_point_m": focus_point_m,
+        "yaw_degrees": yaw_degrees,
+        "distance_scale": distance_scale,
+        "focal_scale": actual_focal_scale,
+        "target_codes": target_codes,
+    }
+    suggestion_id = f"repair_{canonical_hash(identity).removeprefix('sha256:')[:16]}"
+    return _CameraRepair(
+        suggestion_id=suggestion_id,
+        base_revision=state.revision,
+        base_candidate_hash=base_hash,
+        focus_entity_id=focus_entity_id,
+        focus_point_m=focus_point_m,
+        yaw_degrees=yaw_degrees,
+        distance_scale=distance_scale,
+        focal_scale=actual_focal_scale,
+        strategy=strategy,
+        target_codes=target_codes,
+        predicted_report=None,
+        predicted_candidate_hash=None,
+        camera_anchor_before_m=anchor_before.translation_m,
+        camera_anchor_after_m=anchor_after,
+        focal_length_before_mm=focal_before,
+        focal_length_after_mm=focal_after,
+        change_cost=change_cost,
+        preserves_explicit_requirements=True,
+    )
+
+
+def _finish_camera_repair(
+    repair: _CameraRepair,
+    preview: CandidateState,
+    predicted: ValidationReport,
+    baseline: ValidationReport,
+) -> _CameraRepair:
+    return replace(
+        repair,
+        predicted_report=predicted,
+        predicted_candidate_hash=_candidate_hash(preview),
+        preserves_explicit_requirements=(
+            _explicit_hard_signatures(predicted)
+            <= _explicit_hard_signatures(baseline)
+        ),
+    )
+
+
+def _apply_camera_repair(state: CandidateState, repair: _CameraRepair) -> None:
+    if state.camera is None:
+        raise ValueError("摄影机不存在")
+    camera = state.camera
+    solved = _complete_transform(camera.solved_transform)
+    transform_tracks = [
+        track for track in camera.tracks.values() if track.type == "transform"
+    ]
+    if not transform_tracks or camera.solved_transform.translation_m is not None:
+        solved_position = _repair_camera_position(
+            solved.translation_m,
+            repair.focus_point_m,
+            repair.yaw_degrees,
+            repair.distance_scale,
+        )
+        solved = solved.model_copy(
+            update={
+                "translation_m": solved_position,
+                "rotation_quaternion_wxyz": look_at_camera_quaternion(
+                    solved_position,
+                    repair.focus_point_m,
+                ),
+                "space": "world",
+                "target_id": None,
+            }
+        )
+
+    repaired_tracks: dict[str, TrackSpec] = {}
+    for track_id, track in camera.tracks.items():
+        if track.type == "transform":
+            keyframes = []
+            for keyframe in track.keyframes:
+                value = keyframe.value
+                if not isinstance(value, TransformValue) or value.translation_m is None:
+                    raise ValueError("摄影机修复要求 Transform 关键帧包含 world translation")
+                position = _repair_camera_position(
+                    value.translation_m,
+                    repair.focus_point_m,
+                    repair.yaw_degrees,
+                    repair.distance_scale,
+                )
+                repaired_value = value.model_copy(
+                    update={
+                        "translation_m": position,
+                        "rotation_quaternion_wxyz": look_at_camera_quaternion(
+                            position,
+                            repair.focus_point_m,
+                        ),
+                    }
+                )
+                keyframes.append(keyframe.model_copy(update={"value": repaired_value}))
+            track = track.model_copy(update={"keyframes": keyframes})
+        elif track.type == "focal_length":
+            keyframes = [
+                keyframe.model_copy(
+                    update={"value": float(keyframe.value) * repair.focal_scale}
+                )
+                for keyframe in track.keyframes
+            ]
+            track = track.model_copy(update={"keyframes": keyframes})
+        repaired_tracks[track_id] = track
+
+    static_focal = (
+        camera.static.focal_length_mm
+        or repair.focal_length_before_mm
+    ) * repair.focal_scale
+    static = camera.static.model_copy(
+        update={
+            "focal_length_mm": static_focal,
+            # 只把主体当搜索锚点，不擅自把固定机位改成动态跟拍。
+            "focus_target_id": camera.static.focus_target_id,
+        }
+    )
+    state.camera = camera.model_copy(
+        update={
+            "static": static,
+            "tracks": repaired_tracks,
+            "solved_transform": solved,
+        }
+    )
+
+
+def _repair_camera_position(
+    position: tuple[float, float, float],
+    focus: tuple[float, float, float],
+    yaw_degrees: float,
+    distance_scale: float,
+) -> tuple[float, float, float]:
+    angle = math.radians(yaw_degrees)
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    delta = subtract(position, focus)
+    return (
+        focus[0] + distance_scale * (cosine * delta[0] - sine * delta[1]),
+        focus[1] + distance_scale * (sine * delta[0] + cosine * delta[1]),
+        focus[2] + distance_scale * delta[2],
+    )
+
+
+def _camera_focal_limits(state: CandidateState) -> tuple[float, float]:
+    minimum = 18.0
+    maximum = 120.0
+    for constraint in state.constraints.values():
+        if constraint.type != "focal_length_range":
+            continue
+        params = _parameters(constraint)
+        minimum = max(minimum, float(params.get("minimum_mm", minimum)))
+        maximum = min(maximum, float(params.get("maximum_mm", maximum)))
+    if minimum > maximum:
+        raise ValueError("摄影机焦距约束无可行交集")
+    return minimum, maximum
+
+
+def _camera_repair_strategy(
+    yaw_degrees: float,
+    distance_scale: float,
+    focal_scale: float,
+) -> str:
+    if yaw_degrees <= -75.0:
+        return "side_view_left"
+    if yaw_degrees >= 75.0:
+        return "side_view_right"
+    if yaw_degrees < -1e-6:
+        return "three_quarter_left"
+    if yaw_degrees > 1e-6:
+        return "three_quarter_right"
+    if distance_scale > 1.0 or focal_scale < 1.0:
+        return "wider_framing"
+    return "tighter_framing"
+
+
+def _target_violation_count(
+    report: ValidationReport,
+    target_codes: tuple[str, ...],
+) -> int:
+    return sum(
+        item.code in target_codes and item.severity != "warning"
+        for item in report.violations
+    )
+
+
+def _non_target_hard_count(
+    report: ValidationReport,
+    target_codes: tuple[str, ...],
+) -> int:
+    return sum(
+        item.severity == "hard" and item.code not in target_codes
+        for item in report.violations
+    )
+
+
+def _explicit_hard_signatures(report: ValidationReport) -> set[tuple[str, str | None]]:
+    return {
+        (item.code, item.constraint_id)
+        for item in report.violations
+        if item.severity == "hard" and item.code.startswith("EXPLICIT_REQUIREMENT")
+    }
+
+
+def _repair_report_summary(
+    report: ValidationReport,
+    target_codes: tuple[str, ...],
+) -> dict[str, Any]:
+    return {
+        "hard_pass": report.hard_pass,
+        "soft_score": round(report.soft_score, 6),
+        "hard_violation_count": sum(
+            item.severity == "hard" for item in report.violations
+        ),
+        "target_violation_count": _target_violation_count(report, target_codes),
+        "target_codes": list(target_codes),
+        "capability_gaps": report.capability_gaps,
+    }
+
+
+def _repair_sort_key(
+    repair: _CameraRepair,
+    preference: str,
+    profile: PlanningProfile,
+) -> tuple[Any, ...]:
+    report = repair.predicted_report
+    if report is None:
+        return (math.inf,)
+    hard_count = sum(item.severity == "hard" for item in report.violations)
+    target_count = _target_violation_count(report, repair.target_codes)
+    commit_penalty = 0 if _commit_ready(report, profile) else 1
+    if preference == "minimize_change":
+        return (target_count, hard_count, repair.change_cost, -report.soft_score)
+    if preference == "preserve_composition":
+        return (target_count, hard_count, -report.soft_score, repair.change_cost)
+    if preference == "maximize_motion_readability":
+        return (
+            target_count,
+            hard_count,
+            -abs(repair.yaw_degrees),
+            -report.soft_score,
+            repair.change_cost,
+        )
+    return (
+        commit_penalty,
+        target_count,
+        hard_count,
+        -report.soft_score,
+        repair.change_cost,
+    )
+
+
+def _repair_option_payload(
+    repair: _CameraRepair,
+    profile: PlanningProfile,
+) -> dict[str, Any]:
+    report = repair.predicted_report
+    if report is None:
+        raise ValueError("修复建议缺少预测报告")
+    tradeoffs: list[str] = []
+    if abs(repair.yaw_degrees) >= 75.0:
+        tradeoffs.append("侧向位移最清楚，但会显著改变原机位方位")
+    elif abs(repair.yaw_degrees) > 1e-6:
+        tradeoffs.append("斜侧机位兼顾纵深与横向运动可读性")
+    if repair.distance_scale > 1.0:
+        tradeoffs.append("摄影机后移，主体投影可能变小")
+    elif repair.distance_scale < 1.0:
+        tradeoffs.append("摄影机靠近，主体投影可能变大")
+    if repair.focal_scale > 1.0:
+        tradeoffs.append("焦距增加，视野收窄")
+    elif repair.focal_scale < 1.0:
+        tradeoffs.append("焦距减小，视野扩大")
+    return {
+        "suggestion_id": repair.suggestion_id,
+        "base_revision": repair.base_revision,
+        "strategy": repair.strategy,
+        "summary": (
+            f"以 {repair.focus_entity_id} 为观察目标，将摄影机方位旋转 "
+            f"{repair.yaw_degrees:g}°，距离缩放 {repair.distance_scale:g} 倍"
+        ),
+        "exact_changes": {
+            "search_anchor_entity_id": repair.focus_entity_id,
+            "camera_anchor_translation_m": list(repair.camera_anchor_after_m),
+            "yaw_degrees": repair.yaw_degrees,
+            "distance_scale": repair.distance_scale,
+            "focal_length_mm": repair.focal_length_after_mm,
+        },
+        "predicted": _repair_report_summary(report, repair.target_codes)
+        | {"commit_ready": _commit_ready(report, profile)},
+        "preserves_explicit_requirements": repair.preserves_explicit_requirements,
+        "change_cost": round(repair.change_cost, 6),
+        "tradeoffs": tradeoffs,
+    }
 
 
 def _initial_candidate(
