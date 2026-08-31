@@ -41,8 +41,40 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(captured["payload"]["text"]["format"]["type"], "json_schema")
         self.assertTrue(captured["payload"]["text"]["format"]["strict"])
         self.assertNotIn("$schema", captured["payload"]["text"]["format"]["schema"])
+        self.assertEqual(captured["payload"]["max_output_tokens"], 8192)
+        self.assertNotIn("reasoning", captured["payload"])
         self.assertFalse(captured["payload"]["store"])
         self.assertEqual(response.response_id, "resp_test")
+
+    def test_openai_uses_requested_reasoning_effort_and_output_limit(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def transport(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+            captured["payload"] = payload
+            return {
+                "id": "resp_test",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": json.dumps(self.output)}
+                        ],
+                    }
+                ],
+            }
+
+        provider = OpenAIProvider(
+            "secret",
+            "gpt-5.6-luna",
+            max_tokens=65536,
+            reasoning_effort="medium",
+            transport=transport,
+        )
+        provider.generate("系统", "用户", self.schema)
+
+        self.assertEqual(captured["payload"]["max_output_tokens"], 65536)
+        self.assertEqual(captured["payload"]["reasoning"], {"effort": "medium"})
 
     def test_deepseek_uses_chat_json_output(self) -> None:
         captured: dict[str, Any] = {}

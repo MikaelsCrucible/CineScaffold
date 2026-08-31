@@ -1,5 +1,5 @@
 {
-  "version": "semantic-translation-v0.3",
+  "version": "semantic-translation-v0.4",
   "coordinate_system": {
     "handedness": "right",
     "up_axis": "+Z",
@@ -79,6 +79,11 @@
     "snowfield": [200.0, 200.0],
     "ruins": [100.0, 100.0],
     "blank": [200.0, 200.0]
+  },
+  "timeline": {
+    "sequential_markers": ["然后", "随后", "接着", "之后", "接下来", "继而"],
+    "sequential_pairs": [["先", "再"], ["先", "然后"]],
+    "simultaneous_markers": ["同时", "与此同时", "一边"]
   },
   "emotion_classes": {
     "E1": {

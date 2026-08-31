@@ -156,8 +156,8 @@ def _add_semantic_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--semantic-reasoning-effort",
-        choices=("low", "high", "max"),
-        help="语义解析启用思考时的强度",
+        choices=("none", "low", "medium", "high", "xhigh", "max"),
+        help="语义解析推理强度；DeepSeek 仅支持 low/high/max",
     )
     parser.add_argument("--rules", type=Path, default=Path("prompts/semantic_parser/rules.md"))
     parser.add_argument(
@@ -235,7 +235,7 @@ def _add_planning_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--reasoning-effort",
-        choices=("low", "high", "max"),
+        choices=("none", "low", "medium", "high", "xhigh", "max"),
         help="固定模型推理强度",
     )
     parser.add_argument("--model-max-tokens", type=int, help="限制单次模型响应 token 数")
@@ -454,6 +454,8 @@ def _create_provider(args: argparse.Namespace) -> Any:
             model=args.model,
             base_url=args.base_url or "https://api.openai.com/v1",
             timeout=args.timeout,
+            max_tokens=args.max_tokens,
+            reasoning_effort=args.semantic_reasoning_effort,
         )
 
     return DeepSeekProvider(

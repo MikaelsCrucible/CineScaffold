@@ -109,6 +109,15 @@ api_key = 填写 API KEY
 
 配置也可以分别指定 `semantic_provider/model` 和 `planning_provider/model`。完整可选字段及注释见 [`.cinescaffold.example.conf`](.cinescaffold.example.conf)。命令行参数优先于配置文件；未找到配置值时，API Key 仍可从 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 环境变量读取。
 
+OpenAI Semantic Parser 使用 Responses API。`semantic_reasoning_effort` 会作为 `reasoning.effort` 实际发送；GPT-5.6 可使用 `none/low/medium/high/xhigh/max`。例如：
+
+```text
+semantic_provider = openai
+semantic_model = gpt-5.6-luna
+semantic_reasoning_effort = medium
+semantic_max_tokens = 65536
+```
+
 DeepSeek V4 Pro 的思考模式缺省为启用，缺省强度为 `high`。真实回归中，模型读取完整 Toolkit 能力后的首次规划可能产生上万 reasoning tokens，并让单次请求持续数分钟。若实验优先考虑低延迟与稳定工具调用，可在配置中明确填写：
 
 ```text
@@ -191,7 +200,7 @@ cinescaffold parse \
 
 Mock Provider 不理解文本，只返回指定的模拟响应。未传入 `--mock-response` 时，它仅用于检查 Schema 和 CLI 接口。
 
-语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。解析结果使用 Cinematic Brief v0.2，并附带代码生成的 `translation_parameters`；用户明确要求始终优先于规则推导和缺省值。径向推近/后拉的速度由起止距离和本次实际时长计算，避免固定速度与可变时长矛盾。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
+语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。解析结果使用 Cinematic Brief v0.2，并附带代码生成的 `translation_parameters`；用户明确要求始终优先于规则推导和缺省值。径向推近/后拉的速度由起止距离和本次实际时长计算，避免固定速度与可变时长矛盾。包含“然后/随后/先…再…”的描述必须生成分段事件；如果模型仍让所有事件覆盖全片，量化器会按事件顺序等分总时长并同步对应主体动作。包含“同时”的持续动作不会被错误拆分。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
 
 #### 2. Cinematic Brief 转 Scene IR
 

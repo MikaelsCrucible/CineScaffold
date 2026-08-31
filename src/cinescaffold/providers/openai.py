@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from typing import Any
+from typing import Any, Literal
 
 from cinescaffold.errors import ProviderError
 from cinescaffold.providers.base import ProviderResponse
@@ -18,6 +18,10 @@ class OpenAIProvider:
         model: str,
         base_url: str = "https://api.openai.com/v1",
         timeout: float = 60.0,
+        max_tokens: int = 8192,
+        reasoning_effort: Literal[
+            "none", "low", "medium", "high", "xhigh", "max"
+        ] | None = None,
         transport: HttpTransport = post_json,
     ) -> None:
         if not api_key:
@@ -28,6 +32,8 @@ class OpenAIProvider:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
         self.transport = transport
 
     def generate(
@@ -50,8 +56,11 @@ class OpenAIProvider:
                     "schema": _prepare_api_schema(schema),
                 }
             },
+            "max_output_tokens": self.max_tokens,
             "store": False,
         }
+        if self.reasoning_effort is not None:
+            payload["reasoning"] = {"effort": self.reasoning_effort}
         response = self.transport(
             f"{self.base_url}/responses",
             {

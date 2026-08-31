@@ -25,11 +25,13 @@ def translation_rules_sha256(path: Path) -> str:
 def apply_translation_rules(
     model_content: dict[str, Any],
     rules: dict[str, Any],
+    source_prompt: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """补齐缺省语义，并生成可审计的确定性量化快照。"""
     _validate_rule_table(rules)
     content = deepcopy(model_content)
     _apply_semantic_defaults(content, rules)
+    _apply_timeline_rules(content, rules, source_prompt)
 
     emotion = _classify_emotion(content, rules)
     profile = rules["emotion_classes"][emotion["class_id"]]
@@ -308,6 +310,142 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
             f"subject_motion[{subject_id}]",
             defaults["action_label"],
         )
+
+
+def _apply_timeline_rules(
+    content: dict[str, Any],
+    rules: dict[str, Any],
+    source_prompt: str | None,
+) -> None:
+    """把明确的先后叙事转换为分段时间，而非让每个动作覆盖全片。"""
+    if not source_prompt:
+        return
+    timeline_rules = rules["timeline"]
+    if not _contains_sequential_marker(source_prompt, timeline_rules):
+        return
+
+    events = content["timeline"].get("events", [])
+    if len(events) < 2:
+        raise ValueError("自然语言包含先后关系，但模型没有拆分 timeline.events")
+
+    duration = float(content["timeline"]["duration_seconds"])
+    simultaneous = any(
+        marker in source_prompt for marker in timeline_rules["simultaneous_markers"]
+    )
+    if _all_events_cover_full_timeline(events, duration):
+        if simultaneous:
+            raise ValueError("自然语言同时包含先后与并行关系，但模型没有给出分段时间")
+        _partition_events_equally(content, events, duration)
+
+    _align_full_timeline_motions(content, events, duration)
+
+
+def _contains_sequential_marker(text: str, timeline_rules: dict[str, Any]) -> bool:
+    if any(marker in text for marker in timeline_rules["sequential_markers"]):
+        return True
+    for first, second in timeline_rules["sequential_pairs"]:
+        first_index = text.find(first)
+        second_index = text.find(second, first_index + len(first))
+        if first_index >= 0 and second_index >= 0:
+            return True
+    return False
+
+
+def _all_events_cover_full_timeline(
+    events: list[dict[str, Any]],
+    duration: float,
+) -> bool:
+    return all(
+        _covers_full_timeline(
+            event.get("start_time_seconds"),
+            event.get("end_time_seconds"),
+            duration,
+        )
+        for event in events
+    )
+
+
+def _covers_full_timeline(start: Any, end: Any, duration: float) -> bool:
+    start_value = 0.0 if not _is_number(start) else float(start)
+    end_value = duration if not _is_number(end) else float(end)
+    return abs(start_value) <= 1e-9 and abs(end_value - duration) <= 1e-9
+
+
+def _partition_events_equally(
+    content: dict[str, Any],
+    events: list[dict[str, Any]],
+    duration: float,
+) -> None:
+    count = len(events)
+    ranges: list[str] = []
+    for index, event in enumerate(events):
+        start = duration * index / count
+        end = duration * (index + 1) / count
+        event["start_time_seconds"] = start
+        event["end_time_seconds"] = end
+        event["source_status"] = "inferred"
+        ranges.append(f"{event.get('id', index)}={start:g}-{end:g}秒")
+    _add_inference_uncertainty(
+        content,
+        "timeline.events",
+        "；".join(ranges),
+        "用户明确了事件顺序但未给出各阶段时长，按事件数量等分总时长",
+    )
+
+
+def _align_full_timeline_motions(
+    content: dict[str, Any],
+    events: list[dict[str, Any]],
+    duration: float,
+) -> None:
+    for motion in content["subject_motion"]:
+        if not _covers_full_timeline(
+            motion.get("start_time_seconds"),
+            motion.get("end_time_seconds"),
+            duration,
+        ):
+            continue
+        event = _matching_timeline_event(motion, events)
+        if event is None:
+            continue
+        start = event.get("start_time_seconds")
+        end = event.get("end_time_seconds")
+        if _is_number(start) and _is_number(end):
+            motion["start_time_seconds"] = float(start)
+            motion["end_time_seconds"] = float(end)
+
+
+def _matching_timeline_event(
+    motion: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    subject_id = motion.get("subject_id")
+    action = _value(motion.get("action")) or ""
+    source_text = _source_text(motion.get("action")) or ""
+    candidates = [
+        event
+        for event in events
+        if subject_id in event.get("reference_ids", [])
+    ]
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for event in candidates:
+        event_text = " ".join(
+            text
+            for text in (event.get("description"), event.get("source_text"))
+            if isinstance(text, str)
+        )
+        score = 0
+        if action and (action in event_text or event_text in action):
+            score += 2
+        if source_text and (source_text in event_text or event_text in source_text):
+            score += 3
+        scored.append((score, event))
+    positive = [item for item in scored if item[0] > 0]
+    if positive:
+        positive.sort(key=lambda item: item[0], reverse=True)
+        if len(positive) == 1 or positive[0][0] > positive[1][0]:
+            return positive[0][1]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _classify_emotion(content: dict[str, Any], rules: dict[str, Any]) -> dict[str, Any]:
@@ -765,6 +903,7 @@ def _validate_rule_table(value: Any) -> None:
         "path_keywords",
         "scene_assets",
         "scene_dimensions_m",
+        "timeline",
         "emotion_classes",
     }
     missing = sorted(required - set(value))
@@ -774,6 +913,23 @@ def _validate_rule_table(value: Any) -> None:
         raise ValueError("语义量化表必须遵守 CineScaffold 的 -Y 世界前方约定")
     if set(value["emotion_classes"]) != {"E1", "E2", "E3", "E4", "E5", "E6"}:
         raise ValueError("语义量化表必须完整定义 E1-E6")
+    timeline = value["timeline"]
+    if not isinstance(timeline, dict):
+        raise ValueError("语义量化表 timeline 必须是对象")
+    for key in ("sequential_markers", "simultaneous_markers"):
+        markers = timeline.get(key)
+        if not isinstance(markers, list) or not all(
+            isinstance(marker, str) and marker for marker in markers
+        ):
+            raise ValueError(f"语义量化表 timeline.{key} 必须是非空字符串数组")
+    pairs = timeline.get("sequential_pairs")
+    if not isinstance(pairs, list) or not all(
+        isinstance(pair, list)
+        and len(pair) == 2
+        and all(isinstance(marker, str) and marker for marker in pair)
+        for pair in pairs
+    ):
+        raise ValueError("语义量化表 timeline.sequential_pairs 必须是二元字符串数组")
     for class_id, profile in value["emotion_classes"].items():
         camera = profile.get("camera")
         if not isinstance(camera, dict):

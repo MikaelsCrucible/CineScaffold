@@ -170,6 +170,135 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(parameters["subjects"][1]["minimum_footprint_m"], [10.0, 10.0])
         self.assertEqual(parameters["subjects"][1]["default_scene_depth_ratio"], 0.5)
 
+    def test_sequential_full_timeline_events_are_partitioned_and_aligned(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": "person",
+                "category": self._annotated("人", "一个人"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+            {
+                "id": "car",
+                "category": self._annotated("车辆", "一辆车"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+        ]
+        content["subject_motion"] = [
+            self._motion("person", "等待"),
+            self._motion("car", "驶来并接走"),
+        ]
+        for motion in content["subject_motion"]:
+            motion["start_time_seconds"] = 0.0
+            motion["end_time_seconds"] = 10.0
+        content["timeline"].update(
+            {
+                "duration_seconds": 10.0,
+                "duration_source_status": "explicit",
+                "events": [
+                    {
+                        "id": "waiting",
+                        "description": "人物等待",
+                        "start_time_seconds": 0.0,
+                        "end_time_seconds": 10.0,
+                        "reference_ids": ["person"],
+                        "source_status": "explicit",
+                        "source_text": "一个人在路边等待",
+                    },
+                    {
+                        "id": "pickup",
+                        "description": "车辆驶来并接走人物",
+                        "start_time_seconds": 0.0,
+                        "end_time_seconds": 10.0,
+                        "reference_ids": ["car", "person"],
+                        "source_status": "explicit",
+                        "source_text": "一辆车开了过来把他接走了",
+                    },
+                ],
+            }
+        )
+
+        normalized, parameters = apply_translation_rules(
+            content,
+            self.rules,
+            "一个人在路边等待，然后一辆车开了过来把他接走了",
+        )
+
+        events = normalized["timeline"]["events"]
+        self.assertEqual(
+            [(item["start_time_seconds"], item["end_time_seconds"]) for item in events],
+            [(0.0, 5.0), (5.0, 10.0)],
+        )
+        self.assertTrue(all(item["source_status"] == "inferred" for item in events))
+        self.assertEqual(
+            [
+                (item["start_time_seconds"], item["end_time_seconds"])
+                for item in normalized["subject_motion"]
+            ],
+            [(0.0, 5.0), (5.0, 10.0)],
+        )
+        self.assertEqual(
+            [
+                (item["start_time_seconds"], item["end_time_seconds"])
+                for item in parameters["motions"]
+            ],
+            [(0.0, 5.0), (5.0, 10.0)],
+        )
+        uncertainty = next(
+            item
+            for item in normalized["uncertainties"]
+            if item["field"] == "timeline.events"
+        )
+        self.assertEqual(uncertainty["resolution"], "use_inference")
+
+    def test_simultaneous_full_timeline_events_remain_concurrent(self) -> None:
+        content = valid_model_output()
+        content["timeline"].update(
+            {
+                "duration_seconds": 10.0,
+                "duration_source_status": "explicit",
+                "events": [
+                    self._event("earth_orbit", "地球公转", "earth", 10.0),
+                    self._event("moon_orbit", "月球公转", "moon", 10.0),
+                ],
+            }
+        )
+
+        normalized, _ = apply_translation_rules(
+            content,
+            self.rules,
+            "地球围绕太阳公转，同时月球围绕地球公转",
+        )
+
+        self.assertEqual(
+            [
+                (item["start_time_seconds"], item["end_time_seconds"])
+                for item in normalized["timeline"]["events"]
+            ],
+            [(0.0, 10.0), (0.0, 10.0)],
+        )
+
+    def test_sequential_prompt_requires_multiple_events(self) -> None:
+        content = valid_model_output()
+        content["timeline"].update(
+            {
+                "duration_seconds": 10.0,
+                "duration_source_status": "explicit",
+                "events": [self._event("combined", "等待然后离开", "person", 10.0)],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "没有拆分 timeline.events"):
+            apply_translation_rules(
+                content,
+                self.rules,
+                "一个人先等待，然后离开",
+            )
+
     @staticmethod
     def _annotated(value: str, source_text: str) -> dict:
         return {"value": value, "source_status": "explicit", "source_text": source_text}
@@ -193,6 +322,23 @@ class SemanticRulesTest(unittest.TestCase):
             "start_time_seconds": None,
             "end_time_seconds": None,
             "secondary_motion": [],
+        }
+
+    @staticmethod
+    def _event(
+        event_id: str,
+        description: str,
+        subject_id: str,
+        duration: float,
+    ) -> dict:
+        return {
+            "id": event_id,
+            "description": description,
+            "start_time_seconds": 0.0,
+            "end_time_seconds": duration,
+            "reference_ids": [subject_id],
+            "source_status": "explicit",
+            "source_text": description,
         }
 
 

@@ -89,6 +89,29 @@ class ConfigTest(unittest.TestCase):
             with self.assertRaisesRegex(ConfigurationError, "planning_reasoning_effort"):
                 load_config(path)
 
+    def test_openai_semantic_stage_accepts_medium_reasoning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.conf"
+            path.write_text(
+                "semantic_provider = openai\nsemantic_reasoning_effort = medium\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(path)
+
+        self.assertEqual(config.data["semantic_reasoning_effort"], "medium")
+
+    def test_deepseek_rejects_openai_only_reasoning_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.conf"
+            path.write_text(
+                "semantic_provider = deepseek\nsemantic_reasoning_effort = medium\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ConfigurationError, "DeepSeek"):
+                load_config(path)
+
     def test_explicit_missing_config_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ConfigurationError, "不存在"):

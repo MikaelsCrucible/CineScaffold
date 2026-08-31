@@ -137,9 +137,27 @@ def _validate_config(data: dict[str, str]) -> None:
                 f"low、high、max 请填写 {stage}_reasoning_effort"
             )
         reasoning_effort = data.get(f"{stage}_reasoning_effort")
-        if reasoning_effort not in (None, "low", "high", "max"):
+        if reasoning_effort not in (
+            None,
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ):
             raise ConfigurationError(
-                f"{stage}_reasoning_effort 必须是 low、high 或 max"
+                f"{stage}_reasoning_effort 必须是 none、low、medium、high、xhigh 或 max"
+            )
+        provider = data.get(f"{stage}_provider") or data.get("provider")
+        if provider == "deepseek" and reasoning_effort not in (
+            None,
+            "low",
+            "high",
+            "max",
+        ):
+            raise ConfigurationError(
+                f"DeepSeek 的 {stage}_reasoning_effort 只支持 low、high 或 max"
             )
     for key in ("semantic_max_tokens", "planning_model_max_tokens"):
         max_tokens = data.get(key)

@@ -23,7 +23,7 @@ class SemanticParserConfig:
     model_output_schema_path: Path
     translation_rules_path: Path
     translation_parameters_schema_path: Path
-    prompt_version: str = "semantic-parser-v0.2"
+    prompt_version: str = "semantic-parser-v0.3"
 
 
 def parse_cinematic_brief(
@@ -48,6 +48,7 @@ def parse_cinematic_brief(
     content, translation_parameters = apply_translation_rules(
         response.content,
         translation_rules,
+        description,
     )
     validate_model_output(content, schema)
     translation_schema = load_schema(config.translation_parameters_schema_path)
