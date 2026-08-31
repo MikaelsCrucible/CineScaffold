@@ -44,7 +44,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.14"
+TOOLKIT_VERSION = "0.15"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -279,6 +279,10 @@ class ScenePlanningToolkit:
                     "moving 主体在每个语义动作阶段必须产生足够的屏幕轨迹范围或投影尺度变化；"
                     "不能用沿镜头纵深的微小尺寸变化冒充对白模可读的运动"
                 ),
+                "default_camera_motion_obliqueness": (
+                    "未明确摄影机方向时，线性主体运动不得采用近似迎面或背后共线机位；"
+                    "明确机位保留用户要求并降为 warning"
+                ),
             },
             "inspect_views": INSPECT_VIEWS,
             "acceptance": {
@@ -293,6 +297,9 @@ class ScenePlanningToolkit:
                 ),
                 "minimum_projected_motion_scale_ratio": (
                     self.profile.minimum_projected_motion_scale_ratio
+                ),
+                "minimum_camera_motion_obliqueness_degrees": (
+                    self.profile.minimum_camera_motion_obliqueness_degrees
                 ),
             },
             "supported_constraints": sorted(SUPPORTED_CONSTRAINTS),
@@ -882,6 +889,13 @@ class ScenePlanningToolkit:
                 )
             )
             violations.extend(
+                _camera_motion_collinearity_violations(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
+            )
+            violations.extend(
                 _orbit_projection_readability_violations(
                     state,
                     self.objective_brief,
@@ -1267,8 +1281,8 @@ def _typed_motion_semantic_violations(
     state: CandidateState,
     objective_brief: ObjectivePlanningBrief,
 ) -> list[Violation]:
-    """确保 v0.3 类型化载运和显隐语义没有被 Agent 忽略。"""
-    if objective_brief.schema_version != "0.3":
+    """确保类型化载运和显隐语义没有被 Agent 忽略。"""
+    if objective_brief.schema_version not in {"0.3", "0.4"}:
         return []
     frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
     last_frame_time = state.timeline.duration_seconds - frame_step
@@ -1501,6 +1515,113 @@ def _projected_motion_readability_violations(
     return violations
 
 
+def _camera_motion_collinearity_violations(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    """防止缺省机位借迎面或背面运动轻易通过可读性门禁。"""
+
+    if state.camera is None:
+        return []
+    motions = (objective_brief.translation_parameters or {}).get("motions")
+    if not isinstance(motions, list):
+        return []
+    explicit_direction = _has_explicit_camera_direction(objective_brief)
+    frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
+    last_frame_time = state.timeline.duration_seconds - frame_step
+    violations: list[Violation] = []
+    for motion in motions:
+        if not isinstance(motion, dict):
+            continue
+        if motion.get("motion_type") in {None, "", "static", "interactive", "carried"}:
+            continue
+        if motion.get("path_type") not in {None, "linear", "unspecified"}:
+            continue
+        subject_id = motion.get("subject_id")
+        if not isinstance(subject_id, str) or subject_id not in state.entities:
+            continue
+        start = float(motion.get("start_time_seconds", 0.0))
+        end = float(motion.get("end_time_seconds", state.timeline.duration_seconds))
+        sample_end = min(end - frame_step, last_frame_time)
+        if sample_end <= start:
+            continue
+        start_transform = _WorldTransformResolver(state, start, profile).entity(subject_id)
+        end_transform = _WorldTransformResolver(state, sample_end, profile).entity(subject_id)
+        displacement = subtract(
+            end_transform.translation_m,
+            start_transform.translation_m,
+        )
+        if length(displacement) <= profile.numeric_tolerance:
+            continue
+        motion_direction = normalize(displacement)
+        sample_times = [
+            start + (sample_end - start) * index / 8.0
+            for index in range(9)
+        ]
+        obliqueness_degrees: list[float] = []
+        for time_seconds in sample_times:
+            resolver = _WorldTransformResolver(state, time_seconds, profile)
+            camera_state = resolver.camera()
+            if camera_state is None:
+                continue
+            subject = resolver.entity(subject_id)
+            camera_transform, _ = camera_state
+            subject_to_camera = subtract(
+                camera_transform.translation_m,
+                subject.translation_m,
+            )
+            if length(subject_to_camera) <= profile.numeric_tolerance:
+                continue
+            absolute_alignment = min(
+                1.0,
+                abs(dot(motion_direction, normalize(subject_to_camera))),
+            )
+            obliqueness_degrees.append(
+                math.degrees(math.acos(absolute_alignment))
+            )
+        if not obliqueness_degrees:
+            continue
+        median_obliqueness = median(obliqueness_degrees)
+        if median_obliqueness + profile.numeric_tolerance >= (
+            profile.minimum_camera_motion_obliqueness_degrees
+        ):
+            continue
+        message = (
+            f"线性运动主体 {subject_id} 与摄影机视线长期近似共线；"
+            "未明确要求迎面或背面跟拍时，请改用斜侧机位"
+        )
+        severity = "warning" if explicit_direction else "hard"
+        if explicit_direction:
+            message += "；Brief 已明确摄影机方向，因此仅记录警告"
+        violation = _violation(
+            "CAMERA_MOTION_NEAR_COLLINEAR",
+            message,
+            entity_ids=[subject_id],
+            time_range_seconds=(start, end),
+            expected={
+                "minimum_median_obliqueness_degrees": (
+                    profile.minimum_camera_motion_obliqueness_degrees
+                ),
+                "purpose": "避免缺省摄影机采用迎面或背面共线机位",
+            },
+            actual={
+                "median_obliqueness_degrees": median_obliqueness,
+                "minimum_obliqueness_degrees": min(obliqueness_degrees),
+                "maximum_obliqueness_degrees": max(obliqueness_degrees),
+                "sample_count": len(obliqueness_degrees),
+                "motion_index": motion.get("motion_index"),
+            },
+            adjustable_variables=[
+                "camera transform",
+                "camera focal length",
+                f"motion_tracks.{subject_id}",
+            ],
+        )
+        violations.append(violation.model_copy(update={"severity": severity}))
+    return violations
+
+
 def _orbit_projection_readability_violations(
     state: CandidateState,
     objective_brief: ObjectivePlanningBrief,
@@ -1703,6 +1824,16 @@ def _has_explicit_camera_staging(
 ) -> bool:
     return any(
         item.path.startswith("content.camera")
+        for item in objective_brief.explicit_requirements
+    )
+
+
+def _has_explicit_camera_direction(
+    objective_brief: ObjectivePlanningBrief,
+) -> bool:
+    return any(
+        item.path == "content.camera.view_relation_to_motion"
+        and item.value in {"front", "rear"}
         for item in objective_brief.explicit_requirements
     )
 

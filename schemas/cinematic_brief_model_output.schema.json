@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/cinematic_brief_model_output.schema.json",
-  "title": "Cinematic Brief Model Output v0.3",
+  "title": "Cinematic Brief Model Output v0.4",
   "type": "object",
   "properties": {
     "summary": {"type": "string"},
@@ -276,17 +276,31 @@
       "required": ["type", "direction", "speed", "trajectory", "easing", "start_time_seconds", "end_time_seconds"],
       "additionalProperties": false
     },
+    "cameraViewRelation": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "enum": ["front", "rear", "side", "three_quarter", "unspecified"]
+        },
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
     "camera": {
       "type": "object",
       "properties": {
         "shot_type": {"$ref": "#/$defs/annotatedText"},
         "view_angle": {"$ref": "#/$defs/annotatedText"},
+        "view_relation_to_motion": {"$ref": "#/$defs/cameraViewRelation"},
         "camera_height": {"$ref": "#/$defs/annotatedText"},
         "lens_intent": {"$ref": "#/$defs/annotatedText"},
         "focus_target_id": {"$ref": "#/$defs/annotatedText"},
         "movement": {"$ref": "#/$defs/cameraMovement"}
       },
-      "required": ["shot_type", "view_angle", "camera_height", "lens_intent", "focus_target_id", "movement"],
+      "required": ["shot_type", "view_angle", "view_relation_to_motion", "camera_height", "lens_intent", "focus_target_id", "movement"],
       "additionalProperties": false
     },
     "timelineEvent": {

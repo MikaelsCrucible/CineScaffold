@@ -593,7 +593,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         summary["stages"]["semantic"] = {
             "status": "success",
             "provider": semantic_args.provider,
-            "model": semantic_args.model or "mock-cinematic-brief-v0.3",
+            "model": semantic_args.model or "mock-cinematic-brief-v0.4",
             "elapsed_seconds": round(time.monotonic() - semantic_started, 6),
             "usage": provider_usage_summary(
                 provider_usage if isinstance(provider_usage, dict) else None,

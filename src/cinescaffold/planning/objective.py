@@ -48,7 +48,7 @@ class IgnoredSubjectiveField(_StrictModel):
 
 
 class ObjectivePlanningBrief(_StrictModel):
-    schema_version: Literal["0.1", "0.2", "0.3"] = "0.1"
+    schema_version: Literal["0.1", "0.2", "0.3", "0.4"] = "0.1"
     source_brief_sha256: str
     subjects: list[dict[str, Any]]
     subject_motion: list[dict[str, Any]]
@@ -70,16 +70,16 @@ class ObjectiveProjection(_StrictModel):
 def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
     """在模型调用前剥离主观维度和原始提示词。"""
     schema_version = brief.get("schema_version")
-    if schema_version not in {"0.1", "0.2", "0.3"}:
-        raise ValueError("Agent 1 仅支持 Cinematic Brief v0.1、v0.2 或 v0.3")
+    if schema_version not in {"0.1", "0.2", "0.3", "0.4"}:
+        raise ValueError("Agent 1 仅支持 Cinematic Brief v0.1、v0.2、v0.3 或 v0.4")
     content = brief.get("content")
     provenance = brief.get("provenance")
     if not isinstance(content, dict) or not isinstance(provenance, dict):
         raise ValueError("Cinematic Brief 缺少 content 或 provenance")
     translation_parameters = brief.get("translation_parameters")
-    if schema_version in {"0.2", "0.3"} and not isinstance(translation_parameters, dict):
+    if schema_version in {"0.2", "0.3", "0.4"} and not isinstance(translation_parameters, dict):
         raise ValueError(f"Cinematic Brief v{schema_version} 缺少 translation_parameters")
-    if schema_version in {"0.2", "0.3"} and not _optional_string(
+    if schema_version in {"0.2", "0.3", "0.4"} and not _optional_string(
         provenance.get("translation_rules_sha256")
     ):
         raise ValueError(f"Cinematic Brief v{schema_version} 缺少 translation_rules_sha256")
@@ -112,7 +112,7 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
         source_brief_sha256=_canonical_sha256(brief),
         translation_parameters=(
             objective_translation_parameters(translation_parameters)
-            if schema_version in {"0.2", "0.3"}
+            if schema_version in {"0.2", "0.3", "0.4"}
             else None
         ),
         explicit_requirements=requirements,

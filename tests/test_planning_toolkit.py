@@ -45,6 +45,10 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             result["data"]["acceptance"]["minimum_projected_motion_scale_ratio"],
             1.2,
         )
+        self.assertEqual(
+            result["data"]["acceptance"]["minimum_camera_motion_obliqueness_degrees"],
+            20.0,
+        )
         self.assertFalse(result["data"]["acceptance"]["commit_ready"])
         self.assertEqual(result["data"]["coordinate_system"]["up_axis"], "+Z")
         self.assertEqual(
@@ -1341,6 +1345,28 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             violation["expected"]["minimum_projected_scale_ratio"],
         )
 
+    def test_scale_change_cannot_bypass_default_camera_collinearity(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(0.0, 0.0, 0.9),
+            camera_position=(0.0, -10.0, 1.5),
+        )
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+        codes = {item["code"] for item in validation["violations"]}
+        violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "CAMERA_MOTION_NEAR_COLLINEAR"
+        )
+
+        self.assertNotIn("PROJECTED_MOTION_UNREADABLE", codes)
+        self.assertFalse(validation["data"]["hard_pass"])
+        self.assertEqual(violation["severity"], "hard")
+        self.assertLess(
+            violation["actual"]["median_obliqueness_degrees"],
+            violation["expected"]["minimum_median_obliqueness_degrees"],
+        )
+
     def test_lateral_motion_with_visible_projection_extent_passes(self) -> None:
         toolkit = _projected_motion_toolkit(end_position=(8.0, 4.0, 0.9))
 
@@ -1348,6 +1374,10 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         self.assertNotIn(
             "PROJECTED_MOTION_UNREADABLE",
+            {item["code"] for item in validation["violations"]},
+        )
+        self.assertNotIn(
+            "CAMERA_MOTION_NEAR_COLLINEAR",
             {item["code"] for item in validation["violations"]},
         )
 
@@ -1358,8 +1388,8 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 "explicit_requirements": [
                     *toolkit.objective_brief.explicit_requirements,
                     ObjectiveRequirement(
-                        path="content.camera.view_angle",
-                        value="正面固定机位",
+                        path="content.camera.view_relation_to_motion",
+                        value="front",
                         source_text="正面固定拍摄",
                     ),
                 ]
@@ -1373,8 +1403,42 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             for item in validation["violations"]
             if item["code"] == "PROJECTED_MOTION_UNREADABLE"
         )
+        collinear = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "CAMERA_MOTION_NEAR_COLLINEAR"
+        )
         self.assertTrue(validation["data"]["hard_pass"])
         self.assertEqual(violation["severity"], "warning")
+        self.assertEqual(collinear["severity"], "warning")
+
+    def test_explicit_static_camera_does_not_authorize_collinear_view(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(0.0, 0.0, 0.9),
+            camera_position=(0.0, -10.0, 1.5),
+        )
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "explicit_requirements": [
+                    *toolkit.objective_brief.explicit_requirements,
+                    ObjectiveRequirement(
+                        path="content.camera.movement.type",
+                        value="static",
+                        source_text="镜头静止",
+                    ),
+                ]
+            }
+        )
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+        violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "CAMERA_MOTION_NEAR_COLLINEAR"
+        )
+
+        self.assertFalse(validation["data"]["hard_pass"])
+        self.assertEqual(violation["severity"], "hard")
 
     def test_polygon_cannot_masquerade_as_default_orbit(self) -> None:
         toolkit = _relative_motion_toolkit(earth_radius_m=20.0)
@@ -1712,6 +1776,7 @@ def _toolkit() -> ScenePlanningToolkit:
 def _projected_motion_toolkit(
     *,
     end_position: tuple[float, float, float],
+    camera_position: tuple[float, float, float] = (0.0, -48.0, 1.5),
 ) -> ScenePlanningToolkit:
     toolkit = _toolkit()
     toolkit.objective_brief = toolkit.objective_brief.model_copy(
@@ -1722,6 +1787,7 @@ def _projected_motion_toolkit(
                         "motion_index": 0,
                         "subject_id": "man_01",
                         "motion_type": "moving",
+                        "path_type": "linear",
                         "start_time_seconds": 0.0,
                         "end_time_seconds": 6.0,
                     }
@@ -1776,7 +1842,7 @@ def _projected_motion_toolkit(
                     {
                         "time_seconds": 0.0,
                         "value": {
-                            "translation_m": [0.0, -48.0, 1.5],
+                            "translation_m": list(camera_position),
                             "rotation_quaternion_wxyz": [
                                 0.70710678,
                                 0.70710678,

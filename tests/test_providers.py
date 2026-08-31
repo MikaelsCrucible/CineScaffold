@@ -41,7 +41,7 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(captured["payload"]["text"]["format"]["type"], "json_schema")
         self.assertEqual(
             captured["payload"]["text"]["format"]["name"],
-            "cinematic_brief_v0_3",
+            "cinematic_brief_v0_4",
         )
         self.assertTrue(captured["payload"]["text"]["format"]["strict"])
         self.assertNotIn("$schema", captured["payload"]["text"]["format"]["schema"])

@@ -8,7 +8,7 @@ from cinescaffold.providers.base import ProviderResponse
 
 class MockProvider:
     name = "mock"
-    model = "mock-cinematic-brief-v0.3"
+    model = "mock-cinematic-brief-v0.4"
 
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response

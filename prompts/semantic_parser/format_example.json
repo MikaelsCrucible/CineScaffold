@@ -24,6 +24,7 @@
   "camera": {
     "shot_type": {"value": null, "source_status": "unknown", "source_text": null},
     "view_angle": {"value": null, "source_status": "unknown", "source_text": null},
+    "view_relation_to_motion": {"value": "unspecified", "source_status": "default", "source_text": null},
     "camera_height": {"value": null, "source_status": "unknown", "source_text": null},
     "lens_intent": {"value": null, "source_status": "unknown", "source_text": null},
     "focus_target_id": {"value": null, "source_status": "unknown", "source_text": null},
