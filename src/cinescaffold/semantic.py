@@ -69,5 +69,6 @@ def parse_cinematic_brief(
                 config.translation_rules_path
             ),
             "response_id": response.response_id,
+            "provider_usage": response.raw_metadata.get("usage"),
         },
     }

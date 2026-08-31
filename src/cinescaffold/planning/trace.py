@@ -366,6 +366,53 @@ def usage_summary(
     request_metrics: list[dict[str, int]] | None = None,
 ) -> dict[str, Any]:
     values = _usage_dict(usage)
+    return _token_usage_summary(values, rates, request_metrics)
+
+
+def provider_usage_summary(
+    usage: dict[str, Any] | None,
+    rates: CostRates | None,
+) -> dict[str, Any]:
+    """统一 Responses/Chat Completions usage，供语义阶段记录成本。"""
+    raw = usage or {}
+    input_details = raw.get("input_tokens_details") or raw.get("prompt_tokens_details") or {}
+    output_details = raw.get("output_tokens_details") or raw.get("completion_tokens_details") or {}
+    input_tokens = int(raw.get("input_tokens", raw.get("prompt_tokens", 0)) or 0)
+    output_tokens = int(raw.get("output_tokens", raw.get("completion_tokens", 0)) or 0)
+    cache_read = int(
+        raw.get("cache_read_tokens", input_details.get("cached_tokens", 0)) or 0
+    )
+    cache_write = int(raw.get("cache_write_tokens", 0) or 0)
+    values = {
+        "input_tokens": input_tokens,
+        "cache_write_tokens": cache_write,
+        "cache_read_tokens": cache_read,
+        "output_tokens": output_tokens,
+        "details": {
+            "reasoning_tokens": int(output_details.get("reasoning_tokens", 0) or 0)
+        },
+        "requests": 1 if usage is not None else 0,
+        "tool_calls": 0,
+    }
+    uncached = max(0, input_tokens - cache_read - cache_write)
+    return _token_usage_summary(
+        values,
+        rates,
+        [
+            {
+                "input_tokens": input_tokens,
+                "uncached_input_tokens": uncached,
+                "message_count": 2,
+            }
+        ] if usage is not None else [],
+    )
+
+
+def _token_usage_summary(
+    values: dict[str, Any],
+    rates: CostRates | None,
+    request_metrics: list[dict[str, int]] | None = None,
+) -> dict[str, Any]:
     metrics = request_metrics or []
     result: dict[str, Any] = {
         "tokens": values,

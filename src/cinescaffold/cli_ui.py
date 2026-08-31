@@ -385,6 +385,7 @@ def print_parse_summary(brief: dict[str, Any], output_path: Path | None, *, stre
 def print_pipeline_summary(summary: dict[str, Any], *, stream: TextIO | None = None) -> None:
     output = stream or sys.stdout
     stages = summary.get("stages", {})
+    semantic = stages.get("semantic") or {}
     planning = stages.get("planning") or {}
     execution = stages.get("execution") or {}
     tokens = planning.get("usage", {}).get("tokens", {})
@@ -394,6 +395,22 @@ def print_pipeline_summary(summary: dict[str, Any], *, stream: TextIO | None = N
     print(f"状态      {_status_label(str(summary.get('status')))}", file=output)
     print(f"起点      {_start_label(summary.get('started_from'))}", file=output)
     print(f"总耗时    {_seconds(summary.get('elapsed_seconds'))}", file=output)
+    if semantic:
+        semantic_tokens = semantic.get("usage", {}).get("tokens", {})
+        print(
+            f"六维解析  {_status_label(str(semantic.get('status')))} · "
+            f"输入 {_integer(semantic_tokens.get('input_tokens'))} · "
+            f"输出 {_integer(semantic_tokens.get('output_tokens'))} tokens · "
+            f"{_seconds(semantic.get('elapsed_seconds'))}",
+            file=output,
+        )
+        semantic_cost = semantic.get("usage", {}).get("estimated_cost")
+        if semantic_cost:
+            print(
+                f"解析成本  {semantic_cost.get('amount')} "
+                f"{semantic_cost.get('currency')}",
+                file=output,
+            )
     if planning:
         print(
             f"规划      {_status_label(str(planning.get('status')))} · "
@@ -405,6 +422,13 @@ def print_pipeline_summary(summary: dict[str, Any], *, stream: TextIO | None = N
             f"输出 {_integer(tokens.get('output_tokens'))}",
             file=output,
         )
+        planning_cost = planning.get("usage", {}).get("estimated_cost")
+        if planning_cost:
+            print(
+                f"规划成本  {planning_cost.get('amount')} "
+                f"{planning_cost.get('currency')}",
+                file=output,
+            )
     if execution:
         print(
             f"执行      {_status_label(str(execution.get('status')))} · "

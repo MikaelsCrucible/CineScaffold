@@ -24,6 +24,7 @@ class SemanticParserTest(unittest.TestCase):
         self.assertEqual(result["schema_version"], "0.3")
         self.assertEqual(result["provenance"]["provider"], "mock")
         self.assertEqual(result["provenance"]["source_prompt"], "测试自然语言")
+        self.assertIsNone(result["provenance"]["provider_usage"])
         self.assertEqual(result["translation_parameters"]["emotion_class"]["class_id"], "E6")
         self.assertFalse(
             result["translation_parameters"]["lighting"]["applied_to_blender_preview"]

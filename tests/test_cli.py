@@ -250,6 +250,11 @@ class CliTest(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(result["status"], "success")
         self.assertIn("semantic", result["stages"])
+        self.assertEqual(
+            result["stages"]["semantic"]["usage"]["estimated_cost"]["amount"],
+            "0.00000000",
+        )
+        self.assertIn("elapsed_seconds", result["stages"]["semantic"])
         self.assertIn("planning", result["stages"])
         self.assertIn("execution", result["stages"])
         self.assertEqual(stderr.getvalue(), "")

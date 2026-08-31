@@ -183,7 +183,7 @@ cinescaffold run \
   --output-dir runs/example/execution-only
 ```
 
-使用其他配置文件时传入 `--config cinescaffold.local.conf`。一键运行会写出 `pipeline_summary.json`，并在任一阶段失败时停止，不会把不合法 IR 继续交给 Blender。
+使用其他配置文件时传入 `--config cinescaffold.local.conf`。一键运行会写出 `pipeline_summary.json`，记录语义解析与规划阶段各自的 usage、可选价格快照和估算成本，并在任一阶段失败时停止，不会把不合法 IR 继续交给 Blender。
 
 ### 分阶段运行
 

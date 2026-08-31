@@ -38,7 +38,7 @@ from cinescaffold.planning.runner import (
     InterpreterRunConfig,
     InterpreterRunner,
 )
-from cinescaffold.planning.trace import CostRates, TraceConfig
+from cinescaffold.planning.trace import CostRates, TraceConfig, provider_usage_summary
 from cinescaffold.providers import DeepSeekProvider, MockProvider, OpenAIProvider
 from cinescaffold.semantic import SemanticParserConfig, parse_cinematic_brief
 
@@ -587,11 +587,18 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     if args.text is not None:
         semantic_args = _stage_args(args, args.semantic_settings)
         brief_path = output_dir / "cinematic_brief.json"
+        semantic_started = time.monotonic()
         brief = _parse_description(semantic_args, reporter, args.text, brief_path)
+        provider_usage = brief.get("provenance", {}).get("provider_usage")
         summary["stages"]["semantic"] = {
             "status": "success",
             "provider": semantic_args.provider,
             "model": semantic_args.model or "mock-cinematic-brief-v0.3",
+            "elapsed_seconds": round(time.monotonic() - semantic_started, 6),
+            "usage": provider_usage_summary(
+                provider_usage if isinstance(provider_usage, dict) else None,
+                _cost_rates(semantic_args),
+            ),
         }
         summary["artifacts"]["cinematic_brief"] = str(brief_path)
     elif args.brief is not None:

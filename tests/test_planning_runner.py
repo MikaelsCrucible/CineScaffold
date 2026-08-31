@@ -39,11 +39,34 @@ from cinescaffold.planning.trace import (
     TraceConfig,
     TraceRecorder,
     TracingModel,
+    provider_usage_summary,
 )
 from tests.helpers import ROOT, valid_planning_brief
 
 
 class InterpreterRunnerTest(unittest.TestCase):
+    def test_openai_provider_usage_uses_cache_aware_cost_snapshot(self) -> None:
+        result = provider_usage_summary(
+            {
+                "input_tokens": 10_000,
+                "input_tokens_details": {"cached_tokens": 4_000},
+                "output_tokens": 2_000,
+                "output_tokens_details": {"reasoning_tokens": 500},
+            },
+            CostRates(
+                input_per_million=Decimal("2"),
+                output_per_million=Decimal("12"),
+                cache_read_per_million=Decimal("0.2"),
+                cache_write_per_million=Decimal("2.5"),
+                source="openai_terra_test",
+            ),
+        )
+
+        self.assertEqual(result["tokens"]["cache_read_tokens"], 4_000)
+        self.assertEqual(result["tokens"]["details"]["reasoning_tokens"], 500)
+        self.assertEqual(result["estimated_cost"]["amount"], "0.03680000")
+        self.assertEqual(result["pricing_snapshot"]["source"], "openai_terra_test")
+
     def test_real_provider_models_build_without_network_call(self) -> None:
         objective = project_objective_brief(valid_planning_brief()).objective_brief
 

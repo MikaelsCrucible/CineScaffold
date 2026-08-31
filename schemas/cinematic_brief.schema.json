@@ -16,9 +16,10 @@
         "parser_prompt_version": {"type": "string"},
         "rules_sha256": {"type": "string"},
         "translation_rules_sha256": {"type": "string"},
-        "response_id": {"type": ["string", "null"]}
+        "response_id": {"type": ["string", "null"]},
+        "provider_usage": {"type": ["object", "null"]}
       },
-      "required": ["source_prompt", "provider", "model", "parser_prompt_version", "rules_sha256", "translation_rules_sha256", "response_id"],
+      "required": ["source_prompt", "provider", "model", "parser_prompt_version", "rules_sha256", "translation_rules_sha256", "response_id", "provider_usage"],
       "additionalProperties": false
     }
   },
