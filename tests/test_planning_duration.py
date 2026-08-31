@@ -81,6 +81,22 @@ class PlanningDurationTest(unittest.TestCase):
                 fps_denominator=1,
             )
 
+    def test_upper_bound_only_range_may_start_at_zero(self) -> None:
+        resolution = freeze_brief_duration(
+            {
+                "duration_seconds": 10.0,
+                "duration_range_seconds": {
+                    "minimum_seconds": 0.0,
+                    "maximum_seconds": 10.0,
+                },
+                "duration_source_status": "inferred",
+            },
+            fps_numerator=24,
+            fps_denominator=1,
+        )
+
+        self.assertEqual(resolution.resolved_duration_seconds, 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()

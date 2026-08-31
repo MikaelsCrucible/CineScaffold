@@ -83,6 +83,26 @@ class SemanticRulesTest(unittest.TestCase):
         normalized, _ = apply_translation_rules(content, self.rules)
         self.assertEqual(normalized["camera"]["view_angle"]["value"], "俯拍")
 
+    def test_duration_upper_bound_resolves_to_its_maximum(self) -> None:
+        content = valid_model_output()
+        content["timeline"]["duration_range_seconds"] = {
+            "minimum_seconds": 0.0,
+            "maximum_seconds": 10.0,
+        }
+        content["timeline"]["duration_source_status"] = "explicit"
+
+        normalized, _ = apply_translation_rules(content, self.rules)
+
+        self.assertEqual(normalized["timeline"]["duration_seconds"], 10.0)
+        self.assertEqual(normalized["timeline"]["duration_source_status"], "inferred")
+        uncertainty = next(
+            item
+            for item in normalized["uncertainties"]
+            if item["field"] == "timeline.duration_seconds"
+        )
+        self.assertEqual(uncertainty["resolution"], "use_inference")
+        self.assertEqual(uncertainty["selected_value"], "10.0")
+
     def test_target_motion_uses_relative_direction(self) -> None:
         content = valid_model_output()
         content["subjects"] = [

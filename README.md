@@ -116,6 +116,16 @@ planning_thinking_mode = disabled
 planning_model_max_tokens = 8192
 ```
 
+上述设置只控制复杂的 Scene Planning Agent。自然语言 Semantic Parser 是单轮 JSON 提取任务，DeepSeek V4 的思考模式在此阶段缺省关闭，防止 reasoning 占满 JSON 输出预算；这不会改变 Agent 1 的 thinking 设置。需要专门做语义推理消融时可以单独配置：
+
+```text
+semantic_thinking_mode = enabled
+semantic_reasoning_effort = low
+semantic_max_tokens = 65536
+```
+
+也可使用 `--semantic-thinking-mode`、`--semantic-reasoning-effort` 和 `--max-tokens` 临时覆盖。只提供“10 秒以内”等时长上限时，Semantic Parser 保留原范围，并确定性选择上限作为本次时长；完全未提供时长才使用 15 秒缺省值。
+
 论文实验应明确冻结思考模式、强度和 token 上限，不能把供应商缺省值视为不变条件。普通规划 Trace 记录 reasoning token 数、请求耗时、停止原因与工具调用，不保存对话/思维原文；`--full-power-diagnostic` 模式额外记录完整对话与逐字思维链（受 `TraceConfig` 字节/字符上限约束，可用 `--trace-max-event-bytes`/`--trace-max-string-chars` 调大）。
 
 若要启用低强度思考，开关和强度必须分别填写：

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from cinescaffold.errors import ProviderError
 from cinescaffold.providers.base import ProviderResponse
@@ -18,6 +18,8 @@ class DeepSeekProvider:
         base_url: str = "https://api.deepseek.com",
         timeout: float = 60.0,
         max_tokens: int = 8192,
+        thinking_mode: Literal["enabled", "disabled"] = "disabled",
+        reasoning_effort: Literal["low", "high", "max"] | None = None,
         transport: HttpTransport = post_json,
     ) -> None:
         if not api_key:
@@ -29,6 +31,8 @@ class DeepSeekProvider:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.max_tokens = max_tokens
+        self.thinking_mode = thinking_mode
+        self.reasoning_effort = reasoning_effort
         self.transport = transport
 
     def generate(
@@ -49,8 +53,11 @@ class DeepSeekProvider:
             ],
             "response_format": {"type": "json_object"},
             "max_tokens": self.max_tokens,
+            "thinking": {"type": self.thinking_mode},
             "stream": False,
         }
+        if self.thinking_mode == "enabled" and self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
         response = self.transport(
             f"{self.base_url}/chat/completions",
             {

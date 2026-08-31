@@ -64,8 +64,36 @@ class ProviderTest(unittest.TestCase):
 
         self.assertEqual(captured["url"], "https://api.deepseek.com/chat/completions")
         self.assertEqual(captured["payload"]["response_format"], {"type": "json_object"})
+        self.assertEqual(captured["payload"]["thinking"], {"type": "disabled"})
+        self.assertNotIn("reasoning_effort", captured["payload"])
         self.assertIn("JSON Schema", captured["payload"]["messages"][0]["content"])
         self.assertEqual(response.response_id, "chat_test")
+
+    def test_deepseek_semantic_thinking_can_be_enabled_explicitly(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def transport(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+            captured["payload"] = payload
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps(self.output)},
+                    }
+                ]
+            }
+
+        provider = DeepSeekProvider(
+            "secret",
+            "test-model",
+            thinking_mode="enabled",
+            reasoning_effort="low",
+            transport=transport,
+        )
+        provider.generate("系统", "用户", self.schema)
+
+        self.assertEqual(captured["payload"]["thinking"], {"type": "enabled"})
+        self.assertEqual(captured["payload"]["reasoning_effort"], "low")
 
     def test_deepseek_empty_content_is_diagnostic_error(self) -> None:
         def transport(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: float) -> dict[str, Any]:

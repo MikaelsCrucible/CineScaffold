@@ -35,14 +35,17 @@ def freeze_brief_duration(
             raise ValueError("timeline.duration_range_seconds 必须为对象或 null")
         minimum = duration_range.get("minimum_seconds")
         maximum = duration_range.get("maximum_seconds")
-        if not all(
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and math.isfinite(value)
-            and value > 0
-            for value in (minimum, maximum)
+        if not (
+            isinstance(minimum, (int, float))
+            and not isinstance(minimum, bool)
+            and math.isfinite(minimum)
+            and minimum >= 0
+            and isinstance(maximum, (int, float))
+            and not isinstance(maximum, bool)
+            and math.isfinite(maximum)
+            and maximum > 0
         ):
-            raise ValueError("时长范围上下界必须为有限正数")
+            raise ValueError("时长范围下界必须为有限非负数，上界必须为有限正数")
         if minimum > maximum or not minimum <= duration <= maximum:
             raise ValueError("第一步解析出的 duration_seconds 必须位于用户时长范围内")
 

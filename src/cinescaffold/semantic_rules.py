@@ -259,14 +259,25 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
     timeline = content.setdefault("timeline", {})
     duration = timeline.get("duration_seconds")
     if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
-        timeline["duration_seconds"] = defaults["duration_seconds"]
-        timeline["duration_range_seconds"] = None
-        timeline["duration_source_status"] = "default"
-        _add_default_uncertainty(
-            content,
-            "timeline.duration_seconds",
-            str(defaults["duration_seconds"]),
-        )
+        resolved_range_duration = _resolve_duration_range(timeline, defaults)
+        if resolved_range_duration is not None:
+            timeline["duration_seconds"] = resolved_range_duration
+            timeline["duration_source_status"] = "inferred"
+            _add_inference_uncertainty(
+                content,
+                "timeline.duration_seconds",
+                str(resolved_range_duration),
+                "用户只给出时长范围，按转换规则选择范围最大值",
+            )
+        else:
+            timeline["duration_seconds"] = defaults["duration_seconds"]
+            timeline["duration_range_seconds"] = None
+            timeline["duration_source_status"] = "default"
+            _add_default_uncertainty(
+                content,
+                "timeline.duration_seconds",
+                str(defaults["duration_seconds"]),
+            )
 
     motions = content.setdefault("subject_motion", [])
     motion_ids = {item.get("subject_id") for item in motions if isinstance(item, dict)}
@@ -629,6 +640,45 @@ def _add_default_uncertainty(content: dict[str, Any], field: str, selected: str)
     )
 
 
+def _add_inference_uncertainty(
+    content: dict[str, Any],
+    field: str,
+    selected: str,
+    reason: str,
+) -> None:
+    uncertainties = content.setdefault("uncertainties", [])
+    if any(item.get("field") == field for item in uncertainties if isinstance(item, dict)):
+        return
+    uncertainties.append(
+        {
+            "field": field,
+            "reason": reason,
+            "resolution": "use_inference",
+            "selected_value": selected,
+        }
+    )
+
+
+def _resolve_duration_range(
+    timeline: dict[str, Any],
+    defaults: dict[str, Any],
+) -> float | None:
+    duration_range = timeline.get("duration_range_seconds")
+    if not isinstance(duration_range, dict):
+        return None
+    minimum = duration_range.get("minimum_seconds")
+    maximum = duration_range.get("maximum_seconds")
+    if not _is_number(minimum) or not _is_number(maximum):
+        raise ValueError("时长范围必须包含数值 minimum_seconds 和 maximum_seconds")
+    minimum_value = float(minimum)
+    maximum_value = float(maximum)
+    if minimum_value < 0 or maximum_value <= 0 or minimum_value > maximum_value:
+        raise ValueError("时长范围必须满足 0 <= minimum_seconds <= maximum_seconds")
+    if defaults.get("duration_range_resolution") != "maximum_seconds":
+        raise ValueError("当前只支持 maximum_seconds 时长范围解析策略")
+    return maximum_value
+
+
 def _slot(value: Any) -> dict[str, Any]:
     return {
         "value": _value(value),
@@ -675,6 +725,10 @@ def _number_or(value: Any, fallback: float) -> float:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
     return fallback
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _validate_rule_table(value: Any) -> None:

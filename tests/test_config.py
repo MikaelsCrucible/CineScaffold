@@ -40,6 +40,8 @@ class ConfigTest(unittest.TestCase):
                         "model = shared-model",
                         "semantic_provider = openai",
                         "semantic_model = semantic-model",
+                        "semantic_thinking_mode = disabled",
+                        "semantic_max_tokens = 16384",
                         "openai_api_key = openai-secret",
                         "planning_model_max_tokens = 4096",
                     )
@@ -61,6 +63,14 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(
             resolve_stage_option(config, "planning", "model_max_tokens", None),
             4096,
+        )
+        self.assertEqual(
+            resolve_stage_option(config, "semantic", "thinking_mode", None),
+            "disabled",
+        )
+        self.assertEqual(
+            resolve_stage_option(config, "semantic", "max_tokens", None),
+            16384,
         )
 
     def test_unknown_field_is_rejected(self) -> None:

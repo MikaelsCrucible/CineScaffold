@@ -22,6 +22,9 @@ ALLOWED_KEYS = {
     "deepseek_base_url",
     "semantic_provider",
     "semantic_model",
+    "semantic_thinking_mode",
+    "semantic_reasoning_effort",
+    "semantic_max_tokens",
     "planning_provider",
     "planning_model",
     "planning_thinking_mode",
@@ -113,7 +116,7 @@ def resolve_stage_option(
     if cli_value is not None:
         return cli_value
     value = config.data.get(f"{stage}_{key}")
-    if key == "model_max_tokens" and value is not None:
+    if key in {"model_max_tokens", "max_tokens"} and value is not None:
         return int(value)
     return value
 
@@ -126,23 +129,28 @@ def _validate_config(data: dict[str, str]) -> None:
         value = data.get(key)
         if value is not None and value not in PROVIDERS:
             raise ConfigurationError(f"{key} 不支持：{value}")
-    thinking_mode = data.get("planning_thinking_mode")
-    if thinking_mode not in (None, "enabled", "disabled"):
-        raise ConfigurationError(
-            "planning_thinking_mode 必须是 enabled 或 disabled；"
-            "low、high、max 请填写 planning_reasoning_effort"
-        )
-    reasoning_effort = data.get("planning_reasoning_effort")
-    if reasoning_effort not in (None, "low", "high", "max"):
-        raise ConfigurationError("planning_reasoning_effort 必须是 low、high 或 max")
-    model_max_tokens = data.get("planning_model_max_tokens")
-    if model_max_tokens is not None:
+    for stage in ("semantic", "planning"):
+        thinking_mode = data.get(f"{stage}_thinking_mode")
+        if thinking_mode not in (None, "enabled", "disabled"):
+            raise ConfigurationError(
+                f"{stage}_thinking_mode 必须是 enabled 或 disabled；"
+                f"low、high、max 请填写 {stage}_reasoning_effort"
+            )
+        reasoning_effort = data.get(f"{stage}_reasoning_effort")
+        if reasoning_effort not in (None, "low", "high", "max"):
+            raise ConfigurationError(
+                f"{stage}_reasoning_effort 必须是 low、high 或 max"
+            )
+    for key in ("semantic_max_tokens", "planning_model_max_tokens"):
+        max_tokens = data.get(key)
+        if max_tokens is None:
+            continue
         try:
-            parsed = int(model_max_tokens)
+            parsed = int(max_tokens)
         except ValueError as error:
-            raise ConfigurationError("planning_model_max_tokens 必须是正整数") from error
+            raise ConfigurationError(f"{key} 必须是正整数") from error
         if parsed < 1:
-            raise ConfigurationError("planning_model_max_tokens 必须是正整数")
+            raise ConfigurationError(f"{key} 必须是正整数")
 
 
 def _unquote(value: str) -> str:

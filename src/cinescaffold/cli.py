@@ -148,7 +148,17 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_semantic_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--timeout", type=float, default=60.0)
-    parser.add_argument("--max-tokens", type=int, default=8192)
+    parser.add_argument("--max-tokens", type=int)
+    parser.add_argument(
+        "--semantic-thinking-mode",
+        choices=("enabled", "disabled"),
+        help="控制 DeepSeek 语义解析的思考模式；缺省关闭",
+    )
+    parser.add_argument(
+        "--semantic-reasoning-effort",
+        choices=("low", "high", "max"),
+        help="语义解析启用思考时的强度",
+    )
     parser.add_argument("--rules", type=Path, default=Path("prompts/semantic_parser/rules.md"))
     parser.add_argument(
         "--system-template",
@@ -287,6 +297,7 @@ def _apply_config(args: argparse.Namespace, config: LoadedConfig) -> None:
             cli_base_url=args.base_url,
         )
         _assign_model_settings(args, settings)
+        _apply_semantic_config(args, config)
     elif args.command == "plan":
         settings = resolve_model_settings(
             config,
@@ -312,6 +323,7 @@ def _apply_config(args: argparse.Namespace, config: LoadedConfig) -> None:
             cli_model=args.model,
             cli_base_url=args.base_url,
         )
+        _apply_semantic_config(args, config)
         _apply_planning_config(args, config)
 
 
@@ -341,6 +353,27 @@ def _apply_planning_config(args: argparse.Namespace, config: LoadedConfig) -> No
         "model_max_tokens",
         args.model_max_tokens,
     )
+
+
+def _apply_semantic_config(args: argparse.Namespace, config: LoadedConfig) -> None:
+    args.semantic_thinking_mode = resolve_stage_option(
+        config,
+        "semantic",
+        "thinking_mode",
+        args.semantic_thinking_mode,
+    ) or "disabled"
+    args.semantic_reasoning_effort = resolve_stage_option(
+        config,
+        "semantic",
+        "reasoning_effort",
+        args.semantic_reasoning_effort,
+    )
+    args.max_tokens = resolve_stage_option(
+        config,
+        "semantic",
+        "max_tokens",
+        args.max_tokens,
+    ) or 8192
 
 
 def _reporter(args: argparse.Namespace) -> TerminalReporter:
@@ -429,6 +462,8 @@ def _create_provider(args: argparse.Namespace) -> Any:
         base_url=args.base_url or "https://api.deepseek.com",
         timeout=args.timeout,
         max_tokens=args.max_tokens,
+        thinking_mode=args.semantic_thinking_mode,
+        reasoning_effort=args.semantic_reasoning_effort,
     )
 
 
