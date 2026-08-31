@@ -19,7 +19,9 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
   -> Semantic Parser
   -> Cinematic Brief（六维电影语义）
   -> Scene Planning Agent
-  -> Planning Toolkit + Commit Gate
+  -> Scene Skeleton（无数值符号关系）
+  -> Planning Toolkit Design Options
+  -> Candidate + Validator + Commit Gate
   -> Constraint Plan + Scene IR
   -> 确定性 ExecutionRunner
   -> Blender MCP + Blender Executor
@@ -30,6 +32,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 三个核心表示各自承担不同职责：
 
 - `Cinematic Brief`：记录用户想表达什么，以及信息来自明确描述、推断还是默认值。
+- `Scene Skeleton`：只记录实体类别、空间关系、动作阶段和摄影机意图，不含坐标、距离、速度、尺寸或焦距。
 - `Constraint Plan`：记录 Agent 选择了哪些可执行空间、运动和摄影机策略。
 - `Scene IR`：精确描述 Blender 应创建和渲染什么，可验证、可重放、可比较。
 
@@ -38,6 +41,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 支持 OpenAI、DeepSeek 和离线 Mock Provider。
 - 使用 LLM 提取“谁、在哪、做什么、感觉”，再通过版本化规则表生成可复现的主体、运动、场景、摄影机、构图和光源量化快照。
 - 将 Cinematic Brief 中的客观空间、运动、构图和摄影机要求交给规划 Agent。
+- 规划 Agent 先做符号化拆解；Toolkit 再联合冻结 Profile 与完整 Validator 给出少量数值候选、可行范围和任务相关接口。Agent 只选整体策略，候选由 Toolkit 原子物化，避免反复试坐标。
 - 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
 - Validator 发现共线机位、屏幕运动不可读、主体出画或投影尺寸不合格时，Toolkit 会确定性搜索少量经复验的摄影机策略；Agent 选择整体方案，不再逐项猜坐标和焦距。
 - 支持世界、局部、目标相对和摄影机相对参考系。
@@ -121,7 +125,7 @@ semantic_reasoning_effort = medium
 semantic_max_tokens = 65536
 ```
 
-DeepSeek V4 Pro 的思考模式缺省为启用，缺省强度为 `high`。真实回归中，模型读取完整 Toolkit 能力后的首次规划可能产生上万 reasoning tokens，并让单次请求持续数分钟。若实验优先考虑低延迟与稳定工具调用，可在配置中明确填写：
+DeepSeek V4 Pro 的思考模式缺省为启用，缺省强度为 `high`。早期回归中，模型读取完整 Toolkit 能力后的首次规划曾产生上万 reasoning tokens，并让单次请求持续数分钟。当前正常流程不再先返回整本能力手册，而是依次暴露 Scene Skeleton、Design Options 和必要的后备工具；模型仍可能因任务与服务负载产生长推理。若实验优先考虑低延迟与稳定工具调用，可在配置中明确填写：
 
 ```text
 planning_thinking_mode = disabled
@@ -216,6 +220,8 @@ cinescaffold plan \
 ```
 
 规划阶段同样读取 `.cinescaffold.conf`。如需临时实验覆盖，可以额外传入 `--provider` 和 `--model`，但不会修改配置文件。
+
+正常规划的前三个工具阶段固定为：提交无数值 Scene Skeleton、请求经 Validator 预测的 Design Options、按 `option_id` 原子应用一个候选。只有候选仍有结构化 violation 或 capability gap 时，低层 Patch、Solver 与修复建议工具才会按状态开放；从 checkpoint 恢复时则直接从已有 Candidate 继续。
 
 定位供应商长推理或流式停顿时，可以显式开启一次性诊断特例：
 
