@@ -317,10 +317,8 @@ class InterpreterRunnerTest(unittest.TestCase):
             if item["event_type"] == "tool_call_started"
             and item["payload"]["tool_name"] == "get_capabilities"
         ]
-        self.assertEqual(len(capability_calls), 1)
-        self.assertEqual(
-            set(capability_calls[0]["payload"]["arguments"]["sections"]),
-            {"entities", "constraints", "tracks", "camera", "validators", "limits"},
+        self.assertTrue(
+            all(len(item["payload"]["arguments"]["sections"]) == 1 for item in capability_calls)
         )
         completed = next(
             item for item in trace if item["event_type"] == "model_request_completed"
@@ -448,7 +446,7 @@ class InterpreterRunnerTest(unittest.TestCase):
             for item in completed["payload"]["response_parts"]
             if item["kind"] == "tool-call"
         )
-        self.assertEqual(first_call.get("args"), {})
+        self.assertIn("sections", json.dumps(first_call.get("args"), ensure_ascii=False))
 
 
 if __name__ == "__main__":

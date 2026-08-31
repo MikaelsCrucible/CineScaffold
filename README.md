@@ -109,7 +109,7 @@ api_key = 填写 API KEY
 
 配置也可以分别指定 `semantic_provider/model` 和 `planning_provider/model`。完整可选字段及注释见 [`.cinescaffold.example.conf`](.cinescaffold.example.conf)。命令行参数优先于配置文件；未找到配置值时，API Key 仍可从 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 环境变量读取。
 
-Scene Planning 缺省启用思考，但强度固定为 `low`，单次模型响应上限为 8192 tokens。此前依赖 DeepSeek V4 Pro 的供应商缺省 `high`，真实回归中模型在读取完整 Toolkit 后曾产生 30K–39K reasoning tokens，并让第二次请求持续 4–5 分钟。现在 Agent 只读取一次完整 Scene Planning 能力，第二次请求只开放 Entity Patch；实体建立后直接开放 Motion、Camera、Constraint、Solve 与 Validate，不再通过额外能力查询阻塞求解流程。Toolkit 的 section 过滤仍用于直接调用和测试，但常规 Agent 不进行多轮能力浏览。
+Scene Planning 缺省启用思考，但强度固定为 `low`，单次模型响应上限为 8192 tokens。此前依赖 DeepSeek V4 Pro 的供应商缺省 `high`，真实回归中模型在读取完整 Toolkit 后曾产生 30K–39K reasoning tokens，并让第二次请求持续 4–5 分钟。现在 Runner 会渐进披露能力：首次只返回实体与核心时空协议，第二次请求只开放 Entity Patch；实体建立后再一次查询一个 tracks、camera、constraints 或 validators 领域。Toolkit 会真实过滤未请求字段，不再把全部能力目录和无关 Blender/MCP/Render 标签注入规划上下文。
 
 低延迟基线等价于显式配置：
 

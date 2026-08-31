@@ -118,7 +118,7 @@ def _create_mock_model(objective: ObjectivePlanningBrief) -> FunctionModel:
 
 def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str, Any]]]:
     actions: list[tuple[str, dict[str, Any]]] = [
-        ("get_capabilities", {})
+        ("get_capabilities", {"sections": ["entities"]})
     ]
     entities: list[dict[str, Any]] = []
     for index, subject in enumerate(objective.subjects):
@@ -142,6 +142,10 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
         )
     if entities:
         actions.append(("apply_entity_patch", {"upserts": entities, "remove_ids": []}))
+    actions.extend(
+        ("get_capabilities", {"sections": [section]})
+        for section in ("constraints", "tracks", "camera", "validators")
+    )
 
     constraints: list[dict[str, Any]] = []
     for index, relationship in enumerate(objective.scene_design.get("relationships", [])):
