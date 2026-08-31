@@ -171,17 +171,37 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
 
     motion_tracks: list[dict[str, Any]] = []
     for index, motion in enumerate(objective.subject_motion):
-        source_ref = f"content.subject_motion[{index}].action"
-        action = _annotated_value(motion.get("action")) or ""
-        action_status = (
-            motion.get("action", {}).get("source_status", "inferred")
-            if isinstance(motion.get("action"), dict)
-            else "inferred"
+        semantics = motion.get("motion_semantics")
+        typed_semantics = semantics if isinstance(semantics, dict) else None
+        source_ref = (
+            f"content.subject_motion[{index}].motion_semantics"
+            if typed_semantics is not None
+            else f"content.subject_motion[{index}].action"
         )
+        action = _annotated_value(motion.get("action")) or ""
+        if typed_semantics is not None:
+            action_status = typed_semantics.get("source_status", "inferred")
+        elif isinstance(motion.get("action"), dict):
+            action_status = motion["action"].get("source_status", "inferred")
+        else:
+            action_status = "inferred"
         target_id = motion.get("subject_id")
         if not target_id:
             continue
-        if any(marker in action.lower() for marker in ("静止", "不动", "still", "stationary")):
+        if typed_semantics is not None and typed_semantics.get("motion_mode") == "carried":
+            # 载运阶段由载体轨迹驱动，Mock 不伪造人物自己的世界轨迹。
+            continue
+        is_static = (
+            typed_semantics.get("motion_type") in {"static", "interactive"}
+            if typed_semantics is not None
+            else any(
+                marker in action.lower()
+                for marker in ("静止", "不动", "still", "stationary")
+            )
+        )
+        start_time = float(motion.get("start_time_seconds") or 0.0)
+        end_time = float(motion.get("end_time_seconds") or _duration(objective))
+        if is_static:
             constraints.append(
                 {
                     "constraint_id": f"hold_{target_id}",
@@ -189,7 +209,7 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                     "strength": "hard" if action_status == "explicit" else "soft",
                     "weight": 1.0,
                     "subjects": [target_id],
-                    "time_range_seconds": [0.0, _duration(objective)],
+                    "time_range_seconds": [start_time, end_time],
                     "parameters": {
                         "target_id": target_id,
                         "components": ["translation", "rotation", "scale"],
@@ -200,17 +220,22 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                 }
             )
         else:
-            direction = _direction(_annotated_value(motion.get("direction")))
+            direction = (
+                (0.0, -1.0, 0.0)
+                if typed_semantics is not None
+                and typed_semantics.get("direction_mode") == "world_forward"
+                else _direction(_annotated_value(motion.get("direction")))
+            )
             if direction:
                 motion_tracks.append(
                     {
                         "track_id": f"motion_{target_id}",
                         "target_entity_id": target_id,
                         "type": "transform",
-                        "time_range_seconds": [0.0, _duration(objective)],
+                        "time_range_seconds": [start_time, end_time],
                         "keyframes": [
-                            {"time_seconds": 0.0, "value": {"translation_m": [0.0, 0.0, 1.0]}, "interpolation": "smooth"},
-                            {"time_seconds": _last_time(objective), "value": {"translation_m": _direction_endpoint(direction)}, "interpolation": "smooth"},
+                            {"time_seconds": start_time, "value": {"translation_m": [0.0, 0.0, 1.0]}, "interpolation": "smooth"},
+                            {"time_seconds": min(end_time, _last_time(objective)), "value": {"translation_m": _direction_endpoint(direction)}, "interpolation": "smooth"},
                         ],
                         "path": None,
                         "target_id": None,

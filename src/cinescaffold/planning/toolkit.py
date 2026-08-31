@@ -856,6 +856,12 @@ class ScenePlanningToolkit:
             violations.extend(_projection_violations(state, self.profile))
         if "motion" in checks:
             violations.extend(
+                _typed_motion_semantic_violations(
+                    state,
+                    self.objective_brief,
+                )
+            )
+            violations.extend(
                 _orbit_trajectory_violations(
                     state,
                     self.objective_brief,
@@ -1257,6 +1263,113 @@ def _nested_orbit_readability_violations(
     return violations
 
 
+def _typed_motion_semantic_violations(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+) -> list[Violation]:
+    """确保 v0.3 类型化载运和显隐语义没有被 Agent 忽略。"""
+    if objective_brief.schema_version != "0.3":
+        return []
+    frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
+    last_frame_time = state.timeline.duration_seconds - frame_step
+    violations: list[Violation] = []
+    for motion in objective_brief.subject_motion:
+        if not isinstance(motion, dict):
+            continue
+        semantics = motion.get("motion_semantics")
+        if not isinstance(semantics, dict):
+            continue
+        subject_id = motion.get("subject_id")
+        if not isinstance(subject_id, str) or subject_id not in state.entities:
+            continue
+        start = float(motion.get("start_time_seconds") or 0.0)
+        end = float(motion.get("end_time_seconds") or state.timeline.duration_seconds)
+        postconditions = semantics.get("postconditions")
+        visibility_after = (
+            postconditions.get("external_visibility")
+            if isinstance(postconditions, dict)
+            else "unchanged"
+        )
+        if visibility_after == "hidden":
+            sample_time = min(max(end, 0.0), last_frame_time)
+            if _entity_visibility_at(state, subject_id, sample_time):
+                violations.append(
+                    _violation(
+                        "MOTION_POSTCONDITION_VISIBILITY_UNMET",
+                        f"动作阶段结束后外部代理仍可见：{subject_id}",
+                        entity_ids=[subject_id],
+                        time_range_seconds=(start, end),
+                        expected={"external_visibility": "hidden", "at_seconds": sample_time},
+                        actual={"external_visibility": "visible"},
+                        adjustable_variables=[f"motion_tracks.{subject_id}.visibility"],
+                    )
+                )
+
+        if semantics.get("motion_mode") != "carried":
+            continue
+        carrier_id = semantics.get("carrier_id")
+        if not isinstance(carrier_id, str) or carrier_id not in state.entities:
+            continue
+        sample_time = min(max(start, 0.0), last_frame_time)
+        if not _entity_visibility_at(state, subject_id, sample_time):
+            continue
+        if not _has_carrier_binding(
+            state,
+            subject_id,
+            carrier_id,
+            start,
+            end,
+        ):
+            violations.append(
+                _violation(
+                    "CARRIED_SUBJECT_UNBOUND",
+                    f"可见的 carried 主体未绑定到载体：{subject_id} -> {carrier_id}",
+                    entity_ids=[subject_id, carrier_id],
+                    time_range_seconds=(start, end),
+                    expected={"carrier_id": carrier_id, "space": "target_relative_or_parent"},
+                    actual={"binding": None},
+                    adjustable_variables=[
+                        f"entities.{subject_id}.parent_id",
+                        f"motion_tracks.{subject_id}",
+                        f"motion_tracks.{subject_id}.visibility",
+                    ],
+                )
+            )
+    return violations
+
+
+def _has_carrier_binding(
+    state: CandidateState,
+    subject_id: str,
+    carrier_id: str,
+    start: float,
+    end: float,
+) -> bool:
+    entity = state.entities[subject_id]
+    if entity.parent_id == carrier_id:
+        return True
+    for track in state.motion_tracks.values():
+        if track.target_entity_id != subject_id:
+            continue
+        track_start, track_end = track.time_range_seconds
+        if track_end <= start or track_start >= end:
+            continue
+        if (
+            track.path is not None
+            and track.path.space == "target_relative"
+            and track.path.target_id == carrier_id
+        ):
+            return True
+        if any(
+            isinstance(keyframe.value, TransformValue)
+            and keyframe.value.space == "target_relative"
+            and keyframe.value.target_id == carrier_id
+            for keyframe in track.keyframes
+        ):
+            return True
+    return False
+
+
 def _projected_motion_readability_violations(
     state: CandidateState,
     objective_brief: ObjectivePlanningBrief,
@@ -1279,7 +1392,8 @@ def _projected_motion_readability_violations(
         if not isinstance(motion, dict):
             continue
         motion_type = str(motion.get("motion_type", ""))
-        if motion_type in {"", "static", "interactive"}:
+        # carried 表示相对载体静止；可读性由载体运动和显隐转场承担。
+        if motion_type in {"", "static", "interactive", "carried"}:
             continue
         subject_id = motion.get("subject_id")
         if not isinstance(subject_id, str) or subject_id not in state.entities:
@@ -1564,6 +1678,16 @@ def _objective_orbit_pairs(
         reference_id = item.get("reference_id")
         if isinstance(subject_id, str) and isinstance(reference_id, str):
             pairs.add((subject_id, reference_id))
+    for motion in objective_brief.subject_motion:
+        if not isinstance(motion, dict):
+            continue
+        semantics = motion.get("motion_semantics")
+        if not isinstance(semantics, dict) or semantics.get("action_kind") != "orbit":
+            continue
+        subject_id = motion.get("subject_id")
+        target_id = semantics.get("target_id")
+        if isinstance(subject_id, str) and isinstance(target_id, str):
+            pairs.add((subject_id, target_id))
     return pairs
 
 
@@ -1591,6 +1715,13 @@ def _has_explicit_custom_trajectory(
     for motion in objective_brief.subject_motion:
         if not isinstance(motion, dict) or motion.get("subject_id") != subject_id:
             continue
+        semantics = motion.get("motion_semantics")
+        if isinstance(semantics, dict):
+            return semantics.get("path_type") not in {
+                "circular",
+                "elliptical",
+                "unspecified",
+            }
         trajectory = motion.get("trajectory")
         if not isinstance(trajectory, dict) or trajectory.get("source_status") != "explicit":
             continue

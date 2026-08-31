@@ -180,6 +180,79 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(violation["actual"]["visibility"]["expected"], True)
         self.assertEqual(violation["actual"]["visibility"]["actual"], False)
 
+    def test_carried_semantics_require_hidden_proxy_or_carrier_binding(self) -> None:
+        toolkit = _toolkit()
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "schema_version": "0.3",
+                "subject_motion": [
+                    {
+                        "subject_id": "man_01",
+                        "action": _annotated("随飞船离开", "被飞船接走"),
+                        "motion_semantics": {
+                            "action_kind": "transport",
+                            "motion_type": "carried",
+                            "motion_mode": "carried",
+                            "direction_mode": "relative_to_target",
+                            "target_id": "ship_01",
+                            "carrier_id": "ship_01",
+                            "path_type": "stationary",
+                            "timeline_event_id": None,
+                            "postconditions": {
+                                "contained_by_id": "ship_01",
+                                "external_visibility": "hidden",
+                            },
+                            "source_status": "inferred",
+                            "source_text": "被飞船接走",
+                        },
+                        "direction": _unknown(),
+                        "speed": _unknown(),
+                        "trajectory": _unknown(),
+                        "start_time_seconds": 3.0,
+                        "end_time_seconds": 6.0,
+                        "secondary_motion": [],
+                    }
+                ],
+                "translation_parameters": None,
+            }
+        )
+        toolkit.apply_entity_patch([_man_entity(), _ship_entity()], [])
+
+        missing = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertEqual(
+            {item["code"] for item in missing["violations"]},
+            {"MOTION_POSTCONDITION_VISIBILITY_UNMET", "CARRIED_SUBJECT_UNBOUND"},
+        )
+
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "man_boarded_visibility",
+                    "target_entity_id": "man_01",
+                    "type": "visibility",
+                    "time_range_seconds": [3.0, 6.0],
+                    "keyframes": [
+                        {"time_seconds": 3.0, "value": False, "interpolation": "step"}
+                    ],
+                    "source_ref": "content.subject_motion[0].motion_semantics",
+                }
+            ],
+            [],
+        )
+
+        resolved = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertFalse(
+            any(
+                item["code"] in {
+                    "MOTION_POSTCONDITION_VISIBILITY_UNMET",
+                    "CARRIED_SUBJECT_UNBOUND",
+                }
+                for item in resolved["violations"]
+            )
+        )
+
     def test_hold_rejects_empty_component_list(self) -> None:
         toolkit = _toolkit()
 
