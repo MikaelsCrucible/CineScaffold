@@ -1,0 +1,126 @@
+{
+  "version": "semantic-translation-v0.2",
+  "coordinate_system": {
+    "handedness": "right",
+    "up_axis": "+Z",
+    "forward_vector": [0.0, -1.0, 0.0]
+  },
+  "defaults": {
+    "subject_label": "人",
+    "environment_label": "空白空间",
+    "action_label": "站立/静止",
+    "emotion_class": "E6",
+    "duration_seconds": 15.0,
+    "reference_height_m": 1.75,
+    "moving_speed_mps": [1.2, 1.2]
+  },
+  "subject_heights_m": {
+    "孩子": 1.2,
+    "儿童": 1.2,
+    "女人": 1.65,
+    "女性": 1.65,
+    "男人": 1.75,
+    "男性": 1.75,
+    "巨人": 2.5,
+    "怪物": 2.5
+  },
+  "major_object_defaults": {
+    "飞船": {"minimum_footprint_m": [10.0, 10.0], "minimum_height_m": null, "default_scene_depth_ratio": 0.5},
+    "大楼": {"minimum_footprint_m": null, "minimum_height_m": 20.0, "default_scene_depth_ratio": 0.5},
+    "建筑": {"minimum_footprint_m": null, "minimum_height_m": 20.0, "default_scene_depth_ratio": 0.5}
+  },
+  "action_classes": {
+    "static": ["站", "坐", "躺", "望", "等", "停", "立", "靠", "静止"],
+    "interactive": ["举", "握", "推", "拉", "指"],
+    "walking": ["走", "步行", "漫步", "踱步", "爬"],
+    "running": ["跑", "奔", "冲刺", "追赶", "追", "逃"],
+    "flying": ["飞行", "飞", "游"],
+    "jumping": ["跳", "跃"],
+    "moving": ["移动", "驶", "开走", "靠近", "离开"]
+  },
+  "speed_ranges_mps": {
+    "static": [0.0, 0.0],
+    "interactive": [0.0, 0.0],
+    "walking": [0.8, 1.5],
+    "running": [4.0, 6.0],
+    "flying": [6.0, 10.0],
+    "jumping": [1.2, 1.2],
+    "moving": [1.2, 1.2]
+  },
+  "path_keywords": {
+    "circular": ["绕圈", "圆形", "公转"],
+    "elliptical": ["椭圆"],
+    "s_curve": ["蛇形", "S形", "S 型", "S型"],
+    "figure_eight": ["8字", "8 字", "无限大", "∞"],
+    "parabolic": ["跳", "跃"],
+    "linear": []
+  },
+  "scene_assets": {
+    "desert": ["荒漠", "沙漠"],
+    "city": ["城市", "街道", "马路"],
+    "interior": ["室内", "房间", "屋内"],
+    "space": ["太空", "宇宙", "星空"],
+    "ocean": ["海洋", "海上", "海底"],
+    "forest": ["森林", "树林"],
+    "mountain": ["山岳", "山地", "山上"],
+    "snowfield": ["雪地", "冰原"],
+    "ruins": ["废墟", "遗迹"],
+    "blank": ["空白空间"]
+  },
+  "scene_dimensions_m": {
+    "desert": [200.0, 200.0],
+    "city": [100.0, 100.0],
+    "interior": [20.0, 20.0],
+    "space": [200.0, 200.0],
+    "ocean": [200.0, 200.0],
+    "forest": [100.0, 100.0],
+    "mountain": [200.0, 200.0],
+    "snowfield": [200.0, 200.0],
+    "ruins": [100.0, 100.0],
+    "blank": [200.0, 200.0]
+  },
+  "emotion_classes": {
+    "E1": {
+      "label": "渺小",
+      "keywords": ["孤独", "渺小", "无助", "寂寥", "落寞", "被遗忘", "微不足道"],
+      "camera": {"height_m": 1.2, "focal_length_mm": 50.0, "movement": "push_in", "speed_mps": 0.67, "start_distance_m": 15.0, "end_distance_m": 5.0, "focus": "primary_subject", "pitch_degrees": 5.0},
+      "composition": {"subject_frame_ratio": [0.01, 0.05], "negative_space_ratio": [0.7, 1.0], "horizon_from_bottom_ratio": 0.3, "subject_horizontal": "center", "major_object_frame_ratio": [0.1, 0.3]},
+      "lighting": {"key_vertical_angle_degrees": -90.0, "ambient_intensity": 0.2, "shadow_hardness": 0.9, "key_intensity": null}
+    },
+    "E2": {
+      "label": "压迫",
+      "keywords": ["压迫", "危险", "窒息", "恐惧", "威胁", "沉重", "逼近"],
+      "camera": {"height_m": 0.8, "focal_length_mm": 85.0, "movement": "push_in", "speed_mps": 3.33, "start_distance_m": 15.0, "end_distance_m": 3.0, "focus": "largest_object", "pitch_degrees": 15.0},
+      "composition": {"subject_frame_ratio": [0.1, 0.2], "negative_space_ratio": [0.4, 0.5], "horizon_from_bottom_ratio": 0.45, "subject_horizontal": "center", "major_object_frame_ratio": [0.5, 0.7]},
+      "lighting": {"key_vertical_angle_degrees": 30.0, "ambient_intensity": 0.1, "shadow_hardness": 1.0, "key_intensity": null}
+    },
+    "E3": {
+      "label": "开阔",
+      "keywords": ["开阔", "自由", "平静", "安宁", "释然", "舒展"],
+      "camera": {"height_m": 2.0, "focal_length_mm": 35.0, "movement": "pull_out", "speed_mps": 0.67, "start_distance_m": 15.0, "end_distance_m": 30.0, "focus": "ahead_of_primary_subject", "pitch_degrees": -5.0},
+      "composition": {"subject_frame_ratio": [0.01, 0.03], "negative_space_ratio": [0.8, 1.0], "horizon_from_bottom_ratio": 0.5, "subject_horizontal": "left_golden_ratio", "major_object_frame_ratio": [0.05, 0.15]},
+      "lighting": {"key_vertical_angle_degrees": 0.0, "ambient_intensity": 0.8, "shadow_hardness": 0.2, "key_intensity": null}
+    },
+    "E4": {
+      "label": "紧张",
+      "keywords": ["紧张", "急促", "冲突", "追逐", "慌乱", "焦虑"],
+      "camera": {"height_m": 1.0, "focal_length_mm": 85.0, "movement": "follow", "speed_mps": null, "start_distance_m": 5.0, "end_distance_m": null, "focus": "primary_subject", "pitch_degrees": 10.0},
+      "composition": {"subject_frame_ratio": [0.15, 0.25], "negative_space_ratio": [0.3, 0.4], "horizon_from_bottom_ratio": 0.5, "subject_horizontal": "opposite_motion_third", "major_object_frame_ratio": [0.2, 0.4]},
+      "lighting": {"key_vertical_angle_degrees": -45.0, "ambient_intensity": 0.4, "shadow_hardness": 0.6, "key_intensity": null}
+    },
+    "E5": {
+      "label": "浪漫",
+      "keywords": ["浪漫", "温柔", "梦幻", "希望", "温暖", "柔和"],
+      "camera": {"height_m": 1.5, "focal_length_mm": 85.0, "movement": "orbit", "speed_mps": 0.5, "start_distance_m": 10.0, "end_distance_m": 8.0, "focus": "primary_subject", "pitch_degrees": 0.0},
+      "composition": {"subject_frame_ratio": [0.08, 0.15], "negative_space_ratio": [0.5, 0.6], "horizon_from_bottom_ratio": 0.4, "subject_horizontal": "golden_ratio", "major_object_frame_ratio": [0.15, 0.3]},
+      "lighting": {"key_vertical_angle_degrees": 45.0, "ambient_intensity": 0.6, "shadow_hardness": 0.3, "key_intensity": null}
+    },
+    "E6": {
+      "label": "中性",
+      "keywords": [],
+      "camera": {"height_m": 1.5, "focal_length_mm": 50.0, "movement": "static", "speed_mps": 0.0, "start_distance_m": 15.0, "end_distance_m": 15.0, "focus": "scene_center", "pitch_degrees": 0.0},
+      "composition": {"subject_frame_ratio": [0.05, 0.1], "negative_space_ratio": [0.6, 0.7], "horizon_from_bottom_ratio": 0.45, "subject_horizontal": "center", "major_object_frame_ratio": [0.15, 0.3]},
+      "lighting": {"key_vertical_angle_degrees": -30.0, "ambient_intensity": 0.5, "shadow_hardness": 0.5, "key_intensity": null}
+    }
+  }
+}

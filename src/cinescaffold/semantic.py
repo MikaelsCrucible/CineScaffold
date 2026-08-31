@@ -8,6 +8,11 @@ from typing import Any
 from cinescaffold.prompting import build_prompt
 from cinescaffold.providers.base import StructuredOutputProvider
 from cinescaffold.schema import load_schema, validate_model_output
+from cinescaffold.semantic_rules import (
+    apply_translation_rules,
+    load_translation_rules,
+    translation_rules_sha256,
+)
 
 
 @dataclass(frozen=True)
@@ -16,7 +21,9 @@ class SemanticParserConfig:
     rules_path: Path
     format_example_path: Path
     model_output_schema_path: Path
-    prompt_version: str = "semantic-parser-v0.1"
+    translation_rules_path: Path
+    translation_parameters_schema_path: Path
+    prompt_version: str = "semantic-parser-v0.2"
 
 
 def parse_cinematic_brief(
@@ -37,16 +44,29 @@ def parse_cinematic_brief(
     response = provider.generate(prompt.system_prompt, prompt.user_prompt, schema)
     validate_model_output(response.content, schema)
 
+    translation_rules = load_translation_rules(config.translation_rules_path)
+    content, translation_parameters = apply_translation_rules(
+        response.content,
+        translation_rules,
+    )
+    validate_model_output(content, schema)
+    translation_schema = load_schema(config.translation_parameters_schema_path)
+    validate_model_output(translation_parameters, translation_schema)
+
     rules_bytes = config.rules_path.read_bytes()
     return {
-        "schema_version": "0.1",
-        "content": response.content,
+        "schema_version": "0.2",
+        "content": content,
+        "translation_parameters": translation_parameters,
         "provenance": {
             "source_prompt": description,
             "provider": provider.name,
             "model": provider.model,
             "parser_prompt_version": config.prompt_version,
             "rules_sha256": hashlib.sha256(rules_bytes).hexdigest(),
+            "translation_rules_sha256": translation_rules_sha256(
+                config.translation_rules_path
+            ),
             "response_id": response.response_id,
         },
     }

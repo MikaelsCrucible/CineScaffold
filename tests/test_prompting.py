@@ -30,6 +30,13 @@ class PromptingTest(unittest.TestCase):
         self.assertIn("`+plane_normal`", prompt)
         self.assertIn("`keep_in_frame` 只表示投影包围盒入框", prompt)
 
+    def test_semantic_rules_freeze_priority_axis_and_lighting_scope(self) -> None:
+        rules = (ROOT / "prompts/semantic_parser/rules.md").read_text(encoding="utf-8")
+
+        self.assertIn("明确摄影机、构图或光源要求优先于情绪映射", rules)
+        self.assertIn("世界前方为 `(0,-1,0)`", rules)
+        self.assertIn("不授权改变 Blender 白模的中性技术照明", rules)
+
 
 if __name__ == "__main__":
     unittest.main()

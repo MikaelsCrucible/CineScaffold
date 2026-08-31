@@ -2,7 +2,7 @@
 
 CineScaffold 是一个面向论文研究的自然语言到三维白模视频生成管线。它把非专业用户的描述转换为结构化电影语义，再由工具增强的场景规划 Agent 生成可验证的 Scene IR，最后通过 Blender 构建空间脚手架和摄影机预演。
 
-> 当前状态：研究原型。核心管线已经可以运行，但语义转换规则、目标视频模型适配和正式实验协议尚未冻结，不建议作为生产工具使用。
+> 当前状态：研究原型。核心管线和首版四要素到六维转换规则已经可以运行，但目标视频模型适配和正式实验协议尚未冻结，不建议作为生产工具使用。
 
 ## 研究动机
 
@@ -36,6 +36,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 ## 当前能力
 
 - 支持 OpenAI、DeepSeek 和离线 Mock Provider。
+- 使用 LLM 提取“谁、在哪、做什么、感觉”，再通过版本化规则表生成可复现的主体、运动、场景、摄影机、构图和光源量化快照。
 - 将 Cinematic Brief 中的客观空间、运动、构图和摄影机要求交给规划 Agent。
 - 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
 - 支持世界、局部、目标相对和摄影机相对参考系。
@@ -180,7 +181,7 @@ cinescaffold parse \
 
 Mock Provider 不理解文本，只返回指定的模拟响应。未传入 `--mock-response` 时，它仅用于检查 Schema 和 CLI 接口。
 
-正式使用前需要由项目成员补充并评审 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md) 中的六维转换规则；该文件当前有意留空。
+语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。解析结果使用 Cinematic Brief v0.2，并附带代码生成的 `translation_parameters`；用户明确要求始终优先于规则推导和缺省值。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
 
 #### 2. Cinematic Brief 转 Scene IR
 
@@ -255,7 +256,7 @@ JSON Schema 位于 [`schemas/`](schemas/)，Prompt 位于 [`prompts/`](prompts/)
 
 ## 项目状态
 
-已完成自然语言到 Scene IR、Scene IR 到 Blender 场景和白模视频的首条研究管线。下一阶段重点是冻结语义转换规则、扩充通用 Validator、输出 Depth/Object ID 控制素材，并建立可重复的视频模型对照实验。
+已完成自然语言到 Scene IR、Scene IR 到 Blender 场景和白模视频的首条研究管线，并实现首版四要素到六维规则。下一阶段重点是用审核样本评估并冻结该规则、扩充通用 Validator、输出 Depth/Object ID 控制素材，并建立可重复的视频模型对照实验。
 
 ## 许可证
 

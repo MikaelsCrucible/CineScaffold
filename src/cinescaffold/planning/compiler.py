@@ -240,6 +240,7 @@ def compile_scene_ir(
             minimum_soft_score=profile.minimum_soft_score,
         ),
         provenance=ProvenanceIR(
+            cinematic_brief_schema_version=toolkit.objective_brief.schema_version,
             cinematic_brief_hash=toolkit.objective_brief.source_brief_sha256,
             constraint_plan_hash=constraint_plan_hash,
             candidate_revision=state.revision,

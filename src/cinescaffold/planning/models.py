@@ -173,6 +173,11 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
     for index, motion in enumerate(objective.subject_motion):
         source_ref = f"content.subject_motion[{index}].action"
         action = _annotated_value(motion.get("action")) or ""
+        action_status = (
+            motion.get("action", {}).get("source_status", "inferred")
+            if isinstance(motion.get("action"), dict)
+            else "inferred"
+        )
         target_id = motion.get("subject_id")
         if not target_id:
             continue
@@ -181,7 +186,7 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                 {
                     "constraint_id": f"hold_{target_id}",
                     "type": "hold",
-                    "strength": "hard",
+                    "strength": "hard" if action_status == "explicit" else "soft",
                     "weight": 1.0,
                     "subjects": [target_id],
                     "time_range_seconds": [0.0, _duration(objective)],
@@ -190,7 +195,7 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                         "components": ["translation", "rotation", "scale"],
                         "tolerance_m": 0.0001,
                     },
-                    "source_status": "explicit",
+                    "source_status": action_status,
                     "source_ref": source_ref,
                 }
             )
@@ -227,11 +232,31 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
     focus_target = _annotated_value(objective.camera.get("focus_target_id"))
     if not focus_target and entities:
         focus_target = entities[0]["entity_id"]
-    movement = _annotated_value(objective.camera.get("movement", {}).get("type")) or ""
+    translation_camera = (objective.translation_parameters or {}).get("camera", {})
+    semantic_movement = objective.camera.get("movement", {}).get("type")
+    movement = _annotated_value(semantic_movement) or str(
+        translation_camera.get("movement") or ""
+    )
     movement_speed = _annotated_value(objective.camera.get("movement", {}).get("speed")) or ""
+    movement_speed_status = (
+        objective.camera.get("movement", {}).get("speed", {}).get("source_status")
+        if isinstance(objective.camera.get("movement", {}).get("speed"), dict)
+        else None
+    )
+    movement_is_explicit = (
+        isinstance(semantic_movement, dict)
+        and semantic_movement.get("source_status") == "explicit"
+    )
     camera_tracks: list[dict[str, Any]] = []
-    if any(marker in movement.lower() for marker in ("推近", "push", "dolly in")):
-        movement_ref = "content.camera.movement.type"
+    if any(marker in movement.lower() for marker in ("推近", "push", "dolly in", "push_in")):
+        movement_ref = (
+            "content.camera.movement.type"
+            if movement_is_explicit
+            else "translation_parameters.camera.movement"
+        )
+        camera_height = float(translation_camera.get("height_m") or 2.0)
+        start_distance = float(translation_camera.get("start_distance_m") or 12.0)
+        end_distance = float(translation_camera.get("end_distance_m") or 7.0)
         camera_tracks.append(
             {
                 "track_id": "camera_move_01",
@@ -239,8 +264,8 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                 "type": "transform",
                 "time_range_seconds": [0.0, _duration(objective)],
                 "keyframes": [
-                    {"time_seconds": 0.0, "value": {"translation_m": [0.0, -12.0, 2.0]}, "interpolation": "smooth"},
-                    {"time_seconds": _last_time(objective), "value": {"translation_m": [0.0, -7.0, 2.0]}, "interpolation": "smooth"},
+                    {"time_seconds": 0.0, "value": {"translation_m": [0.0, -start_distance, camera_height]}, "interpolation": "smooth"},
+                    {"time_seconds": _last_time(objective), "value": {"translation_m": [0.0, -end_distance, camera_height]}, "interpolation": "smooth"},
                 ],
                 "path": None,
                 "target_id": None,
@@ -253,7 +278,7 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
             {
                 "constraint_id": "camera_push_in",
                 "type": "camera_motion_direction",
-                "strength": "hard",
+                "strength": "hard" if movement_is_explicit else "soft",
                 "weight": 1.0,
                 "subjects": [],
                 "time_range_seconds": [0.0, _duration(objective)],
@@ -262,16 +287,23 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                     "target_id": focus_target,
                     "direction": "push_in",
                     "space": "world",
-                    "minimum_displacement_m": 3.0,
+                    "minimum_displacement_m": (
+                        3.0
+                        if movement_is_explicit
+                        else max(0.1, (start_distance - end_distance) * 0.8)
+                    ),
                 },
-                "source_status": "explicit",
+                "source_status": "explicit" if movement_is_explicit else "inferred",
                 "source_ref": movement_ref,
             }
         )
         # 摄影机约束必须在先前约束 Patch 之后单独提交。
         actions.append(("apply_constraint_patch", {"upserts": [constraints[-1]], "remove_ids": []}))
 
-    if any(marker in movement_speed.lower() for marker in ("慢", "slow")):
+    if (
+        movement_speed_status == "explicit"
+        and any(marker in movement_speed.lower() for marker in ("慢", "slow"))
+    ):
         actions.append(
             (
                 "apply_constraint_patch",
@@ -306,7 +338,9 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                 "projection": "perspective",
                 "active": True,
                 "static": {
-                    "focal_length_mm": 35.0,
+                    "focal_length_mm": float(
+                        translation_camera.get("focal_length_mm") or 35.0
+                    ),
                     "sensor_width_mm": 36.0,
                     "focus_target_id": focus_target,
                     "source_refs": camera_refs,

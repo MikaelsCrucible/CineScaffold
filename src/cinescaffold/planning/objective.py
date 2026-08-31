@@ -5,6 +5,8 @@ import json
 from copy import deepcopy
 from typing import Any, Literal
 
+from cinescaffold.semantic_rules import objective_translation_parameters
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -29,6 +31,7 @@ class BriefSourceMetadata(_StrictModel):
     model: str
     parser_prompt_version: str
     rules_sha256: str
+    translation_rules_sha256: str | None = None
     response_id: str | None
 
 
@@ -45,7 +48,7 @@ class IgnoredSubjectiveField(_StrictModel):
 
 
 class ObjectivePlanningBrief(_StrictModel):
-    schema_version: Literal["0.1"] = "0.1"
+    schema_version: Literal["0.1", "0.2"] = "0.1"
     source_brief_sha256: str
     subjects: list[dict[str, Any]]
     subject_motion: list[dict[str, Any]]
@@ -54,6 +57,7 @@ class ObjectivePlanningBrief(_StrictModel):
     camera: dict[str, Any]
     timeline: dict[str, Any]
     uncertainties: list[dict[str, Any]]
+    translation_parameters: dict[str, Any] | None = None
     explicit_requirements: list[ObjectiveRequirement] = Field(default_factory=list)
     source_metadata: BriefSourceMetadata
 
@@ -65,12 +69,20 @@ class ObjectiveProjection(_StrictModel):
 
 def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
     """在模型调用前剥离主观维度和原始提示词。"""
-    if brief.get("schema_version") != "0.1":
-        raise ValueError("Agent 1 仅支持 Cinematic Brief v0.1")
+    schema_version = brief.get("schema_version")
+    if schema_version not in {"0.1", "0.2"}:
+        raise ValueError("Agent 1 仅支持 Cinematic Brief v0.1 或 v0.2")
     content = brief.get("content")
     provenance = brief.get("provenance")
     if not isinstance(content, dict) or not isinstance(provenance, dict):
         raise ValueError("Cinematic Brief 缺少 content 或 provenance")
+    translation_parameters = brief.get("translation_parameters")
+    if schema_version == "0.2" and not isinstance(translation_parameters, dict):
+        raise ValueError("Cinematic Brief v0.2 缺少 translation_parameters")
+    if schema_version == "0.2" and not _optional_string(
+        provenance.get("translation_rules_sha256")
+    ):
+        raise ValueError("Cinematic Brief v0.2 缺少 translation_rules_sha256")
 
     missing = [name for name in OBJECTIVE_CONTENT_FIELDS if name not in content]
     if missing:
@@ -81,6 +93,9 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
         model=_required_string(provenance, "model"),
         parser_prompt_version=_required_string(provenance, "parser_prompt_version"),
         rules_sha256=_required_string(provenance, "rules_sha256"),
+        translation_rules_sha256=_optional_string(
+            provenance.get("translation_rules_sha256")
+        ),
         response_id=_optional_string(provenance.get("response_id")),
     )
     objective_values = {name: deepcopy(content[name]) for name in OBJECTIVE_CONTENT_FIELDS}
@@ -93,7 +108,13 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
         )
 
     objective_brief = ObjectivePlanningBrief(
+        schema_version=schema_version,
         source_brief_sha256=_canonical_sha256(brief),
+        translation_parameters=(
+            objective_translation_parameters(translation_parameters)
+            if schema_version == "0.2"
+            else None
+        ),
         explicit_requirements=requirements,
         source_metadata=source_metadata,
         **objective_values,

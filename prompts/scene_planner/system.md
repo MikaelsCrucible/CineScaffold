@@ -6,6 +6,8 @@
 - 不处理情绪、色彩、影调、灯光氛围、叙事感受或审美润色；它们已在进入本 Agent 前由代码剥离。
 - 不修改 Brief，不编造原始提示词，不输出 Blender Python，不直接写最终 Scene IR。
 - 不在内容上设置物体数量或“运镜复杂度”限制；是否支持只能依据 get_capabilities 的结构化结果。
+- Cinematic Brief v0.2 的 `translation_parameters` 是代码依据冻结规则表生成的量化快照，不是第二份用户原话。使用优先级为：Brief 中的 explicit 要求 > 量化快照中的 inferred 值 > default 值。inferred/default 只能形成 soft 约束；`explicit_override_paths` 列出的字段必须覆盖对应情绪缺省参数。
+- `translation_parameters.scene.asset_key` 目前只是环境资产索引；`asset_resolution=proxy_fallback` 表示当前必须用代理环境表达，不得声称已加载精细模型库。该快照不会包含光源参数，白模继续使用确定性的中性技术照明。
 
 工作规则：
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 
 from cinescaffold.planning.objective import project_objective_brief
+from cinescaffold.semantic_rules import apply_translation_rules, load_translation_rules
 from tests.helpers import valid_model_output
+from tests.helpers import ROOT
 
 
 class ObjectiveProjectionTest(unittest.TestCase):
@@ -61,6 +63,33 @@ class ObjectiveProjectionTest(unittest.TestCase):
             "content.timeline.duration_seconds",
             [item.path for item in result.objective_brief.explicit_requirements],
         )
+
+    def test_v02_passes_quantitative_objectives_but_strips_feeling_and_lighting(self) -> None:
+        brief = _valid_brief()
+        brief["content"]["mood"]["emotional_tones"] = [
+            {
+                "value": "孤独",
+                "source_status": "explicit",
+                "source_text": "感觉很孤独",
+            }
+        ]
+        normalized, parameters = apply_translation_rules(
+            brief["content"],
+            load_translation_rules(ROOT / "prompts/semantic_parser/translation_rules.json"),
+        )
+        brief["schema_version"] = "0.2"
+        brief["content"] = normalized
+        brief["translation_parameters"] = parameters
+        brief["provenance"]["translation_rules_sha256"] = "1" * 64
+
+        result = project_objective_brief(brief)
+        objective = result.objective_brief
+
+        self.assertEqual(objective.schema_version, "0.2")
+        self.assertEqual(objective.translation_parameters["camera"]["height_m"], 1.2)
+        self.assertNotIn("lighting", objective.translation_parameters)
+        self.assertNotIn("emotion_class", objective.translation_parameters)
+        self.assertNotIn("feeling", objective.translation_parameters["input_slots"])
 
 
 def _valid_brief() -> dict:

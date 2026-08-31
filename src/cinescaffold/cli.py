@@ -165,6 +165,18 @@ def _add_semantic_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=Path("schemas/cinematic_brief_model_output.schema.json"),
     )
+    parser.add_argument(
+        "--translation-rules",
+        type=Path,
+        default=Path("prompts/semantic_parser/translation_rules.json"),
+        help="四要素到六维的确定性量化表",
+    )
+    parser.add_argument(
+        "--translation-schema",
+        type=Path,
+        default=Path("schemas/semantic_translation_parameters.schema.json"),
+        help="量化快照 Schema",
+    )
     parser.add_argument("--mock-response", type=Path)
 
 
@@ -372,9 +384,18 @@ def _parse_description(
         rules_path=args.rules,
         format_example_path=args.format_example,
         model_output_schema_path=args.schema,
+        translation_rules_path=args.translation_rules,
+        translation_parameters_schema_path=args.translation_schema,
     )
     brief = parse_cinematic_brief(description, provider, config)
     reporter.success("结构化校验", "Cinematic Brief 已通过关闭 Schema 校验")
+    translation = brief.get("translation_parameters", {})
+    emotion = translation.get("emotion_class", {})
+    reporter.success(
+        "规则量化",
+        f"{translation.get('rules_version', 'unknown')} · "
+        f"{emotion.get('class_id', '?')} {emotion.get('label', '')}".rstrip(),
+    )
     if output_path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(

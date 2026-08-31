@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cinescaffold.local/schemas/semantic_translation_parameters.schema.json",
+  "title": "Semantic Translation Parameters v0.2",
+  "type": "object",
+  "properties": {
+    "schema_version": {"type": "string", "const": "0.2"},
+    "rules_version": {"type": "string"},
+    "coordinate_system": {"$ref": "#/$defs/coordinateSystem"},
+    "input_slots": {"$ref": "#/$defs/inputSlots"},
+    "emotion_class": {"$ref": "#/$defs/emotionClass"},
+    "subjects": {"type": "array", "items": {"$ref": "#/$defs/subjectParameters"}},
+    "motions": {"type": "array", "items": {"$ref": "#/$defs/motionParameters"}},
+    "scene": {"$ref": "#/$defs/sceneParameters"},
+    "camera": {"$ref": "#/$defs/cameraParameters"},
+    "composition": {"$ref": "#/$defs/compositionParameters"},
+    "lighting": {"$ref": "#/$defs/lightingParameters"},
+    "explicit_override_paths": {"type": "array", "items": {"type": "string"}},
+    "precedence": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": [
+    "schema_version", "rules_version", "coordinate_system", "input_slots",
+    "emotion_class", "subjects", "motions", "scene", "camera", "composition",
+    "lighting", "explicit_override_paths", "precedence"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "sourceStatus": {
+      "type": "string",
+      "enum": ["explicit", "inferred", "default", "agent_selected", "unknown"]
+    },
+    "nullableNumber": {"type": ["number", "null"]},
+    "numberPair": {
+      "type": "array",
+      "items": {"type": "number"}
+    },
+    "nullableNumberPair": {
+      "type": ["array", "null"],
+      "items": {"type": "number"}
+    },
+    "nullableVector": {
+      "type": ["array", "null"],
+      "items": {"type": "number"}
+    },
+    "coordinateSystem": {
+      "type": "object",
+      "properties": {
+        "handedness": {"type": "string"},
+        "up_axis": {"type": "string"},
+        "forward_vector": {"type": "array", "items": {"type": "number"}}
+      },
+      "required": ["handedness", "up_axis", "forward_vector"],
+      "additionalProperties": false
+    },
+    "slot": {
+      "type": "object",
+      "properties": {
+        "value": {"type": ["string", "null"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "inputSlots": {
+      "type": "object",
+      "properties": {
+        "who": {"type": "array", "items": {"$ref": "#/$defs/slot"}},
+        "where": {"$ref": "#/$defs/slot"},
+        "doing": {"type": "array", "items": {"$ref": "#/$defs/slot"}},
+        "feeling": {"type": "array", "items": {"$ref": "#/$defs/slot"}}
+      },
+      "required": ["who", "where", "doing", "feeling"],
+      "additionalProperties": false
+    },
+    "emotionClass": {
+      "type": "object",
+      "properties": {
+        "class_id": {"type": "string", "enum": ["E1", "E2", "E3", "E4", "E5", "E6"]},
+        "label": {"type": "string"},
+        "matched_keyword": {"type": ["string", "null"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "derived_status": {"$ref": "#/$defs/sourceStatus"}
+      },
+      "required": ["class_id", "label", "matched_keyword", "source_status", "derived_status"],
+      "additionalProperties": false
+    },
+    "subjectParameters": {
+      "type": "object",
+      "properties": {
+        "subject_id": {"type": "string"},
+        "quantity_min": {"type": "integer"},
+        "quantity_max": {"type": ["integer", "null"]},
+        "quantity_source_status": {"$ref": "#/$defs/sourceStatus"},
+        "reference_height_m": {"type": "number"},
+        "height_source_status": {"$ref": "#/$defs/sourceStatus"},
+        "ground_contact_position_m": {"type": "array", "items": {"type": "number"}},
+        "facing_direction_world": {"type": "array", "items": {"type": "number"}},
+        "placement_source_status": {"$ref": "#/$defs/sourceStatus"},
+        "dominant_scale_multiplier_range": {"$ref": "#/$defs/numberPair"},
+        "minimum_footprint_m": {"$ref": "#/$defs/nullableNumberPair"},
+        "minimum_height_m": {"$ref": "#/$defs/nullableNumber"},
+        "default_scene_depth_ratio": {"$ref": "#/$defs/nullableNumber"}
+      },
+      "required": [
+        "subject_id", "quantity_min", "quantity_max", "quantity_source_status",
+        "reference_height_m", "height_source_status", "ground_contact_position_m",
+        "facing_direction_world", "placement_source_status", "dominant_scale_multiplier_range",
+        "minimum_footprint_m", "minimum_height_m", "default_scene_depth_ratio"
+      ],
+      "additionalProperties": false
+    },
+    "motionParameters": {
+      "type": "object",
+      "properties": {
+        "motion_index": {"type": "integer"},
+        "subject_id": {"type": ["string", "null"]},
+        "motion_type": {"type": "string"},
+        "speed_range_mps": {"$ref": "#/$defs/numberPair"},
+        "direction_mode": {"type": "string"},
+        "direction_vector_world": {"$ref": "#/$defs/nullableVector"},
+        "target_id": {"type": ["string", "null"]},
+        "path_type": {"type": "string"},
+        "start_time_seconds": {"type": "number"},
+        "end_time_seconds": {"type": "number"},
+        "source_status": {"$ref": "#/$defs/sourceStatus"}
+      },
+      "required": [
+        "motion_index", "subject_id", "motion_type", "speed_range_mps",
+        "direction_mode", "direction_vector_world", "target_id", "path_type",
+        "start_time_seconds", "end_time_seconds", "source_status"
+      ],
+      "additionalProperties": false
+    },
+    "sceneParameters": {
+      "type": "object",
+      "properties": {
+        "environment_label": {"type": "string"},
+        "asset_key": {"type": "string"},
+        "dimensions_m": {"$ref": "#/$defs/numberPair"},
+        "asset_resolution": {"type": "string", "const": "proxy_fallback"},
+        "source_status": {"$ref": "#/$defs/sourceStatus"}
+      },
+      "required": ["environment_label", "asset_key", "dimensions_m", "asset_resolution", "source_status"],
+      "additionalProperties": false
+    },
+    "cameraParameters": {
+      "type": "object",
+      "properties": {
+        "height_m": {"type": "number"},
+        "focal_length_mm": {"type": "number"},
+        "movement": {"type": "string"},
+        "speed_mps": {"$ref": "#/$defs/nullableNumber"},
+        "start_distance_m": {"type": "number"},
+        "end_distance_m": {"$ref": "#/$defs/nullableNumber"},
+        "focus": {"type": "string"},
+        "pitch_degrees": {"type": "number"},
+        "source_status": {"$ref": "#/$defs/sourceStatus"}
+      },
+      "required": ["height_m", "focal_length_mm", "movement", "speed_mps", "start_distance_m", "end_distance_m", "focus", "pitch_degrees", "source_status"],
+      "additionalProperties": false
+    },
+    "compositionParameters": {
+      "type": "object",
+      "properties": {
+        "subject_frame_ratio": {"$ref": "#/$defs/numberPair"},
+        "negative_space_ratio": {"$ref": "#/$defs/numberPair"},
+        "horizon_from_bottom_ratio": {"type": "number"},
+        "subject_horizontal": {"type": "string"},
+        "major_object_frame_ratio": {"$ref": "#/$defs/numberPair"},
+        "source_status": {"$ref": "#/$defs/sourceStatus"}
+      },
+      "required": ["subject_frame_ratio", "negative_space_ratio", "horizon_from_bottom_ratio", "subject_horizontal", "major_object_frame_ratio", "source_status"],
+      "additionalProperties": false
+    },
+    "lightingParameters": {
+      "type": "object",
+      "properties": {
+        "key_vertical_angle_degrees": {"type": "number"},
+        "ambient_intensity": {"type": "number"},
+        "shadow_hardness": {"type": "number"},
+        "key_intensity": {"$ref": "#/$defs/nullableNumber"},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "application_scope": {"type": "string", "const": "final_video_generation_only"},
+        "applied_to_blender_preview": {"type": "boolean", "const": false}
+      },
+      "required": ["key_vertical_angle_degrees", "ambient_intensity", "shadow_hardness", "key_intensity", "source_status", "application_scope", "applied_to_blender_preview"],
+      "additionalProperties": false
+    }
+  }
+}

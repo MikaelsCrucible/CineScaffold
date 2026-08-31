@@ -358,10 +358,17 @@ def print_parse_summary(brief: dict[str, Any], output_path: Path | None, *, stre
         if item.get("category", {}).get("value")
     ]
     timeline = content.get("timeline", {})
+    translation = brief.get("translation_parameters", {})
+    emotion = translation.get("emotion_class", {})
     print("\nCineScaffold 六维语义结果", file=stream)
     print("=" * 34, file=stream)
     print(f"主体      {', '.join(names) if names else '未识别'}", file=stream)
     print(f"动作      {len(content.get('subject_motion', []))} 段", file=stream)
+    if emotion:
+        print(
+            f"感觉分类  {emotion.get('class_id', '?')} {emotion.get('label', '')}".rstrip(),
+            file=stream,
+        )
     duration = timeline.get("duration_seconds")
     print(f"时长      {duration} 秒" if duration else "时长      待定", file=stream)
     if output_path:

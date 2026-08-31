@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/cinematic_brief.schema.json",
-  "title": "Cinematic Brief v0.1",
+  "title": "Cinematic Brief v0.2",
   "type": "object",
   "properties": {
-    "schema_version": {"type": "string", "const": "0.1"},
+    "schema_version": {"type": "string", "const": "0.2"},
     "content": {"$ref": "cinematic_brief_model_output.schema.json"},
+    "translation_parameters": {"$ref": "semantic_translation_parameters.schema.json"},
     "provenance": {
       "type": "object",
       "properties": {
@@ -14,12 +15,13 @@
         "model": {"type": "string"},
         "parser_prompt_version": {"type": "string"},
         "rules_sha256": {"type": "string"},
+        "translation_rules_sha256": {"type": "string"},
         "response_id": {"type": ["string", "null"]}
       },
-      "required": ["source_prompt", "provider", "model", "parser_prompt_version", "rules_sha256", "response_id"],
+      "required": ["source_prompt", "provider", "model", "parser_prompt_version", "rules_sha256", "translation_rules_sha256", "response_id"],
       "additionalProperties": false
     }
   },
-  "required": ["schema_version", "content", "provenance"],
+  "required": ["schema_version", "content", "translation_parameters", "provenance"],
   "additionalProperties": false
 }

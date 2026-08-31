@@ -87,6 +87,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(result["provenance"]["provider"], "mock")
         self.assertIn("已读取", stderr.getvalue())
+        self.assertIn("规则量化", stderr.getvalue())
         self.assertNotIn("must-not-appear", rendered)
 
     def test_mock_parse_writes_brief(self) -> None:
@@ -118,7 +119,7 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertEqual(result["provenance"]["provider"], "mock")
-        self.assertIn("先在 Semantic Parser 阶段解析并确认正数时长", stdout.getvalue())
+        self.assertIn("15.0 秒", stdout.getvalue())
 
     def test_mock_plan_writes_scene_ir_and_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
