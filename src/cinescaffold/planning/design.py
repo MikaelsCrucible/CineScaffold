@@ -41,8 +41,59 @@ class SkeletonEntity(StrictModel):
     ]
     scale_intent: Literal[
         "tiny", "small", "human", "large", "huge", "unspecified"
-    ] = "unspecified"
+    ] = Field(
+        default="unspecified",
+        description="不含米制数值的绝对尺度档位；语义上可判断大小时不得全部留空",
+    )
+    proportion_intent: Literal[
+        "isotropic", "flat", "wide", "tall", "elongated", "unspecified"
+    ] = Field(
+        default="unspecified",
+        description="不含米制数值的三轴比例意图；薄表面使用 flat",
+    )
     source_refs: list[str] = Field(default_factory=list)
+
+
+class EntitySizeRequest(StrictModel):
+    entity_id: str = Field(min_length=1)
+    minimum_xyz_m: tuple[float, float, float] = Field(
+        description="X/Y/Z 三轴完整包围盒尺寸下界，单位米"
+    )
+    maximum_xyz_m: tuple[float, float, float] = Field(
+        description="X/Y/Z 三轴完整包围盒尺寸上界，单位米"
+    )
+    preferred_xyz_m: tuple[float, float, float] | None = Field(
+        default=None,
+        description="可选偏好尺寸，必须位于上下界内",
+    )
+    rationale: str = Field(
+        min_length=1,
+        description="说明为何内置尺度与比例意图不足，便于 Trace 审计",
+    )
+
+    @model_validator(mode="after")
+    def validate_range(self) -> EntitySizeRequest:
+        for axis, (minimum, maximum) in enumerate(
+            zip(self.minimum_xyz_m, self.maximum_xyz_m)
+        ):
+            if not math.isfinite(minimum) or not math.isfinite(maximum):
+                raise ValueError("自定义尺寸范围必须是有限数")
+            if minimum <= 0 or maximum <= 0 or minimum > maximum:
+                raise ValueError(f"自定义尺寸第 {axis + 1} 轴范围无效")
+        if self.preferred_xyz_m is not None:
+            for axis, (preferred, minimum, maximum) in enumerate(
+                zip(
+                    self.preferred_xyz_m,
+                    self.minimum_xyz_m,
+                    self.maximum_xyz_m,
+                )
+            ):
+                if (
+                    not math.isfinite(preferred)
+                    or not minimum <= preferred <= maximum
+                ):
+                    raise ValueError(f"自定义尺寸第 {axis + 1} 轴偏好值越界")
+        return self
 
 
 class SkeletonRelation(StrictModel):
@@ -285,6 +336,19 @@ def task_capability_slice(
             intent: list(_speed_range(intent, profile))
             for intent in sorted(speed_intents)
         },
+        "size_design": {
+            "scale_intents": [
+                "tiny", "small", "human", "large", "huge", "unspecified"
+            ],
+            "proportion_intents": [
+                "isotropic", "flat", "wide", "tall", "elongated", "unspecified"
+            ],
+            "custom_size_requests": {
+                "unit": "meter",
+                "value": "三轴完整包围盒尺寸范围，不是半尺寸",
+                "selection": "Toolkit 按候选策略在范围内选择并完整验证",
+            },
+        },
         "inspect_views": [
             "summary",
             "entities",
@@ -315,11 +379,17 @@ def build_design_candidate(
     strategy: Literal[
         "balanced", "preserve_composition", "maximize_motion_readability"
     ],
+    size_requests: dict[str, EntitySizeRequest] | None = None,
 ) -> tuple[CandidateState, dict[str, Any], tuple[str, ...]]:
     """把符号骨架物化为确定性数值候选，不让模型填写坐标。"""
 
     candidate = base.model_copy(deep=True)
-    candidate.entities = _build_entities(objective, skeleton)
+    candidate.entities = _build_entities(
+        objective,
+        skeleton,
+        strategy,
+        size_requests or {},
+    )
     _place_entities(candidate, skeleton, profile)
     candidate.constraints = _build_relation_constraints(
         objective,
@@ -342,13 +412,29 @@ def build_design_candidate(
     )
     _add_speed_constraints(objective, skeleton, candidate, profile)
     _add_composition_constraints(objective, skeleton, candidate)
-    assumptions = _design_assumptions(objective, skeleton, strategy)
-    return candidate, _numeric_envelopes(objective, skeleton, candidate), assumptions
+    assumptions = _design_assumptions(
+        objective,
+        skeleton,
+        strategy,
+        size_requests or {},
+    )
+    return (
+        candidate,
+        _numeric_envelopes(
+            objective,
+            skeleton,
+            candidate,
+            size_requests or {},
+        ),
+        assumptions,
+    )
 
 
 def _build_entities(
     objective: ObjectivePlanningBrief,
     skeleton: SceneSkeleton,
+    strategy: str,
+    size_requests: dict[str, EntitySizeRequest],
 ) -> dict[str, EntitySpec]:
     subject_parameters = _subject_parameters(objective)
     ground_links = {
@@ -378,7 +464,13 @@ def _build_entities(
             entity_id=item.entity_id,
             label=item.semantic_type,
             role=item.role,
-            proxy=_proxy_geometry(objective, item, parameters),
+            proxy=_proxy_geometry(
+                objective,
+                item,
+                parameters,
+                strategy,
+                size_requests.get(item.entity_id),
+            ),
             tags=[item.semantic_type, item.scale_intent],
             source_refs=sorted(source_refs),
             ground_interaction=ground_interaction,
@@ -390,7 +482,24 @@ def _proxy_geometry(
     objective: ObjectivePlanningBrief,
     entity: SkeletonEntity,
     parameters: dict[str, Any],
+    strategy: str,
+    size_request: EntitySizeRequest | None,
 ) -> dict[str, Any]:
+    if size_request is not None:
+        dimensions = _select_requested_dimensions(size_request, strategy)
+        _validate_requested_dimensions(entity, parameters, dimensions)
+        if entity.proxy_family == "celestial_sphere":
+            return {"type": "sphere", "radius_m": sum(dimensions) / 6.0}
+        if entity.proxy_family == "human_capsule":
+            radius = (dimensions[0] + dimensions[1]) / 4.0
+            return {
+                "type": "capsule",
+                "radius_m": radius,
+                "segment_length_m": max(0.01, dimensions[2] - radius * 2.0),
+                "axis": "+Z",
+            }
+        if entity.proxy_family in {"vehicle_box", "generic_box"}:
+            return {"type": "box", "size_xyz_m": list(dimensions)}
     if entity.proxy_family == "ground_plane":
         dimensions = (
             (objective.translation_parameters or {}).get("scene", {}).get("dimensions_m")
@@ -437,7 +546,70 @@ def _proxy_geometry(
         "huge": 12.0,
         "unspecified": 2.0,
     }[entity.scale_intent]
-    return {"type": "box", "size_xyz_m": [edge, edge, edge]}
+    dimensions = {
+        "isotropic": (edge, edge, edge),
+        "flat": (edge * 4.0, edge * 2.0, max(0.05, edge * 0.025)),
+        "wide": (edge * 2.5, edge * 1.5, edge),
+        "tall": (edge, edge, edge * 3.0),
+        "elongated": (edge * 3.0, edge, edge),
+        "unspecified": (edge, edge, edge),
+    }[entity.proportion_intent]
+    return {"type": "box", "size_xyz_m": list(dimensions)}
+
+
+def _select_requested_dimensions(
+    request: EntitySizeRequest,
+    strategy: str,
+) -> tuple[float, float, float]:
+    if request.preferred_xyz_m is not None:
+        return request.preferred_xyz_m
+    ratio = {
+        "preserve_composition": 0.25,
+        "balanced": 0.5,
+        "maximize_motion_readability": 0.75,
+    }[strategy]
+    return tuple(
+        minimum + (maximum - minimum) * ratio
+        for minimum, maximum in zip(request.minimum_xyz_m, request.maximum_xyz_m)
+    )
+
+
+def _validate_requested_dimensions(
+    entity: SkeletonEntity,
+    parameters: dict[str, Any],
+    dimensions: tuple[float, float, float],
+) -> None:
+    if entity.proxy_family == "ground_plane":
+        raise ValueError("ground_plane 尺寸由场景平面控制，不接受三轴自定义尺寸")
+    if entity.proxy_family == "celestial_sphere":
+        if max(dimensions) - min(dimensions) > max(dimensions) * 0.05:
+            raise ValueError("celestial_sphere 的三轴尺寸必须近似相等")
+    if entity.proxy_family == "human_capsule":
+        if abs(dimensions[0] - dimensions[1]) > max(dimensions[:2]) * 0.05:
+            raise ValueError("human_capsule 的 X/Y 尺寸必须近似相等")
+        if dimensions[2] <= max(dimensions[:2]):
+            raise ValueError("human_capsule 高度必须大于横向尺寸")
+    footprint = parameters.get("minimum_footprint_m")
+    if isinstance(footprint, list) and len(footprint) == 2:
+        if (
+            dimensions[0] < float(footprint[0])
+            or dimensions[1] < float(footprint[1])
+        ):
+            raise ValueError("自定义尺寸小于 Brief 明确的最小占地尺寸")
+    minimum_height = parameters.get("minimum_height_m")
+    if minimum_height is not None and dimensions[2] < float(minimum_height):
+        raise ValueError("自定义尺寸小于 Brief 明确的最小高度")
+    reference_height = parameters.get("reference_height_m")
+    if (
+        parameters.get("height_source_status") == "explicit"
+        and reference_height is not None
+        and not math.isclose(
+            dimensions[2],
+            float(reference_height),
+            rel_tol=0.15,
+        )
+    ):
+        raise ValueError("自定义尺寸与 Brief 明确的参考高度冲突")
 
 
 def _place_entities(
@@ -970,6 +1142,7 @@ def _numeric_envelopes(
     objective: ObjectivePlanningBrief,
     skeleton: SceneSkeleton,
     candidate: CandidateState,
+    size_requests: dict[str, EntitySizeRequest],
 ) -> dict[str, Any]:
     camera = candidate.camera
     assert camera is not None
@@ -1010,7 +1183,16 @@ def _numeric_envelopes(
         "depth_gap_m": _range_around(depth_gaps),
         "motion_speed_ranges_mps": motion_speeds,
         "entity_size_ranges_m": {
-            entity_id: _entity_size_range(entity)
+            entity_id: (
+                {
+                    "minimum_xyz": list(size_requests[entity_id].minimum_xyz_m),
+                    "maximum_xyz": list(size_requests[entity_id].maximum_xyz_m),
+                    "selected_xyz": list(_entity_dimensions(entity)),
+                    "source": "agent_requested_validated_range",
+                }
+                if entity_id in size_requests
+                else _entity_size_range(entity)
+            )
             for entity_id, entity in candidate.entities.items()
             if entity.proxy.type != "plane"
         },
@@ -1021,6 +1203,7 @@ def _design_assumptions(
     objective: ObjectivePlanningBrief,
     skeleton: SceneSkeleton,
     strategy: str,
+    size_requests: dict[str, EntitySizeRequest],
 ) -> tuple[str, ...]:
     assumptions = [
         f"数值策略采用 {strategy}",
@@ -1031,6 +1214,10 @@ def _design_assumptions(
         assumptions.append("旧版 Brief 缺少量化快照，使用冻结 Research Profile")
     if any(item.kind == "orbit" for item in skeleton.motion_phases):
         assumptions.append("未指定嵌套周期时，子轨道使用不同 cycle_count 避免同相锁定")
+    assumptions.extend(
+        f"实体 {entity_id} 使用 Agent 请求的受验证尺寸范围：{request.rationale}"
+        for entity_id, request in sorted(size_requests.items())
+    )
     return tuple(assumptions)
 
 
@@ -1217,25 +1404,28 @@ def _range_around(
     return {"minimum": round(lower, 6), "maximum": round(upper, 6)}
 
 
-def _entity_size_range(entity: EntitySpec) -> dict[str, list[float]]:
+def _entity_dimensions(entity: EntitySpec) -> tuple[float, float, float]:
     proxy = entity.proxy
     if proxy.type == "box":
-        dimensions = list(proxy.size_xyz_m)
+        return proxy.size_xyz_m
     elif proxy.type == "sphere":
-        dimensions = [proxy.radius_m * 2.0] * 3
+        return (proxy.radius_m * 2.0,) * 3
     elif proxy.type == "capsule":
         diameter = proxy.radius_m * 2.0
         height = proxy.segment_length_m + diameter
-        dimensions = [diameter, diameter, height]
+        return (diameter, diameter, height)
     elif proxy.type in {"cylinder", "cone"}:
         radius = (
             proxy.radius_m
             if proxy.type == "cylinder"
             else max(proxy.radius_bottom_m, proxy.radius_top_m)
         )
-        dimensions = [radius * 2.0, radius * 2.0, proxy.depth_m]
-    else:
-        dimensions = [proxy.size_xy_m[0], proxy.size_xy_m[1], 0.0]
+        return (radius * 2.0, radius * 2.0, proxy.depth_m)
+    return (proxy.size_xy_m[0], proxy.size_xy_m[1], 0.0)
+
+
+def _entity_size_range(entity: EntitySpec) -> dict[str, list[float]]:
+    dimensions = _entity_dimensions(entity)
     return {
         "minimum_xyz": [round(item * 0.8, 6) for item in dimensions],
         "maximum_xyz": [round(item * 1.2, 6) for item in dimensions],

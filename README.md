@@ -32,7 +32,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 三个核心表示各自承担不同职责：
 
 - `Cinematic Brief`：记录用户想表达什么，以及信息来自明确描述、推断还是默认值。
-- `Scene Skeleton`：只记录实体类别、空间关系、动作阶段和摄影机意图，不含坐标、距离、速度、尺寸或焦距。
+- `Scene Skeleton`：记录实体类别、空间关系、动作阶段、摄影机意图以及定性的尺度/三轴比例，不含坐标、距离、速度、米制尺寸或焦距。
 - `Constraint Plan`：记录 Agent 选择了哪些可执行空间、运动和摄影机策略。
 - `Scene IR`：精确描述 Blender 应创建和渲染什么，可验证、可重放、可比较。
 
@@ -41,7 +41,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 支持 OpenAI、DeepSeek 和离线 Mock Provider。
 - 使用 LLM 提取“谁、在哪、做什么、感觉”，再通过版本化规则表生成可复现的主体、运动、场景、摄影机、构图和光源量化快照。
 - 将 Cinematic Brief 中的客观空间、运动、构图和摄影机要求交给规划 Agent。
-- 规划 Agent 先做符号化拆解；Toolkit 再联合冻结 Profile 与完整 Validator 给出少量数值候选、可行范围和任务相关接口。Agent 只选整体策略，候选由 Toolkit 原子物化，避免反复试坐标。
+- 规划 Agent 先做符号化拆解，包括相对大小和 flat/wide/tall 等形体比例；Toolkit 再联合冻结 Profile 与完整 Validator 给出少量数值候选、可行范围和任务相关接口。内置比例不足时，Agent 可向建议接口提交受约束的三轴尺寸范围，候选仍由 Toolkit 原子物化，避免绕过门禁直接改 IR。
 - 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
 - Validator 发现共线机位、屏幕运动不可读、主体出画或投影尺寸不合格时，Toolkit 会确定性搜索少量经复验的摄影机策略；Agent 选择整体方案，不再逐项猜坐标和焦距。
 - 支持世界、局部、目标相对和摄影机相对参考系。

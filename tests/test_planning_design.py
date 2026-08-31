@@ -65,7 +65,20 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertEqual(result["required_path_families"], [])
         self.assertIn("camera_depth_order", result["required_relation_kinds"])
         self.assertNotIn("constraint_parameter_schemas", result)
+        self.assertIn("custom_size_requests", result["size_design"])
         self.assertEqual(result["next_tool"], "apply_design_option")
+
+    def test_skeleton_keeps_qualitative_proportion_without_numeric_size(self) -> None:
+        value = _desert_skeleton()
+        ship = next(item for item in value["entities"] if item["entity_id"] == "ship_01")
+        ship["proxy_family"] = "generic_box"
+        ship["proportion_intent"] = "flat"
+        skeleton = SceneSkeleton.model_validate(value)
+
+        dumped = skeleton.model_dump(mode="json")
+
+        self.assertEqual(skeleton.entities[2].proportion_intent, "flat")
+        self.assertNotIn("size_xyz_m", json.dumps(dumped))
 
     def test_design_options_are_read_only_and_validator_predicted(self) -> None:
         toolkit = _desert_toolkit()
@@ -107,6 +120,103 @@ class PlanningDesignTest(unittest.TestCase):
             applied["changes"][0]["operation"],
             "materialize_design",
         )
+
+    def test_custom_size_request_is_selected_inside_validated_option(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+        suggested = toolkit.request_design_options(
+            max_options=1,
+            custom_size_requests=[
+                {
+                    "entity_id": "ship_01",
+                    "minimum_xyz_m": [60.0, 18.0, 8.0],
+                    "maximum_xyz_m": [80.0, 30.0, 12.0],
+                    "preferred_xyz_m": [70.0, 24.0, 10.0],
+                    "rationale": "大型背景飞船需要宽扁代理体",
+                }
+            ],
+        )
+        option = suggested["data"]["options"][0]
+        size_range = option["numeric_envelopes"]["entity_size_ranges_m"]["ship_01"]
+
+        applied = toolkit.apply_design_option(0, option["option_id"])
+        geometry = toolkit.store.get().entities["ship_01"].proxy
+
+        self.assertEqual(applied["status"], "ok")
+        self.assertEqual(geometry.size_xyz_m, (70.0, 24.0, 10.0))
+        self.assertEqual(size_range["minimum_xyz"], [60.0, 18.0, 8.0])
+        self.assertEqual(size_range["maximum_xyz"], [80.0, 30.0, 12.0])
+        self.assertEqual(size_range["selected_xyz"], [70.0, 24.0, 10.0])
+        self.assertEqual(suggested["data"]["custom_size_request_count"], 1)
+
+    def test_custom_size_request_rejects_unknown_entity(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+
+        result = toolkit.request_design_options(
+            custom_size_requests=[
+                {
+                    "entity_id": "missing",
+                    "minimum_xyz_m": [1.0, 1.0, 1.0],
+                    "maximum_xyz_m": [2.0, 2.0, 2.0],
+                    "rationale": "测试未知引用",
+                }
+            ]
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("missing", result["warnings"][0])
+
+    def test_revised_size_request_invalidates_previous_options(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+        initial = toolkit.request_design_options(max_options=1)
+        initial_option = initial["data"]["options"][0]
+        revised = toolkit.request_design_options(
+            max_options=1,
+            custom_size_requests=[
+                {
+                    "entity_id": "ship_01",
+                    "minimum_xyz_m": [60.0, 18.0, 8.0],
+                    "maximum_xyz_m": [80.0, 30.0, 12.0],
+                    "rationale": "首批候选比例不足",
+                }
+            ],
+        )
+        revised_option = revised["data"]["options"][0]
+
+        stale = toolkit.apply_design_option(0, initial_option["option_id"])
+        applied = toolkit.apply_design_option(0, revised_option["option_id"])
+
+        self.assertEqual(stale["status"], "rejected")
+        self.assertEqual(applied["status"], "ok")
+
+    def test_duplicate_design_request_is_rejected(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+        toolkit.request_design_options(max_options=1)
+
+        duplicate = toolkit.request_design_options(max_options=1)
+
+        self.assertEqual(duplicate["status"], "rejected")
+        self.assertIn("重复", duplicate["warnings"][0])
+
+    def test_flat_generic_proxy_is_not_materialized_as_cube(self) -> None:
+        value = _desert_skeleton()
+        ship = next(item for item in value["entities"] if item["entity_id"] == "ship_01")
+        ship["proxy_family"] = "generic_box"
+        ship["scale_intent"] = "large"
+        ship["proportion_intent"] = "flat"
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(value)
+        suggested = toolkit.request_design_options(max_options=1)
+        option = suggested["data"]["options"][0]
+
+        toolkit.apply_design_option(0, option["option_id"])
+        dimensions = toolkit.store.get().entities["ship_01"].proxy.size_xyz_m
+
+        self.assertGreater(dimensions[0], dimensions[1])
+        self.assertGreater(dimensions[1], dimensions[2] * 10.0)
 
     def test_design_option_is_stale_after_candidate_changes(self) -> None:
         toolkit = _desert_toolkit()
@@ -155,6 +265,14 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertGreater(
             state.motion_tracks["design_orbit_moon"].path.cycle_count,
             state.motion_tracks["design_orbit_earth"].path.cycle_count,
+        )
+        self.assertGreater(
+            state.entities["sun"].proxy.radius_m,
+            state.entities["earth"].proxy.radius_m,
+        )
+        self.assertGreater(
+            state.entities["earth"].proxy.radius_m,
+            state.entities["moon"].proxy.radius_m,
         )
 
     def test_pickup_option_preserves_arrive_wait_board_depart_sequence(self) -> None:

@@ -24,6 +24,7 @@ from cinescaffold.planning.domain import (
 )
 from cinescaffold.planning.design import (
     DesignOption,
+    EntitySizeRequest,
     SceneSkeleton,
     build_design_candidate,
     design_option_id,
@@ -54,7 +55,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.17"
+TOOLKIT_VERSION = "0.18"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -213,6 +214,7 @@ class ScenePlanningToolkit:
         self._repair_suggestions: dict[str, _CameraRepair] = {}
         self._scene_skeleton: SceneSkeleton | None = None
         self._design_options: dict[str, DesignOption] = {}
+        self._last_design_request_hash: str | None = None
 
     @property
     def has_scene_skeleton(self) -> bool:
@@ -552,6 +554,7 @@ class ScenePlanningToolkit:
             return _rejected(revision, _error_message(error))
         self._scene_skeleton = parsed
         self._design_options.clear()
+        self._last_design_request_hash = None
         return _envelope(
             revision,
             revision,
@@ -569,8 +572,9 @@ class ScenePlanningToolkit:
         self,
         preference: str = "balanced",
         max_options: int = 3,
+        custom_size_requests: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """依据骨架生成少量数值候选，并用同一 Validator 预测。"""
+        """依据骨架与可选尺寸范围生成少量候选，并用同一 Validator 预测。"""
 
         revision = self.store.current_revision
         if self._scene_skeleton is None:
@@ -586,10 +590,45 @@ class ScenePlanningToolkit:
             return _rejected(revision, f"未知 design preference：{preference}")
         if not 1 <= max_options <= 3:
             return _rejected(revision, "max_options 必须位于 1 到 3")
+        try:
+            parsed_size_requests = [
+                EntitySizeRequest.model_validate(item)
+                for item in (custom_size_requests or [])
+            ]
+        except ValidationError as error:
+            return _rejected(revision, _error_message(error))
+        known_entities = {item.entity_id for item in self._scene_skeleton.entities}
+        request_ids = [item.entity_id for item in parsed_size_requests]
+        unknown = sorted(set(request_ids) - known_entities)
+        if unknown:
+            return _rejected(
+                revision,
+                f"自定义尺寸引用未知 Scene Skeleton Entity：{', '.join(unknown)}",
+            )
+        if len(request_ids) != len(set(request_ids)):
+            return _rejected(revision, "同一实体只能提交一个自定义尺寸范围")
+        size_requests = {item.entity_id: item for item in parsed_size_requests}
+        request_hash = canonical_hash(
+            {
+                "preference": preference,
+                "max_options": max_options,
+                "custom_size_requests": [
+                    item.model_dump(mode="json") for item in parsed_size_requests
+                ],
+            }
+        )
+        if request_hash == self._last_design_request_hash:
+            return _rejected(
+                revision,
+                "不得重复完全相同的 Design Options 请求；请选择现有 option 或调整尺寸范围",
+            )
+        self._last_design_request_hash = request_hash
+        self._design_options.clear()
         order = [preference, *sorted(allowed - {preference})][:max_options]
         base = self.store.get()
         skeleton_sha256 = skeleton_hash(self._scene_skeleton)
         options: list[DesignOption] = []
+        option_errors: list[str] = []
         for strategy in order:
             try:
                 candidate, envelopes, assumptions = build_design_candidate(
@@ -598,9 +637,11 @@ class ScenePlanningToolkit:
                     base,
                     self.profile,
                     strategy,
+                    size_requests,
                 )
                 report = self._validate(candidate, FULL_VALIDATION_CHECKS)
-            except (ValidationError, ValueError):
+            except (ValidationError, ValueError) as error:
+                option_errors.append(f"{strategy}: {_error_message(error)}")
                 continue
             option_id = design_option_id(
                 skeleton_sha256=skeleton_sha256,
@@ -634,9 +675,17 @@ class ScenePlanningToolkit:
                 "selection_rule": (
                     "先保留 explicit，再比较 hard violation、soft score 与策略偏好"
                 ),
+                "custom_size_request_count": len(size_requests),
                 "next_tool": "apply_design_option" if options else None,
             },
-            warnings=[] if options else ["未能从当前符号骨架生成合法数值候选"],
+            warnings=(
+                []
+                if options
+                else [
+                    "未能从当前符号骨架生成合法数值候选",
+                    *sorted(set(option_errors)),
+                ]
+            ),
         )
 
     def apply_design_option(

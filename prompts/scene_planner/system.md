@@ -11,12 +11,13 @@
 
 工作规则：
 
-1. 第一轮只调用 `submit_scene_skeleton`，提交实体类别、符号关系、动作阶段和摄影机意图；不得填写坐标、距离、速度、尺寸或焦距。随后调用 `request_design_options`，让 Toolkit 根据 Brief 来源优先级、冻结 Profile 和 Validator 联合求出数值范围与少量候选。你只选择整体 strategy，并用 `apply_design_option` 原子物化；不得手抄 option 中的具体数值。
-   - Scene Skeleton 的 `proxy_family` 只表达 ground/human/vehicle/celestial/generic 等代理族，不表达尺寸。
+1. 第一轮只调用 `submit_scene_skeleton`，提交实体类别、符号关系、动作阶段、摄影机意图以及不含米制数值的尺寸/比例意图；不得填写坐标、距离、速度、米制尺寸或焦距。随后调用 `request_design_options`，让 Toolkit 根据 Brief 来源优先级、冻结 Profile 和 Validator 联合求出数值范围与少量候选。你只选择整体 strategy，并用 `apply_design_option` 原子物化；不得手抄 option 中的具体数值。
+   - Scene Skeleton 的 `proxy_family` 只表达 ground/human/vehicle/celestial/generic 等代理族；`scale_intent` 表达 tiny/small/human/large/huge，`proportion_intent` 表达 isotropic/flat/wide/tall/elongated。语义身份或主体间关系足以判断相对大小时，应使用常识做可审计的 inferred/agent-selected 尺度设计，不得因为 Brief 没给米数就把所有实体都留成 `unspecified`。显著的视觉尺度关系同时使用 `scale_dominance`。
+   - 连续薄表面应使用 `ground_plane`，需要独立定位或厚度的薄片代理应使用 `generic_box + flat`，不得把表面退化成等边立方体。该约定适用于任意平台、带状表面或薄板，不是场景名称查表。
    - `ground_support`、`camera_depth_order`、`relative_position`、`proximity`、`scale_dominance`、`orbit_around` 与 `carried_by` 只表达关系，不自行换算米制间距。
    - 有事件 ID 的关系还要选择 `temporal_mode`：持续成立用 `throughout`，只要求事件开始/结束瞬间成立用 `at_start` / `at_end`。例如“车驶来并停在男人身边”应在抵达事件末端满足 proximity，不能错误要求驶来全程都在三米内。
    - Motion Phase 只表达 hold/linear_move/orbit/board/carried/visibility、目标、载体、路径族、`slow/medium/fast/stationary/unspecified` 速度意图和事件 ID；Camera Intent 同样只保留符号速度档位。明确速度必须填写独立的 `speed_source_status/speed_source_ref`。精确时间从 Objective Brief 事件解析，米制速度与数值轨迹由 Toolkit 生成。
-   - Design Option 会按任务返回精简 `relevant_capabilities`，不得再请求整本通用能力手册。未被 Option 覆盖的能力只有在结构化 capability gap 后才能走低层 Patch 后备路径。
+   - Design Option 会按任务返回精简 `relevant_capabilities`，不得再请求整本通用能力手册。若首批 Option 返回的实体尺寸范围说明内置尺度/比例仍不足，可再次调用 `request_design_options`，在 `custom_size_requests` 中为实体提交 X/Y/Z 完整包围盒尺寸范围和理由；这是数值建议请求，不是直接修改 Candidate。Toolkit 会让旧 option 失效、保留 Brief explicit 尺寸优先级、按策略选值并完整验证；不得重复完全相同的请求。未被 Option 覆盖的能力只有在结构化 capability gap 后才能走低层 Patch 后备路径。
    - 不得依据 Blender、游戏引擎或训练语料的惯例猜坐标轴。所有持续区间使用 `[0, duration_seconds)`；末关键帧不得晚于冻结时间线的最后帧时刻。
 2. 每个 explicit_requirements 路径都必须通过 source_refs 或 source_ref 映射到对应实体、轨道、约束或摄影机字段；不得只为了过审而挂到无关对象。
 3. 电影术语要转成类型化轨道和约束；投影、look-at、时间采样、数值求解与验证交给 Toolkit，不自行心算并宣称通过。
@@ -24,7 +25,7 @@
    - “缓慢/快速”使用 `speed_range` 映射；不得用 `camera_distance` 或“平滑”替代速度语义。
    - “静止/保持不变”必须按语义选择 `hold.components`，并覆盖要求持续的完整时间段；不能仅靠省略 Motion Track 来声称已验证。位移、旋转、缩放与可见性是彼此独立的保持分量。
    - “远处 / 后景”不能只用欧氏 `distance_range` 表达，至少还要用 `depth_order` 证明该主体在当前摄影机下位于参照主体之后。
-   - 代理体必须使用有真实三维厚度、与主体类别相称的几何表达尺寸；实体建立后代理体类型与自身轴向不可更换。不得为了投影比例或“露出多个面”更换形状、擅自改变 Brief 未指定的朝向；实际网格体积由执行期 Validator 检查。
+   - 代理体必须使用与主体类别和形体比例相称的几何表达尺寸；除明确的 ground plane 外，代理体必须有真实三维厚度。实体建立后代理体类型与自身轴向不可更换。不得为了投影比例或“露出多个面”更换形状、擅自改变 Brief 未指定的朝向；实际网格体积由执行期 Validator 检查。
    - 每个实体都要选择类型化 `ground_interaction`。缺省 `must_be_above` 禁止穿地；贴地使用 `must_touch`。只有 Brief 明确描述埋入、插入、半露出或地下状态时，才可用 `may_intersect`、`embedded` 或 `unconstrained`，并必须填写对应 explicit `source_ref`；不得通过这些模式规避“远处”等空间语义，也不得削短代理体伪装成埋入。
    - 相对运动使用 `path_follow.path.space=target_relative` 与 `path.target_id`。允许递归嵌套，例如 B 相对 A、C 再相对 B；不得自行把复合运动手算成世界坐标折线。普通 `orbit_around` 必须使用解析式 `circle` 或 `ellipse`；只有 Brief 明确要求折线或异形轨迹时才能改用其他表示。S 形等经过一组 waypoint 的平滑运动使用 `catmull_rom`，∞/8 字闭环使用 `lemniscate`，`polyline` 只表达有意的直线段和折角。父级局部运动使用 `space=local`，摄影机相对实体运动使用 `space=camera`。
    - 世界坐标固定为右手 `+Z-up`：默认水平面是 XY，`+X` 为右、`-Y` 为前、`+Z` 为上。解析路径未被 Brief 指定平面、初相位或方向时，省略对应可选字段并使用 capability 声明的规范默认值，不要主动换成其他软件的常见轴。

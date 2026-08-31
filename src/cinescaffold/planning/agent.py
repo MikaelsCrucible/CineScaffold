@@ -31,7 +31,7 @@ from cinescaffold.planning.domain import (
     StrictModel,
     TrackKeyframe,
 )
-from cinescaffold.planning.design import SceneSkeleton
+from cinescaffold.planning.design import EntitySizeRequest, SceneSkeleton
 from cinescaffold.planning.toolkit import TOOLKIT_VERSION, ScenePlanningToolkit
 from cinescaffold.planning.trace import TraceRecorder
 
@@ -316,11 +316,14 @@ class PlanningDeps:
                     "Scene Skeleton 已接受；下一步必须请求数值设计选项",
                     ["调用 request_design_options"],
                 )
-            if self.toolkit.has_design_options and name != "apply_design_option":
+            if self.toolkit.has_design_options and name not in {
+                "request_design_options",
+                "apply_design_option",
+            }:
                 return _protocol_rejected(
                     revision,
-                    "Design Options 已生成；请选择并原子应用一个 option_id",
-                    ["调用 apply_design_option"],
+                    "Design Options 已生成；请选择 option，或带不同尺寸范围重新请求",
+                    ["调用 apply_design_option 或调整后调用 request_design_options"],
                 )
         validation = self.toolkit.store.get().validation
         if (
@@ -393,7 +396,7 @@ async def _prepare_design_options_tool(
     toolkit = ctx.deps.toolkit
     if ctx.deps.capabilities_read or toolkit.design_option_applied:
         return None
-    return tool_definition if toolkit.has_scene_skeleton and not toolkit.has_design_options else None
+    return tool_definition if toolkit.has_scene_skeleton else None
 
 
 async def _prepare_design_apply_tool(
@@ -492,9 +495,17 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             "maximize_motion_readability",
         ] = "balanced",
         max_options: int = 3,
+        custom_size_requests: list[EntitySizeRequest] | None = None,
     ) -> dict[str, Any]:
-        """让 Toolkit 联合求解数值范围、候选策略和下一步相关能力。"""
-        arguments = {"preference": preference, "max_options": max_options}
+        """让 Toolkit 联合求解数值候选；可请求受约束的三轴尺寸范围。"""
+        arguments = {
+            "preference": preference,
+            "max_options": max_options,
+            "custom_size_requests": [
+                item.model_dump(mode="json")
+                for item in (custom_size_requests or [])
+            ],
+        }
         return ctx.deps.call_tool(
             "request_design_options",
             arguments,
