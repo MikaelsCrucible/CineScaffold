@@ -105,21 +105,29 @@ class TerminalReporter:
         )
 
     def _on_model_request_started(self, payload: dict[str, Any]) -> None:
+        tool_count = len(payload.get("function_tools", []))
         self._line(
             "…",
             "模型请求",
             f"第 {payload.get('request_index', '?')} 次请求，"
-            f"上下文 {payload.get('message_count', '?')} 条消息",
+            f"上下文 {payload.get('message_count', '?')} 条消息 · "
+            f"{tool_count} 个函数工具",
             "blue",
         )
 
     def _on_model_request_completed(self, payload: dict[str, Any]) -> None:
         usage = payload.get("usage", {})
+        reasoning_tokens = usage.get("details", {}).get("reasoning_tokens")
+        reasoning = (
+            f" · reasoning {_integer(reasoning_tokens)}"
+            if reasoning_tokens is not None
+            else ""
+        )
         self.success(
             "模型响应",
             f"第 {payload.get('request_index', '?')} 次完成 · "
             f"输入 {_integer(usage.get('input_tokens'))} · "
-            f"输出 {_integer(usage.get('output_tokens'))} tokens · "
+            f"输出 {_integer(usage.get('output_tokens'))} tokens{reasoning} · "
             f"{_milliseconds(payload.get('duration_ms'))}",
         )
 

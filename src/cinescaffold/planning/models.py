@@ -69,10 +69,12 @@ def create_planning_model(
 
 def _create_mock_model(objective: ObjectivePlanningBrief) -> FunctionModel:
     actions = _mock_actions(objective)
+    next_action_index = 0
 
     def callback(messages: list, info: AgentInfo) -> ModelResponse:
+        nonlocal next_action_index
         returns = _tool_returns(messages)
-        action_index = len(returns)
+        action_index = next_action_index
         usage = RequestUsage(
             input_tokens=120 + action_index * 10,
             output_tokens=30,
@@ -85,6 +87,7 @@ def _create_mock_model(objective: ObjectivePlanningBrief) -> FunctionModel:
         )
         if action_index < len(actions) and not commit_ready:
             name, arguments = actions[action_index]
+            next_action_index += 1
             return ModelResponse(
                 parts=[ToolCallPart(name, arguments, tool_call_id=f"mock_call_{action_index:03d}")],
                 usage=usage,
@@ -115,10 +118,7 @@ def _create_mock_model(objective: ObjectivePlanningBrief) -> FunctionModel:
 
 def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str, Any]]]:
     actions: list[tuple[str, dict[str, Any]]] = [
-        (
-            "get_capabilities",
-            {"sections": ["entities", "constraints", "tracks", "camera", "validators", "limits"]},
-        )
+        ("get_capabilities", {"sections": ["entities"]})
     ]
     entities: list[dict[str, Any]] = []
     for index, subject in enumerate(objective.subjects):
@@ -142,6 +142,10 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
         )
     if entities:
         actions.append(("apply_entity_patch", {"upserts": entities, "remove_ids": []}))
+    actions.extend(
+        ("get_capabilities", {"sections": [section]})
+        for section in ("constraints", "tracks", "camera", "validators")
+    )
 
     constraints: list[dict[str, Any]] = []
     for index, relationship in enumerate(objective.scene_design.get("relationships", [])):

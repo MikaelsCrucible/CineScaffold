@@ -304,6 +304,22 @@ class InterpreterRunnerTest(unittest.TestCase):
             item for item in trace if item["event_type"] == "model_request_started"
         )
         self.assertNotIn("messages", request_started["payload"])
+        second_request = next(
+            item
+            for item in trace
+            if item["event_type"] == "model_request_started"
+            and item["payload"]["request_index"] == 2
+        )
+        self.assertEqual(second_request["payload"]["function_tools"], ["apply_entity_patch"])
+        capability_calls = [
+            item
+            for item in trace
+            if item["event_type"] == "tool_call_started"
+            and item["payload"]["tool_name"] == "get_capabilities"
+        ]
+        self.assertTrue(
+            all(len(item["payload"]["arguments"]["sections"]) == 1 for item in capability_calls)
+        )
         completed = next(
             item for item in trace if item["event_type"] == "model_request_completed"
         )
@@ -381,6 +397,9 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertEqual(config.max_seconds, 1_200.0)
         self.assertEqual(config.max_commit_attempts, 5)
         self.assertIsNone(config.max_total_tokens)
+        self.assertEqual(config.thinking_mode, "enabled")
+        self.assertEqual(config.reasoning_effort, "low")
+        self.assertEqual(config.model_max_tokens, 8192)
         self.assertEqual(
             _usage_limit_type("Exceeded the per_request_input_tokens_limit of 128000"),
             "per_request_input_tokens_limit",
