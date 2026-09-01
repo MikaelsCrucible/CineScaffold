@@ -131,7 +131,7 @@ api_key = 填写 API KEY
 
 配置也可以分别指定 `semantic_provider/model` 和 `planning_provider/model`。完整可选字段及注释见 [`.cinescaffold.example.conf`](.cinescaffold.example.conf)。命令行参数优先于配置文件；未找到配置值时，API Key 仍可从 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 环境变量读取。
 
-配置还可以保存 Agent 预算、成本单价、Blender/MCP 路径和渲染选项。macOS、Windows 与 Linux 会分别寻找常见 Blender 和 `blender-mcp` 可执行文件；显式路径始终优先。后续 UI 设置中心与 CLI 共用同一配置校验器，保存时不会把已配置 API Key 回传到浏览器，并在覆盖前生成本地 `.bak`。
+配置还可以保存 Agent 预算、分阶段成本单价、Blender/MCP 路径和渲染选项。macOS、Windows 与 Linux 会分别寻找常见 Blender 和 `blender-mcp` 可执行文件；显式路径始终优先。UI 设置中心与 CLI 共用同一配置校验器，保存时不会把已配置 API Key 回传到浏览器，并在覆盖前生成本地 `.bak`。
 
 OpenAI Semantic Parser 使用 Responses API。`semantic_reasoning_effort` 会作为 `reasoning.effort` 实际发送；GPT-5.6 可使用 `none/low/medium/high/xhigh/max`。例如：
 
@@ -175,6 +175,27 @@ DeepSeek 在 thinking 与 tools 同时启用时要求后续请求完整回传历
 常规规划默认使用面向长思考工具循环的研究预算：48 次模型请求、80 次工具调用、单请求 128K 输入上下文、整轮累计 200K 输出 token、20 分钟墙钟时间和 5 次 Commit Gate 尝试。累计输入和输入输出总量默认不另设上限，但仍受上述单项门禁与供应商限制保护。每项均可通过 `--max-requests`、`--max-tool-calls`、`--max-context-tokens`、`--max-output-tokens`、`--max-seconds` 和 `--max-commit-attempts` 临时覆盖；论文批量实验应显式记录或冻结这些值。
 
 ## 使用
+
+### 浏览器 UI
+
+安装 `requirements-ui.lock` 后，在项目根目录运行：
+
+```bash
+cinescaffold ui
+```
+
+界面默认只监听 `127.0.0.1:8080`，并自动打开浏览器。它支持从自然语言、文本六维、Cinematic Brief JSON 或 Scene IR JSON 开始；JSON/文本既可粘贴，也可从本地文件导入。运行中会显示语义解析、规划 Agent、Blender 构建与渲染进度，结束后展示文本六维、JSON 六维、token、分阶段估算成本、视频和本地产物入口。
+
+设置面板可以临时应用或安全写回 `.cinescaffold.conf`。现有 API Key 不会被读回页面；密码框留空表示保留，填写新值才会替换。若语义模型与规划模型不同，应分别填写 `semantic_*_cost_per_million` 与 `planning_*_cost_per_million`，避免成本串用。
+
+Windows 使用同一套 UI 和 Workflow，无需重写前端；激活命令改为：
+
+```powershell
+.venv\Scripts\Activate.ps1
+cinescaffold ui
+```
+
+Windows 仍需单独安装 Blender、官方 Blender MCP，并在设置面板确认两个可执行文件路径。程序会使用 Windows 的 `explorer` 打开输出目录；macOS 使用 `open`，Linux 使用 `xdg-open`。如不希望自动打开浏览器，可使用 `cinescaffold ui --no-open`。
 
 ### 一键运行
 

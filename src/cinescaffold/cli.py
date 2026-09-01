@@ -39,6 +39,7 @@ from cinescaffold.planning.runner import (
 from cinescaffold.planning.trace import CostRates, TraceConfig
 from cinescaffold.platforms import default_blender_path, default_mcp_command
 from cinescaffold.providers import DeepSeekProvider, MockProvider, OpenAIProvider
+from cinescaffold.runtime import cost_rates_from_config
 from cinescaffold.semantic import SemanticParseResult, SemanticParserConfig, parse_semantic_input
 from cinescaffold.workflow import PipelineRunConfig, PipelineSource, WorkflowRunner
 
@@ -57,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_execute(args)
         if args.command == "run":
             return _run_pipeline(args)
+        if args.command == "ui":
+            return _run_ui(args, loaded_config)
         parser.print_help()
         return 2
     except (CineScaffoldError, OSError, ValueError, json.JSONDecodeError) as error:
@@ -134,6 +137,15 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_planning_arguments(run_parser)
     _add_execution_arguments(run_parser)
     _add_display_arguments(run_parser)
+
+    ui_parser = subparsers.add_parser(
+        "ui",
+        help="启动面向非技术协作者的本地浏览器界面",
+    )
+    _add_config_argument(ui_parser)
+    ui_parser.add_argument("--host", default="127.0.0.1", help="监听地址；默认仅本机可访问")
+    ui_parser.add_argument("--port", type=int, default=8080)
+    ui_parser.add_argument("--no-open", action="store_true", help="启动后不自动打开浏览器")
     return parser
 
 
@@ -329,6 +341,11 @@ def _apply_config(args: argparse.Namespace, config: LoadedConfig) -> None:
         _apply_semantic_config(args, config)
         _apply_planning_config(args, config)
         _apply_execution_config(args, config)
+        args.semantic_cost_rates = cost_rates_from_config(
+            config,
+            "semantic",
+            provider=args.semantic_settings.provider,
+        )
 
 
 def _assign_model_settings(args: argparse.Namespace, settings: ModelSettings) -> None:
@@ -688,7 +705,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             else None
         ),
         semantic_cost_rates=(
-            _cost_rates(semantic_args) if semantic_args is not None else None
+            args.semantic_cost_rates if semantic_args is not None else None
         ),
         overwrite=args.overwrite,
     )
@@ -705,6 +722,21 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     else:
         print_pipeline_summary(summary)
     return 0 if summary["status"] == "success" else 1
+
+
+def _run_ui(args: argparse.Namespace, loaded_config: LoadedConfig) -> int:
+    from cinescaffold.ui_app import launch_ui
+
+    config_path = args.config or loaded_config.path or Path(".cinescaffold.conf")
+    launch_ui(
+        loaded_config,
+        config_path=config_path.resolve(),
+        project_root=Path.cwd().resolve(),
+        host=args.host,
+        port=args.port,
+        show=not args.no_open,
+    )
+    return 0
 
 
 def _stage_args(args: argparse.Namespace, settings: ModelSettings) -> argparse.Namespace:
