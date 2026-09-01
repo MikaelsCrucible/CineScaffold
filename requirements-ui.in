@@ -1,0 +1,2 @@
+-r requirements.lock
+nicegui==3.16.0

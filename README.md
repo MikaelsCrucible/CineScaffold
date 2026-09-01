@@ -90,6 +90,16 @@ uv pip install --python .venv/bin/python --no-deps --editable .
 source .venv/bin/activate
 ```
 
+需要浏览器 UI 时，用包含核心依赖与 NiceGUI 的锁文件替代 `requirements.lock`：
+
+```bash
+uv pip install --python .venv/bin/python \
+  --require-hashes --requirements requirements-ui.lock
+uv pip install --python .venv/bin/python --no-deps --editable .
+```
+
+UI 是可选依赖；仅使用 CLI 时不需要安装它。未采用锁文件的开发环境也可用 `pip install -e ".[ui]"`，正式测试仍建议使用锁文件。
+
 Blender MCP 作为外部工具单独安装：
 
 ```bash
