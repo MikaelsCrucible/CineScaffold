@@ -1256,17 +1256,18 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertAlmostEqual(moon_frame.translation_m[1], -2.0, places=8)
         self.assertEqual(moon_frame.translation_m[2], 0.0)
 
-    def test_nested_orbit_phase_lock_is_rejected_as_unreadable(self) -> None:
+    def test_nested_orbit_phase_lock_is_reported_without_rejecting_valid_ir(self) -> None:
         toolkit = _relative_motion_toolkit(moon_cycle_count=1.0)
 
         validation = toolkit.validate_candidate(checks=["motion"])
 
-        self.assertFalse(validation["data"]["hard_pass"])
+        self.assertTrue(validation["data"]["hard_pass"])
         violation = next(
             item
             for item in validation["violations"]
             if item["code"] == "NESTED_ORBIT_PHASE_LOCKED"
         )
+        self.assertEqual(violation["severity"], "warning")
         self.assertEqual(violation["actual"]["child_cycle_count"], 1.0)
         self.assertIn("cycle_count", violation["adjustable_variables"][0])
 

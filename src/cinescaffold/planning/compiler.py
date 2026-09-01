@@ -4,7 +4,13 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from cinescaffold.planning.domain import CommitRequest, PlanningProfile, TransformValue
+from cinescaffold.execution.validation import validate_scene_ir_for_execution
+from cinescaffold.planning.domain import (
+    CandidateState,
+    CommitRequest,
+    PlanningProfile,
+    TransformValue,
+)
 from cinescaffold.planning.geometry import (
     quaternion_conjugate,
     quaternion_multiply,
@@ -37,11 +43,12 @@ from cinescaffold.planning.toolkit import (
     TOOLKIT_VERSION,
     ScenePlanningToolkit,
     _WorldTransformResolver,
+    _compose_transform,
 )
 
 
-COMPILER_VERSION = "0.11"
-COMMIT_GATE_VERSION = "0.10"
+COMPILER_VERSION = "0.12"
+COMMIT_GATE_VERSION = "0.11"
 
 
 @dataclass(frozen=True)
@@ -89,6 +96,12 @@ class SceneIRCommitGate:
             trace_ref=trace_ref,
         )
         _validate_compiled_scene_ir(scene_ir)
+        validate_scene_ir_for_execution(scene_ir)
+        _validate_compiled_equivalence(
+            scene_ir,
+            state,
+            self.toolkit.profile,
+        )
         scene_ir_hash = canonical_hash(scene_ir)
         self.toolkit.store.commit(request.candidate_revision)
         return CommitGateResult(
@@ -317,6 +330,111 @@ def _validate_compiled_scene_ir(scene_ir: SceneIR) -> None:
             raise ValueError("Camera 逐帧轨道不完整")
     values = scene_ir.model_dump(mode="json")
     _reject_null_or_non_finite(values, "$")
+
+
+def _validate_compiled_equivalence(
+    scene_ir: SceneIR,
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> None:
+    """逐帧证明编译结果与已验证 Candidate 的世界状态等价。"""
+
+    entity_map = {item.entity_id: item for item in scene_ir.entities}
+    tolerance = max(profile.numeric_tolerance * 10.0, 1e-7)
+    for frame in range(scene_ir.timeline.frame_start, scene_ir.timeline.frame_end + 1):
+        time_seconds = _frame_time(frame, scene_ir.timeline)
+        resolver = _WorldTransformResolver(state, time_seconds, profile)
+        world_cache: dict[str, TransformValue] = {}
+
+        def compiled_world(entity_id: str) -> TransformValue:
+            cached = world_cache.get(entity_id)
+            if cached is not None:
+                return cached
+            entity = entity_map[entity_id]
+            sample = entity.local_state_track.samples[
+                frame - scene_ir.timeline.frame_start
+            ].value
+            local = TransformValue(
+                translation_m=sample.translation_m,
+                rotation_quaternion_wxyz=sample.rotation_quaternion_wxyz,
+                scale=sample.scale,
+                space="local" if entity.parent_id else "world",
+            )
+            world = (
+                _compose_transform(compiled_world(entity.parent_id), local)
+                if entity.parent_id
+                else local.model_copy(update={"space": "world"})
+            )
+            world_cache[entity_id] = world
+            return world
+
+        for entity_id, entity in entity_map.items():
+            expected = resolver.entity(entity_id)
+            actual = compiled_world(entity_id)
+            _assert_transform_equivalent(
+                expected,
+                actual,
+                tolerance,
+                f"Entity {entity_id} frame {frame}",
+            )
+            expected_visible = _visibility_at(state, entity_id, time_seconds)
+            actual_visible = entity.local_state_track.samples[
+                frame - scene_ir.timeline.frame_start
+            ].value.render_visible
+            if actual_visible != expected_visible:
+                raise ValueError(
+                    f"Scene IR 可见性与 Candidate 不等价：{entity_id} frame {frame}"
+                )
+
+        expected_camera = resolver.camera()
+        if expected_camera is None:
+            raise ValueError("Candidate 缺少可编译摄影机")
+        expected_transform, expected_focal = expected_camera
+        camera_sample = scene_ir.camera.state_track.samples[
+            frame - scene_ir.timeline.frame_start
+        ].value
+        actual_camera = TransformValue(
+            translation_m=camera_sample.translation_m,
+            rotation_quaternion_wxyz=camera_sample.rotation_quaternion_wxyz,
+            scale=(1.0, 1.0, 1.0),
+        )
+        _assert_transform_equivalent(
+            expected_transform.model_copy(update={"scale": (1.0, 1.0, 1.0)}),
+            actual_camera,
+            tolerance,
+            f"Camera frame {frame}",
+        )
+        if abs(camera_sample.focal_length_mm - expected_focal) > tolerance:
+            raise ValueError(f"Scene IR 焦距与 Candidate 不等价：frame {frame}")
+
+
+def _assert_transform_equivalent(
+    expected: TransformValue,
+    actual: TransformValue,
+    tolerance: float,
+    label: str,
+) -> None:
+    if max(
+        abs(left - right)
+        for left, right in zip(expected.translation_m, actual.translation_m)
+    ) > tolerance:
+        raise ValueError(f"Scene IR 位移与 Candidate 不等价：{label}")
+    if max(
+        abs(left - right)
+        for left, right in zip(expected.scale, actual.scale)
+    ) > tolerance:
+        raise ValueError(f"Scene IR 缩放与 Candidate 不等价：{label}")
+    quaternion_alignment = abs(
+        sum(
+            left * right
+            for left, right in zip(
+                expected.rotation_quaternion_wxyz,
+                actual.rotation_quaternion_wxyz,
+            )
+        )
+    )
+    if 1.0 - quaternion_alignment > tolerance:
+        raise ValueError(f"Scene IR 旋转与 Candidate 不等价：{label}")
 
 
 def _reject_null_or_non_finite(value: Any, path: str) -> None:

@@ -55,7 +55,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.19"
+TOOLKIT_VERSION = "0.20"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -111,6 +111,20 @@ REPAIR_PREFERENCES = {
     "maximize_motion_readability",
     "minimize_change",
     "preserve_composition",
+}
+PER_FRAME_CONSTRAINTS = {
+    "relative_position",
+    "distance_range",
+    "depth_order",
+    "screen_region",
+    "projected_size",
+    "projected_scale_ratio",
+    "keep_in_frame",
+    "look_at",
+    "camera_distance",
+    "focal_length_range",
+    "position_at_time",
+    "hold",
 }
 
 
@@ -1421,6 +1435,7 @@ class ScenePlanningToolkit:
                 _typed_motion_semantic_violations(
                     state,
                     self.objective_brief,
+                    self.profile,
                 )
             )
             violations.extend(
@@ -2316,7 +2331,7 @@ def _nested_orbit_readability_violations(
                             f"motion_tracks.{child_track.track_id}.path.cycle_count",
                             f"motion_tracks.{child_track.track_id}.path.control_points",
                         ],
-                    )
+                    ).model_copy(update={"severity": "warning"})
                 )
     return violations
 
@@ -2324,14 +2339,15 @@ def _nested_orbit_readability_violations(
 def _typed_motion_semantic_violations(
     state: CandidateState,
     objective_brief: ObjectivePlanningBrief,
+    profile: PlanningProfile,
 ) -> list[Violation]:
-    """确保类型化载运和显隐语义没有被 Agent 忽略。"""
+    """逐阶段复验类型化运动语义，不依赖动作文本或场景身份。"""
     if objective_brief.schema_version not in {"0.3", "0.4"}:
         return []
     frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
     last_frame_time = state.timeline.duration_seconds - frame_step
     violations: list[Violation] = []
-    for motion in objective_brief.subject_motion:
+    for motion_index, motion in enumerate(objective_brief.subject_motion):
         if not isinstance(motion, dict):
             continue
         semantics = motion.get("motion_semantics")
@@ -2342,28 +2358,157 @@ def _typed_motion_semantic_violations(
             continue
         start = float(motion.get("start_time_seconds") or 0.0)
         end = float(motion.get("end_time_seconds") or state.timeline.duration_seconds)
+        sample_times = _timeline_frame_times(
+            state.timeline,
+            start=max(0.0, start),
+            end=min(end, state.timeline.duration_seconds),
+        )
+        if not sample_times:
+            continue
+        positions = [
+            _WorldTransformResolver(state, time_seconds, profile).entity(
+                subject_id
+            ).translation_m
+            for time_seconds in sample_times
+        ]
+        baseline = positions[0]
+        movement_extent = max(length(subtract(item, baseline)) for item in positions)
+        motion_mode = semantics.get("motion_mode")
+        stationary_tolerance = 1e-4
+        if motion_mode in {"stationary", "local_interaction"}:
+            if movement_extent > stationary_tolerance:
+                violations.append(
+                    _violation(
+                        "MOTION_MODE_STATIONARY_VIOLATED",
+                        f"无整体位移阶段发生了世界空间移动：{subject_id}",
+                        entity_ids=[subject_id],
+                        time_range_seconds=(start, end),
+                        expected={"maximum_displacement_m": stationary_tolerance},
+                        actual={"displacement_extent_m": movement_extent},
+                        adjustable_variables=[f"motion_tracks.{subject_id}"],
+                    )
+                )
+        elif motion_mode == "self_propelled":
+            if movement_extent <= stationary_tolerance:
+                violations.append(
+                    _violation(
+                        "SELF_PROPELLED_MOTION_MISSING",
+                        f"自主运动阶段没有产生实体位移：{subject_id}",
+                        entity_ids=[subject_id],
+                        time_range_seconds=(start, end),
+                        expected={"minimum_displacement_m": stationary_tolerance},
+                        actual={"displacement_extent_m": movement_extent},
+                        adjustable_variables=[f"motion_tracks.{subject_id}"],
+                    )
+                )
+            violations.extend(
+                _typed_direction_violations(
+                    state,
+                    semantics,
+                    subject_id,
+                    positions,
+                    sample_times,
+                    start,
+                    end,
+                    profile,
+                )
+            )
+
+        violations.extend(
+            _typed_path_violations(
+                state,
+                semantics,
+                subject_id,
+                start,
+                end,
+                motion_index,
+            )
+        )
         postconditions = semantics.get("postconditions")
         visibility_after = (
             postconditions.get("external_visibility")
             if isinstance(postconditions, dict)
             else "unchanged"
         )
-        if visibility_after == "hidden":
+        if visibility_after in {"hidden", "visible"}:
             sample_time = min(max(end, 0.0), last_frame_time)
-            if _entity_visibility_at(state, subject_id, sample_time):
+            actual_visible = _entity_visibility_at(state, subject_id, sample_time)
+            expected_visible = visibility_after == "visible"
+            if actual_visible != expected_visible:
                 violations.append(
                     _violation(
                         "MOTION_POSTCONDITION_VISIBILITY_UNMET",
-                        f"动作阶段结束后外部代理仍可见：{subject_id}",
+                        f"动作阶段结束后的外部可见性不符合语义：{subject_id}",
                         entity_ids=[subject_id],
                         time_range_seconds=(start, end),
-                        expected={"external_visibility": "hidden", "at_seconds": sample_time},
-                        actual={"external_visibility": "visible"},
+                        expected={
+                            "external_visibility": visibility_after,
+                            "at_seconds": sample_time,
+                        },
+                        actual={
+                            "external_visibility": (
+                                "visible" if actual_visible else "hidden"
+                            )
+                        },
                         adjustable_variables=[f"motion_tracks.{subject_id}.visibility"],
                     )
                 )
 
-        if semantics.get("motion_mode") != "carried":
+        contained_by_id = (
+            postconditions.get("contained_by_id")
+            if isinstance(postconditions, dict)
+            else None
+        )
+        if isinstance(contained_by_id, str) and contained_by_id in state.entities:
+            sample_time = min(max(end - frame_step, start), last_frame_time)
+            subject_position = _WorldTransformResolver(
+                state,
+                sample_time,
+                profile,
+            ).entity(subject_id).translation_m
+            container_position = _WorldTransformResolver(
+                state,
+                sample_time,
+                profile,
+            ).entity(contained_by_id)
+            center_is_contained, local_center = _point_within_proxy_bounds(
+                subject_position,
+                container_position,
+                state.entities[contained_by_id],
+                margin_m=0.25,
+            )
+            endpoint_distance = length(
+                subtract(subject_position, container_position.translation_m)
+            )
+            if not center_is_contained and not _has_carrier_binding(
+                state,
+                subject_id,
+                contained_by_id,
+                start,
+                end,
+            ):
+                violations.append(
+                    _violation(
+                        "MOTION_POSTCONDITION_CONTAINMENT_UNMET",
+                        f"动作阶段结束时主体既未接近也未绑定目标：{subject_id}",
+                        entity_ids=[subject_id, contained_by_id],
+                        time_range_seconds=(start, end),
+                        expected={
+                            "contained_by_id": contained_by_id,
+                            "subject_center": "inside_target_proxy_bounds",
+                        },
+                        actual={
+                            "endpoint_distance_m": endpoint_distance,
+                            "subject_center_in_target_local_m": local_center,
+                        },
+                        adjustable_variables=[
+                            f"motion_tracks.{subject_id}",
+                            f"entities.{subject_id}.parent_id",
+                        ],
+                    )
+                )
+
+        if motion_mode != "carried":
             continue
         carrier_id = semantics.get("carrier_id")
         if not isinstance(carrier_id, str) or carrier_id not in state.entities:
@@ -2394,6 +2539,197 @@ def _typed_motion_semantic_violations(
                 )
             )
     return violations
+
+
+def _point_within_proxy_bounds(
+    world_point: tuple[float, float, float],
+    proxy_transform: TransformValue,
+    proxy_entity: EntitySpec,
+    *,
+    margin_m: float,
+) -> tuple[bool, tuple[float, float, float]]:
+    """把世界点还原到代理局部空间并检查局部包围范围。"""
+    unrotated = rotate_vector(
+        quaternion_conjugate(proxy_transform.rotation_quaternion_wxyz),
+        subtract(world_point, proxy_transform.translation_m),
+    )
+    local_point = tuple(
+        unrotated[index] / proxy_transform.scale[index]
+        for index in range(3)
+    )
+    bounds = geometry_local_bounds_points(proxy_entity.proxy)
+    minimums = tuple(min(point[index] for point in bounds) for index in range(3))
+    maximums = tuple(max(point[index] for point in bounds) for index in range(3))
+    local_margin = tuple(
+        margin_m / proxy_transform.scale[index]
+        for index in range(3)
+    )
+    contained = all(
+        minimums[index] - local_margin[index]
+        <= local_point[index]
+        <= maximums[index] + local_margin[index]
+        for index in range(3)
+    )
+    return contained, local_point
+
+
+def _typed_direction_violations(
+    state: CandidateState,
+    semantics: dict[str, Any],
+    subject_id: str,
+    positions: list[tuple[float, float, float]],
+    sample_times: list[float],
+    start: float,
+    end: float,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    mode = semantics.get("direction_mode")
+    target_id = semantics.get("target_id")
+    tolerance = 1e-4
+    actual: dict[str, Any]
+    if mode in {"toward_target", "away_from_target"}:
+        if not isinstance(target_id, str) or target_id not in state.entities:
+            return []
+        target_positions = [
+            _WorldTransformResolver(state, time_seconds, profile).entity(
+                target_id
+            ).translation_m
+            for time_seconds in sample_times
+        ]
+        start_distance = length(subtract(positions[0], target_positions[0]))
+        end_distance = length(subtract(positions[-1], target_positions[-1]))
+        progress = (
+            start_distance - end_distance
+            if mode == "toward_target"
+            else end_distance - start_distance
+        )
+        if progress > tolerance:
+            return []
+        actual = {
+            "start_distance_m": start_distance,
+            "end_distance_m": end_distance,
+            "directed_progress_m": progress,
+        }
+    elif mode == "world_forward":
+        delta = subtract(positions[-1], positions[0])
+        progress = -delta[1]
+        if progress > tolerance:
+            return []
+        actual = {"world_displacement_m": delta, "forward_progress_m": progress}
+    elif mode == "relative_to_target":
+        if (
+            isinstance(target_id, str)
+            and target_id in state.entities
+            and _has_carrier_binding(state, subject_id, target_id, start, end)
+        ):
+            return []
+        actual = {"target_id": target_id, "target_relative_binding": False}
+    else:
+        return []
+    return [
+        _violation(
+            "MOTION_DIRECTION_SEMANTICS_UNMET",
+            f"实体运动方向不符合类型化语义：{subject_id} / {mode}",
+            entity_ids=[
+                subject_id,
+                *([target_id] if isinstance(target_id, str) else []),
+            ],
+            time_range_seconds=(start, end),
+            expected={"direction_mode": mode, "minimum_progress_m": tolerance},
+            actual=actual,
+            adjustable_variables=[f"motion_tracks.{subject_id}"],
+        )
+    ]
+
+
+def _typed_path_violations(
+    state: CandidateState,
+    semantics: dict[str, Any],
+    subject_id: str,
+    start: float,
+    end: float,
+    motion_index: int,
+) -> list[Violation]:
+    path_type = semantics.get("path_type")
+    if path_type in {None, "unspecified", "stationary", "linear"}:
+        return []
+    expected_representations = {
+        "circular": {"circle"},
+        "elliptical": {"ellipse"},
+        "s_curve": {"catmull_rom"},
+        "figure_eight": {"lemniscate"},
+    }.get(path_type)
+    if expected_representations is None:
+        return [
+            _violation(
+                "MOTION_PATH_FAMILY_UNSUPPORTED",
+                f"类型化路径尚无可验证实现：{subject_id} / {path_type}",
+                entity_ids=[subject_id],
+                time_range_seconds=(start, end),
+                expected={"path_type": path_type},
+                actual={"supported": False, "motion_index": motion_index},
+                adjustable_variables=[f"motion_tracks.{subject_id}"],
+            )
+        ]
+    matching_tracks = [
+        track
+        for track in state.motion_tracks.values()
+        if track.target_entity_id == subject_id
+        and track.type == "path_follow"
+        and track.path is not None
+        and track.time_range_seconds[0] < end
+        and track.time_range_seconds[1] > start
+    ]
+    actual_representations = {
+        track.path.representation
+        for track in matching_tracks
+    }
+    representation_matches = bool(actual_representations & expected_representations)
+    geometry_matches = (
+        any(_catmull_rom_has_inflection(track) for track in matching_tracks)
+        if path_type == "s_curve"
+        else representation_matches
+    )
+    if representation_matches and geometry_matches:
+        return []
+    return [
+        _violation(
+            "MOTION_PATH_FAMILY_UNMET",
+            f"实体路径实现不符合类型化语义：{subject_id} / {path_type}",
+            entity_ids=[subject_id],
+            time_range_seconds=(start, end),
+            expected={"representations": sorted(expected_representations)},
+            actual={
+                "representations": sorted(actual_representations),
+                "geometry_matches": geometry_matches,
+            },
+            adjustable_variables=[f"motion_tracks.{subject_id}"],
+        )
+    ]
+
+
+def _catmull_rom_has_inflection(track: TrackSpec) -> bool:
+    """用三维转向法线换向排除直线或单向弧线冒充 S 曲线。"""
+    if track.path is None or track.path.representation != "catmull_rom":
+        return False
+    directions = [
+        normalize(subtract(right, left))
+        for left, right in zip(
+            track.path.control_points,
+            track.path.control_points[1:],
+        )
+        if length(subtract(right, left)) > 1e-6
+    ]
+    turns = [
+        normalize(cross(left, right))
+        for left, right in zip(directions, directions[1:])
+        if length(cross(left, right)) > 1e-4
+    ]
+    return any(
+        dot(left, right) < -0.25
+        for index, left in enumerate(turns)
+        for right in turns[index + 1:]
+    )
 
 
 def _has_carrier_binding(
@@ -3012,7 +3348,8 @@ def _ground_penetration_violations(
     if not ground_ids:
         return []
     violations: list[Violation] = []
-    for time_seconds in _timeline_probe_times(state.timeline):
+    unsupported_ground_ids: set[str] = set()
+    for time_seconds in _timeline_frame_times(state.timeline):
         resolver = _WorldTransformResolver(state, time_seconds, profile)
         ground_levels: dict[str, float] = {}
         for ground_id in ground_ids:
@@ -3020,6 +3357,8 @@ def _ground_penetration_violations(
             normal = rotate_vector(transform.rotation_quaternion_wxyz, (0.0, 0.0, 1.0))
             if abs(normal[2]) >= 0.999:
                 ground_levels[ground_id] = transform.translation_m[2]
+            else:
+                unsupported_ground_ids.add(ground_id)
         if not ground_levels:
             continue
         for entity in state.entities.values():
@@ -3081,6 +3420,17 @@ def _ground_penetration_violations(
             )
             if violation is not None:
                 violations.append(violation)
+    for ground_id in sorted(unsupported_ground_ids):
+        violations.append(
+            _violation(
+                "GROUND_ORIENTATION_UNSUPPORTED",
+                f"当前地面交互 Validator 仅支持水平环境平面：{ground_id}",
+                entity_ids=[ground_id],
+                expected={"ground_normal": "parallel_to_world_z"},
+                actual={"ground_orientation": "non_horizontal"},
+                adjustable_variables=["ground transform", "ground_interaction"],
+            )
+        )
     return violations
 
 
@@ -3246,7 +3596,157 @@ def _hard_semantic_violations(
                     adjustable_variables=["constraints"],
                 )
             )
+    violations.extend(
+        _explicit_requirement_binding_violations(
+            state,
+            objective_brief,
+        )
+    )
     return violations
+
+
+def _explicit_requirement_binding_violations(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+) -> list[Violation]:
+    """确认来源映射指向 Brief 声明的实体，而不只检查字段类别。"""
+    equivalent_groups = _equivalent_motion_source_refs(objective_brief)
+    violations: list[Violation] = []
+    for source_ref in state.required_source_refs:
+        expected_ids = _expected_source_entity_ids(objective_brief, source_ref)
+        if not expected_ids:
+            continue
+        equivalent_refs = next(
+            (group for group in equivalent_groups if source_ref in group),
+            {source_ref},
+        )
+        evidence = _source_entity_evidence(
+            state,
+            objective_brief,
+            equivalent_refs,
+        )
+        if not evidence or any(expected_ids <= item for item in evidence):
+            continue
+        violations.append(
+            _violation(
+                "EXPLICIT_REQUIREMENT_ENTITY_BINDING_MISMATCH",
+                f"明确要求映射到了错误实体：{source_ref}",
+                entity_ids=sorted(expected_ids),
+                expected={"entity_ids": sorted(expected_ids)},
+                actual={"evidence_entity_ids": [sorted(item) for item in evidence]},
+                adjustable_variables=["entities", "motion_tracks", "constraints"],
+            )
+        )
+    return violations
+
+
+def _expected_source_entity_ids(
+    objective_brief: ObjectivePlanningBrief,
+    source_ref: str,
+) -> set[str]:
+    subject_prefix = "content.subjects["
+    motion_prefix = "content.subject_motion["
+    relation_prefix = "content.scene_design.relationships["
+    try:
+        if source_ref.startswith(subject_prefix):
+            index = int(source_ref[len(subject_prefix):].split("]", 1)[0])
+            entity_id = objective_brief.subjects[index].get("id")
+            return {entity_id} if isinstance(entity_id, str) else set()
+        if source_ref.startswith(motion_prefix):
+            index = int(source_ref[len(motion_prefix):].split("]", 1)[0])
+            entity_id = objective_brief.subject_motion[index].get("subject_id")
+            return {entity_id} if isinstance(entity_id, str) else set()
+        if source_ref.startswith(relation_prefix):
+            index = int(source_ref[len(relation_prefix):].split("]", 1)[0])
+            relationship = objective_brief.scene_design.get("relationships", [])[index]
+            return {
+                entity_id
+                for entity_id in (
+                    relationship.get("subject_id"),
+                    relationship.get("reference_id"),
+                )
+                if isinstance(entity_id, str)
+            }
+    except (IndexError, TypeError, ValueError, AttributeError):
+        return set()
+    return set()
+
+
+def _source_entity_evidence(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+    source_refs: set[str],
+) -> list[set[str]]:
+    evidence: list[set[str]] = []
+    for entity in state.entities.values():
+        if source_refs.intersection(entity.source_refs):
+            evidence.append({entity.entity_id})
+        interaction = entity.ground_interaction
+        if interaction.source_ref in source_refs:
+            ids = {entity.entity_id}
+            if interaction.ground_entity_id:
+                ids.add(interaction.ground_entity_id)
+            evidence.append(ids)
+    for track in state.motion_tracks.values():
+        if track.source_ref not in source_refs:
+            continue
+        ids = {
+            entity_id
+            for entity_id in (track.target_entity_id, track.target_id)
+            if isinstance(entity_id, str)
+        }
+        if track.path is not None and track.path.target_id:
+            ids.add(track.path.target_id)
+        evidence.append(ids)
+    for constraint in state.constraints.values():
+        if constraint.source_ref not in source_refs:
+            continue
+        parameters = constraint.parameters.model_dump(mode="python", exclude_none=True)
+        ids = set(constraint.subjects)
+        ids.update(_known_entity_ids(parameters, set(state.entities)))
+        evidence.append(ids)
+
+    # 类型化运动由专门 Validator 复验；这里补充其主体与目标的绑定证据。
+    for motion_index, motion in enumerate(objective_brief.subject_motion):
+        if not isinstance(motion, dict):
+            continue
+        semantics = motion.get("motion_semantics")
+        if not isinstance(semantics, dict):
+            continue
+        motion_refs = {
+            f"content.subject_motion[{motion_index}].action",
+            f"content.subject_motion[{motion_index}].motion_semantics",
+        }
+        if not source_refs.intersection(motion_refs):
+            continue
+        subject_id = motion.get("subject_id")
+        if not isinstance(subject_id, str):
+            continue
+        has_motion_evidence = any(
+            track.target_entity_id == subject_id
+            and track.type in {"transform", "path_follow"}
+            and track.source_ref in source_refs
+            for track in state.motion_tracks.values()
+        )
+        if has_motion_evidence:
+            ids = {subject_id}
+            target_id = semantics.get("target_id")
+            if isinstance(target_id, str):
+                ids.add(target_id)
+            evidence.append(ids)
+    return evidence
+
+
+def _known_entity_ids(value: Any, known_ids: set[str]) -> set[str]:
+    if isinstance(value, str):
+        return {value} if value in known_ids else set()
+    if isinstance(value, dict):
+        return set().union(
+            *(_known_entity_ids(item, known_ids) for item in value.values())
+        )
+    if isinstance(value, (list, tuple)):
+        return set().union(*(_known_entity_ids(item, known_ids) for item in value))
+    return set()
 
 
 def _equivalent_motion_source_refs(
@@ -3316,9 +3816,29 @@ def _required_constraint_types(
     except (IndexError, TypeError, ValueError):
         return set()
     relation = str(relationship.get("type", "")).lower()
-    if any(marker in relation for marker in ("远", "far", "background", "远景", "后景")):
+    has_entity_pair = all(
+        isinstance(relationship.get(name), str)
+        for name in ("subject_id", "reference_id")
+    )
+    if any(
+        marker in relation
+        for marker in ("远", "far", "background", "远景", "后景")
+    ):
         # 欧氏距离不足以表达画面中的“远处”，还必须证明其摄影机深度在主体之后。
-        return {"depth_order"}
+        return {"depth_order"} if has_entity_pair else set()
+    if any(
+        marker in relation
+        for marker in ("近", "靠近", "旁边", "身边", "near", "beside", "adjacent")
+    ):
+        return {"distance_range"} if has_entity_pair else set()
+    if any(
+        marker in relation
+        for marker in (
+            "左", "右", "上方", "下方", "前方", "后方",
+            "left", "right", "above", "below", "front", "behind",
+        )
+    ):
+        return {"relative_position"} if has_entity_pair else set()
     return set()
 
 
@@ -3362,7 +3882,7 @@ def _projection_violations(
     if state.camera is None:
         return []
     violations: list[Violation] = []
-    for time_seconds in _timeline_probe_times(state.timeline):
+    for time_seconds in _timeline_frame_times(state.timeline):
         resolver = _WorldTransformResolver(state, time_seconds, profile)
         camera = resolver.camera()
         if camera is None:
@@ -3374,6 +3894,8 @@ def _projection_violations(
         }
         for entity_id, entity in state.entities.items():
             if entity.proxy.type == "plane" or _is_environment_entity(entity):
+                continue
+            if not _entity_visibility_at(state, entity_id, time_seconds):
                 continue
             bounds = _projection_bounds(
                 state,
@@ -3761,14 +4283,9 @@ def _constraint_violation(
 
 def _constraint_sample_times(constraint: ConstraintSpec, timeline: TimelineSpec) -> list[float]:
     start, end = constraint.time_range_seconds
-    if constraint.type in {"distance_range", "hold"}:
-        # 持续语义逐帧检查，防止只在稀疏探针或首尾碰巧通过。
-        frame_step = timeline.fps_denominator / timeline.fps_numerator
-        frame_times = [
-            frame * frame_step
-            for frame in range(timeline.frame_count)
-            if start <= frame * frame_step < end
-        ]
+    if constraint.type in PER_FRAME_CONSTRAINTS:
+        # 点式空间语义在整个离散时间域逐帧成立，不能靠三点探针抽查。
+        frame_times = _timeline_frame_times(timeline, start=start, end=end)
         if frame_times:
             return frame_times
     return [start, min((start + end) / 2.0, timeline.duration_seconds - 1e-6), min(end - 1e-6, timeline.duration_seconds - 1e-6)]
@@ -4104,9 +4621,19 @@ def _within_range(value: float, minimum: float, maximum: float, tolerance: float
     return minimum - tolerance <= value <= maximum + tolerance
 
 
-def _timeline_probe_times(timeline: TimelineSpec) -> list[float]:
-    last = timeline.duration_seconds - timeline.fps_denominator / timeline.fps_numerator
-    return [0.0, max(0.0, last / 2.0), max(0.0, last)]
+def _timeline_frame_times(
+    timeline: TimelineSpec,
+    *,
+    start: float = 0.0,
+    end: float | None = None,
+) -> list[float]:
+    frame_step = timeline.fps_denominator / timeline.fps_numerator
+    upper = timeline.duration_seconds if end is None else end
+    return [
+        frame * frame_step
+        for frame in range(timeline.frame_count)
+        if start <= frame * frame_step < upper
+    ]
 
 
 def _is_environment_entity(entity: EntitySpec) -> bool:
