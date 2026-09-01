@@ -1,16 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/cinematic_brief.schema.json",
-  "title": "Cinematic Brief v0.4",
+  "title": "Cinematic Brief v0.5",
   "type": "object",
   "properties": {
-    "schema_version": {"type": "string", "const": "0.4"},
+    "schema_version": {"type": "string", "const": "0.5"},
     "content": {"$ref": "cinematic_brief_model_output.schema.json"},
     "translation_parameters": {"$ref": "semantic_translation_parameters.schema.json"},
     "provenance": {
       "type": "object",
       "properties": {
         "source_prompt": {"type": "string"},
+        "source_kind": {"type": "string", "enum": ["natural_text", "textual_six"]},
+        "textual_six_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
         "provider": {"type": "string"},
         "model": {"type": "string"},
         "parser_prompt_version": {"type": "string"},
@@ -19,7 +21,7 @@
         "response_id": {"type": ["string", "null"]},
         "provider_usage": {"type": ["object", "null"]}
       },
-      "required": ["source_prompt", "provider", "model", "parser_prompt_version", "rules_sha256", "translation_rules_sha256", "response_id", "provider_usage"],
+      "required": ["source_prompt", "source_kind", "textual_six_sha256", "provider", "model", "parser_prompt_version", "rules_sha256", "translation_rules_sha256", "response_id", "provider_usage"],
       "additionalProperties": false
     }
   },

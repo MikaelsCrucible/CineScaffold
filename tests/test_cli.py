@@ -12,6 +12,7 @@ from cinescaffold.cli import main
 from cinescaffold.config import LoadedConfig, load_config
 from cinescaffold.execution.runner import ExecutionResult
 from tests.helpers import ROOT, valid_planning_brief
+from tests.test_textual_six import TEXTUAL_SIX
 
 
 class _PipelineExecutionRunner:
@@ -246,6 +247,7 @@ class CliTest(unittest.TestCase):
                         ]
                     )
             result = json.loads(stdout.getvalue())
+            textual_six_exists = Path(result["artifacts"]["textual_six_dimensions"]).is_file()
 
         self.assertEqual(status, 0)
         self.assertEqual(result["status"], "success")
@@ -257,7 +259,45 @@ class CliTest(unittest.TestCase):
         self.assertIn("elapsed_seconds", result["stages"]["semantic"])
         self.assertIn("planning", result["stages"])
         self.assertIn("execution", result["stages"])
+        self.assertTrue(textual_six_exists)
         self.assertEqual(stderr.getvalue(), "")
+
+    def test_run_from_textual_six_records_source_and_completes_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mock_response = root / "mock_response.json"
+            text_six = root / "scene.txt"
+            mock_response.write_text(
+                json.dumps(valid_planning_brief()["content"], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            text_six.write_text(TEXTUAL_SIX, encoding="utf-8")
+            stdout = io.StringIO()
+            with patch("cinescaffold.cli.ExecutionRunner", _PipelineExecutionRunner):
+                with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                    status = main(
+                        [
+                            "run",
+                            "--text-six-file",
+                            str(text_six),
+                            "--provider",
+                            "mock",
+                            "--mock-response",
+                            str(mock_response),
+                            "--output-dir",
+                            str(root / "run"),
+                            "--json",
+                            "--quiet",
+                        ]
+                    )
+            result = json.loads(stdout.getvalue())
+            brief = json.loads(Path(result["artifacts"]["cinematic_brief"]).read_text(encoding="utf-8"))
+            saved_textual_six = Path(result["artifacts"]["textual_six_dimensions"]).read_text(encoding="utf-8")
+
+        self.assertEqual(status, 0)
+        self.assertEqual(result["started_from"], "textual_six")
+        self.assertEqual(brief["provenance"]["source_kind"], "textual_six")
+        self.assertEqual(saved_textual_six, TEXTUAL_SIX)
 
     def test_run_from_brief_skips_semantic_stage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

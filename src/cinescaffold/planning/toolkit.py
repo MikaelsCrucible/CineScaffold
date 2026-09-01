@@ -2343,7 +2343,7 @@ def _typed_motion_semantic_violations(
     profile: PlanningProfile,
 ) -> list[Violation]:
     """逐阶段复验类型化运动语义，不依赖动作文本或场景身份。"""
-    if objective_brief.schema_version not in {"0.3", "0.4"}:
+    if objective_brief.schema_version not in {"0.3", "0.4", "0.5"}:
         return []
     frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
     last_frame_time = state.timeline.duration_seconds - frame_step

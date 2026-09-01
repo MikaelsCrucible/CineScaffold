@@ -505,6 +505,7 @@ def _terminal_label(value: Any) -> str:
 def _start_label(value: Any) -> str:
     return {
         "text": "自然语言",
+        "textual_six": "文本六维",
         "brief": "Cinematic Brief",
         "scene_ir": "Scene IR",
     }.get(str(value), str(value or "未知"))

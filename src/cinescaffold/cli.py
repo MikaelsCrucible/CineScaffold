@@ -40,7 +40,7 @@ from cinescaffold.planning.runner import (
 )
 from cinescaffold.planning.trace import CostRates, TraceConfig, provider_usage_summary
 from cinescaffold.providers import DeepSeekProvider, MockProvider, OpenAIProvider
-from cinescaffold.semantic import SemanticParserConfig, parse_cinematic_brief
+from cinescaffold.semantic import SemanticParseResult, SemanticParserConfig, parse_semantic_input
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,11 +86,14 @@ def _build_parser() -> argparse.ArgumentParser:
     source = parse_parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--text", help="直接提供自然语言")
     source.add_argument("--input", type=Path, help="从 UTF-8 文本文件读取自然语言")
+    source.add_argument("--text-six", help="直接提供包含六个固定部分的文本六维")
+    source.add_argument("--text-six-file", type=Path, help="从 UTF-8 文件读取文本六维")
 
     _add_config_argument(parse_parser)
     _add_model_arguments(parse_parser)
     _add_semantic_arguments(parse_parser)
     parse_parser.add_argument("--output", type=Path)
+    parse_parser.add_argument("--text-six-output", type=Path, help="另存人类可读文本六维")
     _add_display_arguments(parse_parser)
 
     plan_parser = subparsers.add_parser(
@@ -120,6 +123,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_source = run_parser.add_mutually_exclusive_group(required=True)
     run_source.add_argument("--text", help="从自然语言开始完整运行")
+    run_source.add_argument("--text-six", help="从文本六维开始完整运行")
+    run_source.add_argument("--text-six-file", type=Path, help="从文本六维文件开始完整运行")
     run_source.add_argument("--brief", type=Path, help="从 Cinematic Brief 开始运行")
     run_source.add_argument("--scene-ir", "--ir", dest="scene_ir", type=Path, help="从 Scene IR 开始运行")
     run_parser.add_argument("--output-dir", type=Path, required=True)
@@ -386,8 +391,19 @@ def _reporter(args: argparse.Namespace) -> TerminalReporter:
 
 def _run_parse(args: argparse.Namespace) -> int:
     reporter = _reporter(args)
-    description = args.text if args.text is not None else args.input.read_text(encoding="utf-8")
-    brief = _parse_description(args, reporter, description, args.output)
+    source_text, source_kind = _semantic_source(args)
+    textual_path = args.text_six_output
+    if textual_path is None and args.output is not None:
+        textual_path = args.output.with_name("textual_six_dimensions.txt")
+    result = _parse_semantic_source(
+        args,
+        reporter,
+        source_text,
+        source_kind,
+        args.output,
+        textual_path,
+    )
+    brief = result.brief
     rendered = json.dumps(brief, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         if args.json:
@@ -401,16 +417,19 @@ def _run_parse(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_description(
+def _parse_semantic_source(
     args: argparse.Namespace,
     reporter: TerminalReporter,
-    description: str,
+    source_text: str,
+    source_kind: str,
     output_path: Path | None,
-) -> dict[str, Any]:
+    textual_output_path: Path | None,
+) -> SemanticParseResult:
     provider = _create_provider(args)
+    source_label = "自然语言" if source_kind == "natural_text" else "文本六维"
     reporter.stage(
-        "自然语言解析",
-        f"读取 {len(description)} 个字符，调用 {provider.name}/{provider.model}",
+        "语义解析",
+        f"读取 {len(source_text)} 个字符的{source_label}，调用 {provider.name}/{provider.model}",
     )
     config = SemanticParserConfig(
         system_template_path=args.system_template,
@@ -420,7 +439,13 @@ def _parse_description(
         translation_rules_path=args.translation_rules,
         translation_parameters_schema_path=args.translation_schema,
     )
-    brief = parse_cinematic_brief(description, provider, config)
+    result = parse_semantic_input(
+        source_text,
+        provider,
+        config,
+        source_kind=source_kind,
+    )
+    brief = result.brief
     reporter.success("结构化校验", "Cinematic Brief 已通过关闭 Schema 校验")
     translation = brief.get("translation_parameters", {})
     emotion = translation.get("emotion_class", {})
@@ -436,7 +461,11 @@ def _parse_description(
             encoding="utf-8",
         )
         reporter.success("保存结果", str(output_path.resolve()))
-    return brief
+    if textual_output_path:
+        textual_output_path.parent.mkdir(parents=True, exist_ok=True)
+        textual_output_path.write_text(result.textual_six.render(), encoding="utf-8")
+        reporter.success("文本六维", str(textual_output_path.resolve()))
+    return result
 
 
 def _create_provider(args: argparse.Namespace) -> Any:
@@ -560,15 +589,27 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     started = time.monotonic()
     output_dir = args.output_dir.resolve()
     summary_path = output_dir / "pipeline_summary.json"
-    started_from = "text" if args.text is not None else "brief" if args.brief else "scene_ir"
+    has_textual_six = args.text_six is not None or args.text_six_file is not None
+    started_from = (
+        "text"
+        if args.text is not None
+        else "textual_six"
+        if has_textual_six
+        else "brief"
+        if args.brief
+        else "scene_ir"
+    )
 
     # 先读取外部输入，避免覆盖时删除位于旧运行目录中的来源文件。
     brief: dict[str, Any] | None = None
     scene_ir_payload: dict[str, Any] | None = None
+    semantic_source: tuple[str, str] | None = None
     if args.brief is not None:
         brief = _read_json_object(args.brief, "Cinematic Brief")
     elif args.scene_ir is not None:
         scene_ir_payload = _read_json_object(args.scene_ir, "Scene IR")
+    else:
+        semantic_source = _semantic_source(args)
 
     _prepare_pipeline_output(output_dir, started_from, args.overwrite)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -584,11 +625,21 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         "error": None,
     }
 
-    if args.text is not None:
+    if semantic_source is not None:
         semantic_args = _stage_args(args, args.semantic_settings)
         brief_path = output_dir / "cinematic_brief.json"
+        textual_path = output_dir / "textual_six_dimensions.txt"
         semantic_started = time.monotonic()
-        brief = _parse_description(semantic_args, reporter, args.text, brief_path)
+        source_text, source_kind = semantic_source
+        semantic_result = _parse_semantic_source(
+            semantic_args,
+            reporter,
+            source_text,
+            source_kind,
+            brief_path,
+            textual_path,
+        )
+        brief = semantic_result.brief
         provider_usage = brief.get("provenance", {}).get("provider_usage")
         summary["stages"]["semantic"] = {
             "status": "success",
@@ -601,6 +652,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             ),
         }
         summary["artifacts"]["cinematic_brief"] = str(brief_path)
+        summary["artifacts"]["textual_six_dimensions"] = str(textual_path)
     elif args.brief is not None:
         assert brief is not None
         summary["artifacts"]["cinematic_brief"] = str(args.brief.resolve())
@@ -647,10 +699,11 @@ def _prepare_pipeline_output(output_dir: Path, started_from: str, overwrite: boo
         output_dir / "pipeline_summary.json",
         output_dir / "execution",
     ]
-    if started_from in {"text", "brief"}:
+    if started_from in {"text", "textual_six", "brief"}:
         owned_paths.append(output_dir / "planning")
-    if started_from == "text":
+    if started_from in {"text", "textual_six"}:
         owned_paths.append(output_dir / "cinematic_brief.json")
+        owned_paths.append(output_dir / "textual_six_dimensions.txt")
 
     conflicts = [path for path in owned_paths if path.exists() or path.is_symlink()]
     if conflicts and not overwrite:
@@ -678,6 +731,18 @@ def _read_json_object(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{label} 根节点必须是对象")
     return value
+
+
+def _semantic_source(args: argparse.Namespace) -> tuple[str, str]:
+    if getattr(args, "text", None) is not None:
+        return args.text, "natural_text"
+    if getattr(args, "input", None) is not None:
+        return args.input.read_text(encoding="utf-8"), "natural_text"
+    if getattr(args, "text_six", None) is not None:
+        return args.text_six, "textual_six"
+    if getattr(args, "text_six_file", None) is not None:
+        return args.text_six_file.read_text(encoding="utf-8"), "textual_six"
+    raise ValueError("缺少自然语言或文本六维输入")
 
 
 def _planning_error(error: dict[str, str] | None) -> str:

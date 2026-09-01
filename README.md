@@ -17,6 +17,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 ```text
 自然语言
   -> Semantic Parser
+  -> 文本六维（人类可读投影）
   -> Cinematic Brief（六维电影语义）
   -> Scene Planning Agent
   -> Scene Skeleton（无数值符号关系）
@@ -29,9 +30,10 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
   -> 视频生成模型（后续阶段）
 ```
 
-三个核心表示各自承担不同职责：
+四个核心表示各自承担不同职责：
 
 - `Cinematic Brief`：记录用户想表达什么，以及信息来自明确描述、推断还是默认值。
+- `文本六维`：用六个固定中文标题呈现同一电影语义，方便非技术协作者阅读、修改和交流；严格 JSON 仍是机器权威表示。
 - `Scene Skeleton`：记录实体类别、空间关系、动作阶段、摄影机意图以及定性的尺度/三轴比例，不含坐标、距离、速度、米制尺寸或焦距。
 - `Constraint Plan`：记录 Agent 选择了哪些可执行空间、运动和摄影机策略。
 - `Scene IR`：精确描述 Blender 应创建和渲染什么，可验证、可重放、可比较。
@@ -54,7 +56,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 通过官方 Blender Lab MCP 调用固定 Blender Executor，不把任意 Blender Python 暴露给模型。
 - 输出 `.blend`、运行时验证、执行 manifest 和 H.264 白模视频。
 - CLI 实时显示 Agent 请求、工具调用、token、revision、验证和渲染进度。
-- 可从自然语言、Cinematic Brief 或 Scene IR 一键运行到白模视频。
+- 可从自然语言、文本六维、Cinematic Brief 或 Scene IR 一键运行到白模视频。
 
 ## 研究范围
 
@@ -180,6 +182,11 @@ cinescaffold run \
   --text "一个男人站在荒漠里，远处有巨大的飞船。" \
   --output-dir runs/example/full
 
+# 从六个固定部分的人类可读文本开始
+cinescaffold run \
+  --text-six-file examples/textual_six/example.txt \
+  --output-dir runs/example/from-textual-six
+
 # 从 Cinematic Brief 开始
 cinescaffold run \
   --brief runs/example/cinematic_brief.json \
@@ -209,7 +216,7 @@ cinescaffold parse \
 
 Mock Provider 不理解文本，只返回指定的模拟响应。未传入 `--mock-response` 时，它仅用于检查 Schema 和 CLI 接口。
 
-语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。新解析结果使用 Cinematic Brief v0.4：语义模型直接输出类型化的动作、运动模式、目标、载体、路径、动作后置状态，以及摄影机相对主体运动的 `front/rear/side/three_quarter/unspecified` 关系。确定性代码只校验这些字段并查表量化，不再用关键词子串重新猜测动作或机位含义。旧 v0.1–v0.3 Brief 仍可直接进入规划。用户明确要求始终优先于规则推导和缺省值；径向推近/后拉的速度由起止距离和实际时长计算。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
+语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。新解析结果使用 Cinematic Brief v0.5：语义模型直接输出类型化的动作、运动模式、目标、载体、路径、动作后置状态，以及摄影机相对主体运动的 `front/rear/side/three_quarter/unspecified` 关系。Provenance 额外记录输入来自自然语言还是文本六维，并用 SHA-256 绑定同步保存的人类可读文本。确定性代码只校验这些字段并查表量化，不再用关键词子串重新猜测动作或机位含义。旧 v0.1–v0.4 Brief 仍可直接进入规划。用户明确要求始终优先于规则推导和缺省值；径向推近/后拉的速度由起止距离和实际时长计算。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
 
 规划门禁不仅检查实体是否在三维世界中移动，还检查每个移动阶段在摄影机投影中的轨迹范围和尺度变化。默认推断机位若让运动在白模里近似静止，Agent 必须调整运动方向、机位或距离；用户明确指定摄影机设计时保留其要求，并把同项降为 warning。
 
@@ -269,12 +276,12 @@ cinescaffold execute \
 
 | 阶段 | 主要输出 |
 | --- | --- |
-| `parse` | `cinematic_brief.json` |
+| `parse` | `cinematic_brief.json`、`textual_six_dimensions.txt` |
 | `plan` | Agent Trace、checkpoint、Constraint Plan、验证报告、`final_scene_ir.json` |
 | `execute` | `scene.blend`、Runtime Snapshot、Runtime Validation、执行 manifest、白模 MP4 |
-| `run` | 所有适用阶段的产物及 `pipeline_summary.json` |
+| `run` | 所有适用阶段的产物、`textual_six_dimensions.txt` 及 `pipeline_summary.json` |
 
-运行目录默认拒绝覆盖已有产物。`run --overwrite` 会在新管线开始前清理该输出目录中的 `planning/`、`execution/`、`pipeline_summary.json`，以及由 `--text` 生成的根级 Brief，但保留根目录中的其他文件；独立 `plan` 仍要求使用空输出目录。执行阶段只有显式传入 `--overwrite` 才会覆盖其固定输出。
+运行目录默认拒绝覆盖已有产物。`run --overwrite` 会在新管线开始前清理该输出目录中的 `planning/`、`execution/`、`pipeline_summary.json`，以及由 `--text`/`--text-six-file` 生成的根级 Brief 与文本六维，但保留根目录中的其他文件；独立 `plan` 仍要求使用空输出目录。执行阶段只有显式传入 `--overwrite` 才会覆盖其固定输出。
 
 ## 开发与验证
 
