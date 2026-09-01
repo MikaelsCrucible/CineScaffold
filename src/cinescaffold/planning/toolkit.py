@@ -55,7 +55,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.21"
+TOOLKIT_VERSION = "0.22"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -392,6 +392,7 @@ class ScenePlanningToolkit:
             "inspect_views": INSPECT_VIEWS,
             "acceptance": {
                 "minimum_soft_score": self.profile.minimum_soft_score,
+                "soft_score_role": "advisory_quality_metric",
                 "requires_hard_pass": True,
                 "commit_ready": _commit_ready(state.validation, self.profile),
                 "minimum_orbit_plane_view_alignment": (

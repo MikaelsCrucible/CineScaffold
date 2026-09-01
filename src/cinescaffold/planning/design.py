@@ -377,6 +377,7 @@ def task_capability_slice(
         "acceptance": {
             "requires_hard_pass": True,
             "minimum_soft_score": profile.minimum_soft_score,
+            "soft_score_role": "advisory_quality_metric",
             "minimum_projected_motion_extent": profile.minimum_projected_motion_extent,
             "minimum_camera_motion_obliqueness_degrees": (
                 profile.minimum_camera_motion_obliqueness_degrees

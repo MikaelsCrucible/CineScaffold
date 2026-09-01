@@ -29,6 +29,8 @@ class PromptingTest(unittest.TestCase):
         self.assertIn("右手 `+Z-up`", prompt)
         self.assertIn("`+plane_normal`", prompt)
         self.assertIn("`keep_in_frame` 只表示投影包围盒入框", prompt)
+        self.assertIn("供下游视频生成模型参考的白模控制视频", prompt)
+        self.assertIn("soft score 作为记录用的质量指标而非阻断条件", prompt)
 
     def test_semantic_rules_freeze_priority_axis_and_lighting_scope(self) -> None:
         rules = (ROOT / "prompts/semantic_parser/rules.md").read_text(encoding="utf-8")

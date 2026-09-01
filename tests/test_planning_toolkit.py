@@ -36,7 +36,11 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             result["data"]["constraint_parameter_schemas"]["relative_position"]["required"],
             ["subject_id", "reference_id", "relation"],
         )
-        self.assertEqual(result["data"]["acceptance"]["minimum_soft_score"], 0.75)
+        self.assertEqual(result["data"]["acceptance"]["minimum_soft_score"], 0.0)
+        self.assertEqual(
+            result["data"]["acceptance"]["soft_score_role"],
+            "advisory_quality_metric",
+        )
         self.assertEqual(
             result["data"]["acceptance"]["minimum_projected_motion_extent"],
             0.08,

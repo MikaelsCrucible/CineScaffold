@@ -737,12 +737,12 @@ class CandidateState(StrictModel):
 
 
 class PlanningProfile(StrictModel):
-    profile_id: str = "research_default_v0.6"
+    profile_id: str = "research_default_v0.7"
     fps_numerator: int = 24
     fps_denominator: int = 1
     resolution_x: int = 1280
     resolution_y: int = 720
-    minimum_soft_score: float = 0.75
+    minimum_soft_score: float = 0.0
     default_focal_length_mm: float = 35.0
     default_camera_distance_m: float = 12.0
     default_depth_gap_m: float = 12.0
