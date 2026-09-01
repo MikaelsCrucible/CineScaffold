@@ -15,9 +15,10 @@
 - CLI 与 UI 统一使用异步 `WorkflowRunner`，共享阶段、失败状态、覆盖规则和 `pipeline_summary.json`。
 - 配置保存改为校验后原子替换、备份与 POSIX `0600` 权限；浏览器不会收到已有 API Key 明文。
 - 语义解析与规划 Agent 可分别配置模型价格，避免不同供应商的成本串用。
+- 文本六维 UI 使用六个不可删除的固定标签和独立正文框；`.txt` 导入先校验再分项填充。
 
 ### Verified
 
-- 224 个测试与 5 个 subtests 通过。
+- 226 个测试与 5 个 subtests 通过。
 - 真实浏览器完成桌面、700 px 响应式、设置与四入口交互检查。
 - Mock 端到端 UI 冒烟通过语义、规划、Blender MCP、Runtime Validation、Workbench 渲染和视频回放。

@@ -8,6 +8,11 @@ from typing import Any
 
 from cinescaffold.config import LoadedConfig, SECRET_KEYS, public_config_values
 from cinescaffold.platforms import open_local_path
+from cinescaffold.textual_six import (
+    SECTION_FIELDS,
+    TextualSixDimensions,
+    parse_textual_six,
+)
 from cinescaffold.ui_state import (
     UiRunInputs,
     UiRunMetrics,
@@ -17,19 +22,6 @@ from cinescaffold.ui_state import (
 )
 from cinescaffold.workflow import WorkflowRunner
 
-
-TEXTUAL_SIX_TEMPLATE = """主体：
-
-主体运动逻辑：
-
-场景设计：
-
-影调氛围：
-
-构图模式：
-
-摄影机视角运动逻辑：
-"""
 
 PROVIDER_OPTIONS = {"mock": "Mock（离线）", "openai": "OpenAI", "deepseek": "DeepSeek"}
 STAGE_PROVIDER_OPTIONS = {"": "沿用通用默认", **PROVIDER_OPTIONS}
@@ -135,6 +127,7 @@ def _register_page(ui: Any, controller: UiSessionController) -> None:
 
                     input_panels: dict[str, Any] = {}
                     input_elements: dict[str, Any] = {}
+                    textual_six_inputs: dict[str, Any] = {}
                     with ui.column().classes("w-full mt-3"):
                         with ui.column().classes("w-full gap-2") as natural_panel:
                             input_panels["text"] = natural_panel
@@ -147,11 +140,16 @@ def _register_page(ui: Any, controller: UiSessionController) -> None:
                             )
                         with ui.column().classes("w-full gap-2") as six_panel:
                             input_panels["textual_six"] = six_panel
-                            input_elements["textual_six"] = ui.textarea(
-                                "文本六维",
-                                value=TEXTUAL_SIX_TEMPLATE,
-                            ).props("outlined autogrow").classes("w-full cs-textarea mono-input")
-                            _upload(ui, input_elements["textual_six"], ".txt", "导入文本六维")
+                            ui.label("六个维度标签固定；只需填写每项正文。 ").classes("helper")
+                            for field, label in SECTION_FIELDS:
+                                with ui.column().classes("w-full gap-1 textual-six-section"):
+                                    ui.label(f"{label}：").classes("textual-six-label")
+                                    textual_six_inputs[field] = ui.textarea(
+                                        placeholder=f"填写{label}",
+                                    ).props("outlined autogrow hide-bottom-space").classes(
+                                        "w-full textual-six-input"
+                                    )
+                            _upload_textual_six(ui, textual_six_inputs)
                         with ui.column().classes("w-full gap-2") as brief_panel:
                             input_panels["brief"] = brief_panel
                             input_elements["brief"] = ui.textarea(
@@ -323,10 +321,18 @@ def _register_page(ui: Any, controller: UiSessionController) -> None:
             if state["running"]:
                 return
             try:
+                textual_six = ""
+                if source_toggle.value == "textual_six":
+                    textual_six = TextualSixDimensions.from_field_values(
+                        {
+                            field: textual_six_inputs[field].value
+                            for field, _ in SECTION_FIELDS
+                        }
+                    ).render()
                 inputs = UiRunInputs(
                     source_kind=source_toggle.value,
                     natural_text=input_elements["text"].value or "",
-                    textual_six=input_elements["textual_six"].value or "",
+                    textual_six=textual_six,
                     brief_json=input_elements["brief"].value or "",
                     scene_ir_json=input_elements["scene_ir"].value or "",
                     output_dir=output_input.value or "",
@@ -413,6 +419,24 @@ def _upload(ui: Any, target: Any, accept: str, label: str) -> None:
         auto_upload=True,
         max_file_size=10_000_000,
     ).props(f'accept="{accept}" flat color=grey-5').classes("compact-upload")
+
+
+def _upload_textual_six(ui: Any, targets: dict[str, Any]) -> None:
+    async def uploaded(event: Any) -> None:
+        try:
+            parsed = parse_textual_six(await event.file.text())
+            for field, value in parsed.field_values().items():
+                targets[field].set_value(value)
+            ui.notify(f"已导入 {event.file.name}", type="positive")
+        except Exception as error:
+            ui.notify(f"文本六维无效：{error}", type="negative", multi_line=True)
+
+    ui.upload(
+        label="导入文本六维",
+        on_upload=uploaded,
+        auto_upload=True,
+        max_file_size=10_000_000,
+    ).props('accept=".txt" flat color=grey-5').classes("compact-upload")
 
 
 def _settings_form(ui: Any, controller: UiSessionController, elements: dict[str, Any]) -> None:
@@ -562,6 +586,9 @@ body { background: radial-gradient(circle at 18% -10%, #243141 0, #0b0f14 42%, #
 .helper { color:#94a3b8; font-size:.78rem; line-height:1.45; }
 .source-toggle { background:#0c1219; border:1px solid #263343; border-radius:12px; padding:4px; }
 .cs-textarea textarea { min-height:190px !important; line-height:1.65 !important; }
+.textual-six-section { padding:10px 12px 12px; border:1px solid #263343; border-radius:12px; background:#0c1219; }
+.textual-six-label { color:#e7b65b; font-size:.82rem; font-weight:700; letter-spacing:.02em; }
+.textual-six-input textarea { min-height:58px !important; line-height:1.55 !important; }
 .mono-input textarea { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.82rem; }
 .compact-upload { width:max-content; min-height:36px; }
 .run-button { background:linear-gradient(100deg,#c98a32,#efc46e) !important; color:#18130b !important; font-weight:750; min-height:50px; border-radius:12px !important; }

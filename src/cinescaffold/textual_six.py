@@ -3,17 +3,18 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
-SECTION_LABELS = (
-    "主体",
-    "主体运动逻辑",
-    "场景设计",
-    "影调氛围",
-    "构图模式",
-    "摄影机视角运动逻辑",
+SECTION_FIELDS = (
+    ("subject", "主体"),
+    ("subject_motion", "主体运动逻辑"),
+    ("scene_design", "场景设计"),
+    ("mood", "影调氛围"),
+    ("composition", "构图模式"),
+    ("camera", "摄影机视角运动逻辑"),
 )
+SECTION_LABELS = tuple(label for _, label in SECTION_FIELDS)
 
 _SECTION_PATTERN = re.compile(
     rf"^\s*({'|'.join(re.escape(label) for label in SECTION_LABELS)})\s*[：:]\s*(.*)$"
@@ -30,6 +31,24 @@ class TextualSixDimensions:
     mood: str
     composition: str
     camera: str
+
+    @classmethod
+    def from_field_values(cls, values: Mapping[str, Any]) -> TextualSixDimensions:
+        """从 UI 的六个固定正文框构造规范文本。"""
+
+        normalized = {
+            field: str(values.get(field) or "").strip()
+            for field, _ in SECTION_FIELDS
+        }
+        empty = [label for field, label in SECTION_FIELDS if not normalized[field]]
+        if empty:
+            raise ValueError("文本六维存在空白部分：" + "、".join(empty))
+        return cls(**normalized)
+
+    def field_values(self) -> dict[str, str]:
+        """返回 UI 可直接填充的正文，不包含固定标签。"""
+
+        return {field: getattr(self, field) for field, _ in SECTION_FIELDS}
 
     def render(self) -> str:
         values = (

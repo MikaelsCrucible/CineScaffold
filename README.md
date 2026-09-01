@@ -184,7 +184,7 @@ DeepSeek 在 thinking 与 tools 同时启用时要求后续请求完整回传历
 cinescaffold ui
 ```
 
-界面默认只监听 `127.0.0.1:8080`，并自动打开浏览器。它支持从自然语言、文本六维、Cinematic Brief JSON 或 Scene IR JSON 开始；JSON/文本既可粘贴，也可从本地文件导入。运行中会显示语义解析、规划 Agent、Blender 构建与渲染进度，结束后展示文本六维、JSON 六维、token、分阶段估算成本、视频和本地产物入口。
+界面默认只监听 `127.0.0.1:8080`，并自动打开浏览器。它支持从自然语言、文本六维、Cinematic Brief JSON 或 Scene IR JSON 开始；JSON/文本既可粘贴，也可从本地文件导入。文本六维入口把六个标签固定在界面中，用户只编辑各项正文；导入 `.txt` 时会先校验标题再分别填入，避免误删标签。运行中会显示语义解析、规划 Agent、Blender 构建与渲染进度，结束后展示文本六维、JSON 六维、token、分阶段估算成本、视频和本地产物入口。
 
 设置面板可以临时应用或安全写回 `.cinescaffold.conf`。现有 API Key 不会被读回页面；密码框留空表示保留，填写新值才会替换。若语义模型与规划模型不同，应分别填写 `semantic_*_cost_per_million` 与 `planning_*_cost_per_million`，避免成本串用。
 

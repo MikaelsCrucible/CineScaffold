@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from cinescaffold.textual_six import parse_textual_six, render_textual_six
+from cinescaffold.textual_six import (
+    SECTION_FIELDS,
+    TextualSixDimensions,
+    parse_textual_six,
+    render_textual_six,
+)
 from tests.helpers import valid_model_output
 
 
@@ -40,6 +45,24 @@ class TextualSixTest(unittest.TestCase):
             parse_textual_six("主体：男人")
         with self.assertRaisesRegex(ValueError, "重复定义"):
             parse_textual_six(TEXTUAL_SIX + "\n主体：另一个人\n")
+
+    def test_fixed_ui_fields_render_every_label(self) -> None:
+        field_values = {field: f"{label}内容" for field, label in SECTION_FIELDS}
+
+        textual_six = TextualSixDimensions.from_field_values(field_values)
+
+        self.assertEqual(textual_six.field_values(), field_values)
+        self.assertEqual(
+            [line[:-1] for line in textual_six.render().splitlines() if line.endswith("：")],
+            [label for _, label in SECTION_FIELDS],
+        )
+
+    def test_fixed_ui_fields_reject_empty_body(self) -> None:
+        field_values = {field: label for field, label in SECTION_FIELDS}
+        field_values["composition"] = ""
+
+        with self.assertRaisesRegex(ValueError, "构图模式"):
+            TextualSixDimensions.from_field_values(field_values)
 
     def test_brief_projection_uses_human_values_without_internal_ids(self) -> None:
         content = valid_model_output()
