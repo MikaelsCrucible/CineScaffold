@@ -58,6 +58,14 @@ class CliTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.config_patch.stop()
 
+    def test_ui_shutdown_is_clean(self) -> None:
+        with patch("cinescaffold.ui_app.launch_ui", side_effect=KeyboardInterrupt):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as stderr:
+                status = main(["ui", "--no-open"])
+
+        self.assertEqual(status, 0)
+        self.assertIn("Studio 已停止", stderr.getvalue())
+
     def test_parse_uses_simple_config_without_exposing_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

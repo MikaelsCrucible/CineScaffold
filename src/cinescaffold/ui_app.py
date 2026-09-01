@@ -205,10 +205,11 @@ def _register_page(ui: Any, controller: UiSessionController) -> None:
                                 "planning": _stage_pill(ui, "场景规划"),
                                 "execution": _stage_pill(ui, "Blender"),
                             }
-                        with ui.grid(columns=3).classes("w-full gap-3 mt-2 metric-grid"):
+                        with ui.grid(columns=2).classes("w-full gap-3 mt-2 metric-grid"):
                             elapsed_value = _metric(ui, "总耗时", "0.0 s")
                             token_value = _metric(ui, "Tokens", "0")
-                            cost_value = _metric(ui, "估算成本", "—")
+                            semantic_cost_value = _metric(ui, "六维成本", "—")
+                            planning_cost_value = _metric(ui, "规划成本", "—")
                         event_log = ui.log(max_lines=240).classes("w-full event-log")
 
                     with ui.card().classes("cs-card w-full") as semantic_result_card:
@@ -351,8 +352,8 @@ def _register_page(ui: Any, controller: UiSessionController) -> None:
                 metrics = UiRunMetrics.from_summary(summary)
                 elapsed_value.set_text(f"{metrics.elapsed_seconds:.1f} s")
                 token_value.set_text(f"{metrics.semantic_tokens + metrics.planning_tokens:,}")
-                costs = [item for item in (metrics.semantic_cost, metrics.planning_cost) if item != "—"]
-                cost_value.set_text(" + ".join(costs) if costs else "—")
+                semantic_cost_value.set_text(metrics.semantic_cost)
+                planning_cost_value.set_text(metrics.planning_cost)
                 _render_artifacts(ui, summary, artifact_card, artifact_content)
                 if summary.get("status") == "success":
                     status_badge.set_text("生成成功")
@@ -553,7 +554,7 @@ body { background: radial-gradient(circle at 18% -10%, #243141 0, #0b0f14 42%, #
 .hero-panel { padding:28px 30px; border:1px solid #2a3848; border-radius:22px; background:linear-gradient(125deg,rgba(37,49,64,.84),rgba(14,20,28,.92)); box-shadow:0 24px 80px rgba(0,0,0,.28); }
 .hero-title { font-size:clamp(1.8rem,3vw,3rem); font-weight:650; letter-spacing:-.035em; line-height:1.05; }
 .status-badge { font-size:.82rem; padding:8px 12px; }
-.cs-main-grid { display:grid !important; grid-template-columns:minmax(0,1.25fr) minmax(390px,.75fr); }
+.cs-main-grid { display:grid !important; grid-template-columns:minmax(0,1.25fr) minmax(390px,.75fr); align-items:start !important; }
 .cs-builder,.cs-monitor { min-width:0; }
 .cs-card { background:rgba(18,25,34,.93) !important; border:1px solid var(--cs-line); border-radius:18px !important; padding:22px !important; box-shadow:0 18px 50px rgba(0,0,0,.22) !important; }
 .eyebrow { color:var(--cs-gold); border:1px solid rgba(231,182,91,.42); border-radius:999px; padding:3px 8px; font-size:.68rem; letter-spacing:.12em; }

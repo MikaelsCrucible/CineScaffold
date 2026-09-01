@@ -728,14 +728,17 @@ def _run_ui(args: argparse.Namespace, loaded_config: LoadedConfig) -> int:
     from cinescaffold.ui_app import launch_ui
 
     config_path = args.config or loaded_config.path or Path(".cinescaffold.conf")
-    launch_ui(
-        loaded_config,
-        config_path=config_path.resolve(),
-        project_root=Path.cwd().resolve(),
-        host=args.host,
-        port=args.port,
-        show=not args.no_open,
-    )
+    try:
+        launch_ui(
+            loaded_config,
+            config_path=config_path.resolve(),
+            project_root=Path.cwd().resolve(),
+            host=args.host,
+            port=args.port,
+            show=not args.no_open,
+        )
+    except KeyboardInterrupt:
+        print("\nCineScaffold Studio 已停止。", file=sys.stderr)
     return 0
 
 

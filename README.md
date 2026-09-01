@@ -329,7 +329,7 @@ JSON Schema 位于 [`schemas/`](schemas/)，Prompt 位于 [`prompts/`](prompts/)
 
 ## 项目状态
 
-已完成自然语言到 Scene IR、Scene IR 到 Blender 场景和白模视频的首条研究管线，并实现首版四要素到六维规则。下一阶段重点是用审核样本评估并冻结该规则、扩充通用 Validator、输出 Depth/Object ID 控制素材，并建立可重复的视频模型对照实验。
+v0.7 已完成自然语言、文本六维、Cinematic Brief 与 Scene IR 四入口到 Blender 白模视频的统一 CLI/UI 管线，并实现首版四要素到六维规则。下一阶段重点是用审核样本评估并冻结该规则、扩充通用 Validator、输出 Depth/Object ID 控制素材，并建立可重复的视频模型对照实验。
 
 ## 许可证
 
