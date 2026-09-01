@@ -18,6 +18,7 @@ from cinescaffold.execution.mcp import MCP_BUILD_TOOL, OfficialBlenderMCPAdapter
 from cinescaffold.execution.validation import validate_scene_ir_for_execution
 from cinescaffold.planning.ir import SceneIR
 from cinescaffold.planning.store import canonical_hash
+from cinescaffold.platforms import default_blender_path, default_mcp_command
 
 
 class ExecutionResult(BaseModel):
@@ -35,8 +36,8 @@ class ExecutionResult(BaseModel):
 @dataclass(frozen=True)
 class ExecutionConfig:
     output_dir: Path
-    blender_path: Path = Path("/opt/homebrew/bin/blender")
-    mcp_command: Path = Path.home() / ".local/bin/blender-mcp"
+    blender_path: Path = default_blender_path()
+    mcp_command: Path = default_mcp_command()
     overwrite: bool = False
     template_timeout_seconds: float = 60.0
     render_timeout_seconds: float = 600.0

@@ -4,7 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cinescaffold.config import load_config, resolve_model_settings, resolve_stage_option
+from cinescaffold.config import (
+    load_config,
+    public_config_values,
+    resolve_model_settings,
+    resolve_stage_option,
+    save_config,
+)
 from cinescaffold.errors import ConfigurationError
 from cinescaffold.planning.runner import InterpreterRunConfig
 
@@ -129,6 +135,38 @@ class ConfigTest(unittest.TestCase):
 
         self.assertNotIn("api_key", rendered)
         self.assertNotIn("must-not-appear", str(rendered))
+
+    def test_ui_config_write_is_atomic_validated_and_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".cinescaffold.conf"
+            saved = save_config(
+                path,
+                {
+                    "semantic_provider": "openai",
+                    "semantic_model": "semantic-model",
+                    "openai_api_key": "secret-value",
+                    "planning_max_requests": "72",
+                    "execution_render_profile": "preview",
+                },
+            )
+            reloaded = load_config(path)
+            public = public_config_values(reloaded)
+
+        self.assertEqual(saved.data, reloaded.data)
+        self.assertEqual(reloaded.data["planning_max_requests"], "72")
+        self.assertNotIn("openai_api_key", public)
+        self.assertTrue(public["openai_api_key_configured"])
+
+    def test_ui_config_empty_value_deletes_but_none_preserves(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.conf"
+            save_config(path, {"model": "first", "api_key": "secret"})
+            saved = save_config(path, {"model": "", "api_key": None})
+            backup = load_config(path.with_name("settings.conf.bak"))
+
+        self.assertNotIn("model", saved.data)
+        self.assertEqual(saved.data["api_key"], "secret")
+        self.assertEqual(backup.data["model"], "first")
 
 
 if __name__ == "__main__":

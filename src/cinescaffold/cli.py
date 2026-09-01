@@ -39,6 +39,7 @@ from cinescaffold.planning.runner import (
     InterpreterRunner,
 )
 from cinescaffold.planning.trace import CostRates, TraceConfig, provider_usage_summary
+from cinescaffold.platforms import default_blender_path, default_mcp_command
 from cinescaffold.providers import DeepSeekProvider, MockProvider, OpenAIProvider
 from cinescaffold.semantic import SemanticParseResult, SemanticParserConfig, parse_semantic_input
 
@@ -152,7 +153,7 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_semantic_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--timeout", type=float)
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument(
         "--semantic-thinking-mode",
@@ -207,8 +208,8 @@ def _add_planning_arguments(parser: argparse.ArgumentParser) -> None:
         help="从先前运行的 checkpoint_latest.json 恢复 Candidate",
     )
     parser.add_argument("--run-id")
-    parser.add_argument("--max-requests", type=int, default=DEFAULT_MAX_REQUESTS)
-    parser.add_argument("--max-tool-calls", type=int, default=DEFAULT_MAX_TOOL_CALLS)
+    parser.add_argument("--max-requests", type=int)
+    parser.add_argument("--max-tool-calls", type=int)
     parser.add_argument(
         "--max-input-tokens",
         type=int,
@@ -218,20 +219,20 @@ def _add_planning_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-context-tokens",
         type=int,
-        default=DEFAULT_MAX_CONTEXT_TOKENS,
+        default=None,
         help="单次模型请求的上下文 token 上限",
     )
     parser.add_argument(
         "--max-output-tokens",
         type=int,
-        default=DEFAULT_MAX_OUTPUT_TOKENS,
+        default=None,
     )
     parser.add_argument("--max-total-tokens", type=int, default=None)
-    parser.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS)
+    parser.add_argument("--max-seconds", type=float)
     parser.add_argument(
         "--max-commit-attempts",
         type=int,
-        default=DEFAULT_MAX_COMMIT_ATTEMPTS,
+        default=None,
     )
     parser.add_argument(
         "--thinking-mode",
@@ -252,37 +253,33 @@ def _add_planning_arguments(parser: argparse.ArgumentParser) -> None:
             "请求、工具和提交次数上限"
         ),
     )
-    parser.add_argument("--trace-max-event-bytes", type=int, default=32_768)
-    parser.add_argument("--trace-max-string-chars", type=int, default=4_096)
+    parser.add_argument("--trace-max-event-bytes", type=int)
+    parser.add_argument("--trace-max-string-chars", type=int)
     parser.add_argument("--input-cost-per-million")
     parser.add_argument("--output-cost-per-million")
     parser.add_argument("--cache-read-cost-per-million")
     parser.add_argument("--cache-write-cost-per-million")
-    parser.add_argument("--cost-currency", default="USD")
-    parser.add_argument("--price-source", default="user_supplied")
+    parser.add_argument("--cost-currency")
+    parser.add_argument("--price-source")
 
 
 def _add_execution_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--blender-path", type=Path, default=Path("/opt/homebrew/bin/blender"))
-    parser.add_argument(
-        "--mcp-command",
-        type=Path,
-        default=Path.home() / ".local/bin/blender-mcp",
-    )
+    parser.add_argument("--blender-path", type=Path)
+    parser.add_argument("--mcp-command", type=Path)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--render-backend",
         choices=("background", "mcp"),
-        default="background",
+        default=None,
         help="默认用无 MCP 调用时限的后台 Blender 渲染；构建仍经官方 MCP",
     )
     parser.add_argument(
         "--render-profile",
         choices=("preview", "control"),
-        default="preview",
+        default=None,
         help="preview 为半分辨率/半采样率诊断视频；control 保持 Scene IR 正式设置",
     )
-    parser.add_argument("--render-timeout-seconds", type=float, default=600.0)
+    parser.add_argument("--render-timeout-seconds", type=float)
 
 
 def _add_display_arguments(parser: argparse.ArgumentParser) -> None:
@@ -313,6 +310,8 @@ def _apply_config(args: argparse.Namespace, config: LoadedConfig) -> None:
         )
         _assign_model_settings(args, settings)
         _apply_planning_config(args, config)
+    elif args.command == "execute":
+        _apply_execution_config(args, config)
     elif args.command == "run":
         args.semantic_settings = resolve_model_settings(
             config,
@@ -330,6 +329,7 @@ def _apply_config(args: argparse.Namespace, config: LoadedConfig) -> None:
         )
         _apply_semantic_config(args, config)
         _apply_planning_config(args, config)
+        _apply_execution_config(args, config)
 
 
 def _assign_model_settings(args: argparse.Namespace, settings: ModelSettings) -> None:
@@ -358,6 +358,27 @@ def _apply_planning_config(args: argparse.Namespace, config: LoadedConfig) -> No
         "model_max_tokens",
         args.model_max_tokens,
     )
+    defaults = {
+        "max_requests": DEFAULT_MAX_REQUESTS,
+        "max_tool_calls": DEFAULT_MAX_TOOL_CALLS,
+        "max_input_tokens": None,
+        "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
+        "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+        "max_total_tokens": None,
+        "max_seconds": DEFAULT_MAX_SECONDS,
+        "max_commit_attempts": DEFAULT_MAX_COMMIT_ATTEMPTS,
+        "trace_max_event_bytes": 32_768,
+        "trace_max_string_chars": 4_096,
+        "input_cost_per_million": None,
+        "output_cost_per_million": None,
+        "cache_read_cost_per_million": None,
+        "cache_write_cost_per_million": None,
+        "cost_currency": "USD",
+        "price_source": "user_supplied",
+    }
+    for name, default in defaults.items():
+        value = resolve_stage_option(config, "planning", name, getattr(args, name))
+        setattr(args, name, default if value is None else value)
 
 
 def _apply_semantic_config(args: argparse.Namespace, config: LoadedConfig) -> None:
@@ -379,6 +400,22 @@ def _apply_semantic_config(args: argparse.Namespace, config: LoadedConfig) -> No
         "max_tokens",
         args.max_tokens,
     ) or 8192
+    args.timeout = resolve_stage_option(config, "semantic", "timeout", args.timeout) or 60.0
+
+
+def _apply_execution_config(args: argparse.Namespace, config: LoadedConfig) -> None:
+    blender = args.blender_path or config.data.get("execution_blender_path")
+    mcp = args.mcp_command or config.data.get("execution_mcp_command")
+    args.blender_path = Path(blender) if blender else default_blender_path()
+    args.mcp_command = Path(mcp) if mcp else default_mcp_command()
+    args.render_backend = (
+        args.render_backend or config.data.get("execution_render_backend") or "background"
+    )
+    args.render_profile = (
+        args.render_profile or config.data.get("execution_render_profile") or "preview"
+    )
+    timeout = args.render_timeout_seconds or config.data.get("execution_render_timeout_seconds")
+    args.render_timeout_seconds = float(timeout) if timeout is not None else 600.0
 
 
 def _reporter(args: argparse.Namespace) -> TerminalReporter:

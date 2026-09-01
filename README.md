@@ -120,6 +120,8 @@ api_key = 填写 API KEY
 
 配置也可以分别指定 `semantic_provider/model` 和 `planning_provider/model`。完整可选字段及注释见 [`.cinescaffold.example.conf`](.cinescaffold.example.conf)。命令行参数优先于配置文件；未找到配置值时，API Key 仍可从 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 环境变量读取。
 
+配置还可以保存 Agent 预算、成本单价、Blender/MCP 路径和渲染选项。macOS、Windows 与 Linux 会分别寻找常见 Blender 和 `blender-mcp` 可执行文件；显式路径始终优先。后续 UI 设置中心与 CLI 共用同一配置校验器，保存时不会把已配置 API Key 回传到浏览器，并在覆盖前生成本地 `.bak`。
+
 OpenAI Semantic Parser 使用 Responses API。`semantic_reasoning_effort` 会作为 `reasoning.effort` 实际发送；GPT-5.6 可使用 `none/low/medium/high/xhigh/max`。例如：
 
 ```text
