@@ -797,26 +797,50 @@ def _build_relation_constraints(
             and phase.target_id is not None
             and phase.direction_mode in {"toward_target", "away_from_target"}
         ):
-            start, end = _event_range(
-                objective,
-                phase.timeline_event_id,
-                duration,
+            target_follows_subject = any(
+                item.kind == "carried"
+                and item.subject_id == phase.target_id
+                and item.carrier_id == phase.subject_id
+                and item.timeline_event_id == phase.timeline_event_id
+                for item in skeleton.motion_phases
             )
-            frame_step = (
-                candidate.timeline.fps_denominator
-                / candidate.timeline.fps_numerator
-            )
-            toward = phase.direction_mode == "toward_target"
-            payload = common | {
-                "type": "distance_range",
-                "subjects": [phase.subject_id, phase.target_id],
-                "time_range_seconds": [max(start, end - frame_step), end],
-                "parameters": {
-                    "entity_ids": [phase.subject_id, phase.target_id],
-                    "minimum_meters": 0.0 if toward else 5.0,
-                    "maximum_meters": 3.0 if toward else 1000000.0,
-                },
-            }
+            if phase.direction_mode == "away_from_target" and target_follows_subject:
+                # 载体离开时，乘员会同步移动，二者距离不应被要求增大。
+                payload = common | {
+                    "type": "motion_direction",
+                    "parameters": {
+                        "target_id": phase.subject_id,
+                        "direction": (
+                            "forward"
+                            if _objective_motion_direction(objective, phase)
+                            == "world_forward"
+                            else "right"
+                        ),
+                        "space": "world",
+                        "minimum_displacement_m": 0.5,
+                    },
+                }
+            else:
+                start, end = _event_range(
+                    objective,
+                    phase.timeline_event_id,
+                    duration,
+                )
+                frame_step = (
+                    candidate.timeline.fps_denominator
+                    / candidate.timeline.fps_numerator
+                )
+                toward = phase.direction_mode == "toward_target"
+                payload = common | {
+                    "type": "distance_range",
+                    "subjects": [phase.subject_id, phase.target_id],
+                    "time_range_seconds": [max(start, end - frame_step), end],
+                    "parameters": {
+                        "entity_ids": [phase.subject_id, phase.target_id],
+                        "minimum_meters": 0.0 if toward else 5.0,
+                        "maximum_meters": 3.0 if toward else 1000000.0,
+                    },
+                }
         else:
             # 其他阶段没有可独立验证的位移方向。
             continue
@@ -904,13 +928,27 @@ def _build_motion(
                 or (0.0, 0.0, _proxy_half_height(candidate.entities[subject_id]))
             )
             first = moving[0]
-            first_start = _event_range(
-                objective,
-                first.timeline_event_id,
-                duration,
-            )[0]
-            if first.direction_mode == "toward_target" and first_start == 0.0:
-                position[0] -= 8.0
+            if first.direction_mode == "toward_target" and first.target_id:
+                # 让“接近”阶段拥有可见的初始距离，避免代理一开始已经贴着目标。
+                target = candidate.entities[first.target_id]
+                target_position = target.solved_transform.translation_m or (
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+                delta_x = position[0] - target_position[0]
+                delta_y = position[1] - target_position[1]
+                distance = math.hypot(delta_x, delta_y)
+                clearance = (
+                    _proxy_horizontal_radius(candidate.entities[subject_id])
+                    + _proxy_horizontal_radius(target)
+                )
+                required_distance = clearance + 8.0
+                if distance < required_distance:
+                    if distance <= 1e-9:
+                        delta_x, delta_y, distance = 1.0, 0.0, 1.0
+                    position[0] = target_position[0] + delta_x / distance * required_distance
+                    position[1] = target_position[1] + delta_y / distance * required_distance
                 candidate.entities[subject_id].solved_transform = candidate.entities[
                     subject_id
                 ].solved_transform.model_copy(update={"translation_m": tuple(position)})
@@ -944,6 +982,10 @@ def _build_motion(
                     position,
                     tracks,
                     _track_end_time(candidate, end),
+                    semantic_direction_mode=_objective_motion_direction(
+                        objective,
+                        phase,
+                    ),
                     hidden_at_end=hidden_at_end,
                 )
                 keyframes.append(
@@ -961,6 +1003,42 @@ def _build_motion(
                 keyframes=_deduplicate_keyframes(keyframes),
                 interpolation="smooth",
                 source_ref=moving[0].source_ref,
+            )
+            tracks[track.track_id] = track
+
+        carried_phases = [item for item in phases if item.kind == "carried"]
+        for phase in sorted(
+            carried_phases,
+            key=lambda item: _event_range(
+                objective,
+                item.timeline_event_id,
+                duration,
+            )[0],
+        ):
+            if phase.carrier_id is None:
+                continue
+            start, end = _event_range(objective, phase.timeline_event_id, duration)
+            subject = candidate.entities[subject_id]
+            carrier = candidate.entities[phase.carrier_id]
+            subject_z = (subject.solved_transform.translation_m or (0.0, 0.0, 0.0))[2]
+            carrier_z = (carrier.solved_transform.translation_m or (0.0, 0.0, 0.0))[2]
+            offset = (0.0, 0.0, subject_z - carrier_z)
+            track = TrackSpec.model_validate(
+                {
+                    "track_id": f"design_carried_{subject_id}_{phase.phase_id}",
+                    "target_entity_id": subject_id,
+                    "type": "path_follow",
+                    "time_range_seconds": [start, end],
+                    "path": {
+                        "representation": "polyline",
+                        "space": "target_relative",
+                        "target_id": phase.carrier_id,
+                        "closed": False,
+                        "control_points": [offset, offset],
+                    },
+                    "interpolation": "step",
+                    "source_ref": phase.source_ref,
+                }
             )
             tracks[track.track_id] = track
 
@@ -1437,10 +1515,13 @@ def _linear_phase_endpoint(
     tracks: dict[str, TrackSpec],
     sample_time: float,
     *,
+    semantic_direction_mode: str | None,
     hidden_at_end: bool,
 ) -> list[float]:
     endpoint = list(position)
-    if phase.direction_mode == "toward_target" and phase.target_id:
+    if semantic_direction_mode == "world_forward":
+        endpoint[1] -= 8.0
+    elif phase.direction_mode == "toward_target" and phase.target_id:
         target_entity = candidate.entities[phase.target_id]
         target_track = tracks.get(f"design_motion_{phase.target_id}")
         target = sample_transform_track(
@@ -1466,6 +1547,26 @@ def _linear_phase_endpoint(
     else:
         endpoint[0] += 8.0
     return endpoint
+
+
+def _objective_motion_direction(
+    objective: ObjectivePlanningBrief,
+    phase: SkeletonMotionPhase,
+) -> str | None:
+    """按主体和事件取回 Brief 的类型化方向，避免符号骨架丢失世界轴语义。"""
+
+    for motion in objective.subject_motion:
+        if motion.get("subject_id") != phase.subject_id:
+            continue
+        semantics = motion.get("motion_semantics")
+        if not isinstance(semantics, dict):
+            continue
+        if semantics.get("timeline_event_id") != phase.timeline_event_id:
+            continue
+        direction = semantics.get("direction_mode")
+        if isinstance(direction, str):
+            return direction
+    return None
 
 
 def _proxy_horizontal_radius(entity: EntitySpec) -> float:

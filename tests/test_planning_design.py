@@ -287,6 +287,7 @@ class PlanningDesignTest(unittest.TestCase):
         car_track = state.motion_tracks["design_motion_car"]
         man_track = state.motion_tracks["design_motion_man"]
         visibility = state.motion_tracks["design_visibility_man"]
+        carried = state.motion_tracks["design_carried_man_man_carried"]
 
         self.assertTrue(applied["data"]["commit_ready"], applied["violations"])
         self.assertEqual(set(state.entities), {"road", "man", "car"})
@@ -304,6 +305,105 @@ class PlanningDesignTest(unittest.TestCase):
         )
         self.assertFalse(visibility.keyframes[-1].value)
         self.assertAlmostEqual(visibility.keyframes[-1].time_seconds, 7.0)
+        self.assertEqual(carried.path.space, "target_relative")
+        self.assertEqual(carried.path.target_id, "car")
+
+    def test_design_handles_late_approach_world_forward_and_carried_binding(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+        events = toolkit.objective_brief.timeline["events"]
+        events[0].update(start_time_seconds=2.5, end_time_seconds=5.0)
+        events[1].update(start_time_seconds=5.0, end_time_seconds=7.5)
+        events[2].update(start_time_seconds=7.5, end_time_seconds=12.0)
+        semantics = {
+            1: {
+                "action_kind": "approach",
+                "motion_type": "moving",
+                "motion_mode": "self_propelled",
+                "direction_mode": "toward_target",
+                "target_id": "man",
+                "carrier_id": None,
+                "path_type": "linear",
+                "timeline_event_id": "wait_and_arrive",
+                "postconditions": {
+                    "contained_by_id": None,
+                    "external_visibility": "unchanged",
+                },
+                "source_status": "inferred",
+            },
+            2: {
+                "action_kind": "board",
+                "motion_type": "moving",
+                "motion_mode": "self_propelled",
+                "direction_mode": "toward_target",
+                "target_id": "car",
+                "carrier_id": None,
+                "path_type": "linear",
+                "timeline_event_id": "boarding",
+                "postconditions": {
+                    "contained_by_id": "car",
+                    "external_visibility": "hidden",
+                },
+                "source_status": "inferred",
+            },
+            4: {
+                "action_kind": "depart",
+                "motion_type": "moving",
+                "motion_mode": "self_propelled",
+                "direction_mode": "world_forward",
+                "target_id": None,
+                "carrier_id": None,
+                "path_type": "linear",
+                "timeline_event_id": "departure",
+                "postconditions": {
+                    "contained_by_id": None,
+                    "external_visibility": "unchanged",
+                },
+                "source_status": "inferred",
+            },
+            5: {
+                "action_kind": "transport",
+                "motion_type": "carried",
+                "motion_mode": "carried",
+                "direction_mode": "world_forward",
+                "target_id": None,
+                "carrier_id": "car",
+                "path_type": "linear",
+                "timeline_event_id": "departure",
+                "postconditions": {
+                    "contained_by_id": "car",
+                    "external_visibility": "hidden",
+                },
+                "source_status": "inferred",
+            },
+        }
+        for index, value in semantics.items():
+            toolkit.objective_brief.subject_motion[index]["motion_semantics"] = value
+        skeleton = _pickup_skeleton()
+        skeleton["motion_phases"][4]["target_id"] = None
+        skeleton["motion_phases"][4]["direction_mode"] = "screen_left_to_right"
+        toolkit.submit_scene_skeleton(skeleton)
+
+        options = toolkit.request_design_options(max_options=1)
+        toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
+        state = toolkit.store.get()
+        car_track = state.motion_tracks["design_motion_car"]
+        man_position = state.entities["man"].solved_transform.translation_m
+        approach_start = car_track.keyframes[0].value.translation_m
+        approach_end = car_track.keyframes[1].value.translation_m
+        departure_start = car_track.keyframes[2].value.translation_m
+        departure_end = car_track.keyframes[3].value.translation_m
+        carried = state.motion_tracks["design_carried_man_man_carried"]
+
+        self.assertGreater(
+            abs(approach_start[0] - man_position[0]),
+            abs(approach_end[0] - man_position[0]),
+        )
+        self.assertLess(departure_end[1], departure_start[1])
+        self.assertEqual(carried.path.target_id, "car")
+        codes = {item["code"] for item in toolkit.validate_candidate()["violations"]}
+        self.assertNotIn("MOTION_DIRECTION_SEMANTICS_UNMET", codes)
+        self.assertNotIn("MOTION_POSTCONDITION_CONTAINMENT_UNMET", codes)
+        self.assertNotIn("CARRIED_SUBJECT_UNBOUND", codes)
 
     def test_scene_skeleton_rejects_special_board_motion_kind(self) -> None:
         value = _pickup_skeleton()
