@@ -57,6 +57,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 输出 `.blend`、运行时验证、执行 manifest 和 H.264 白模视频。
 - CLI 实时显示 Agent 请求、工具调用、token、revision、验证和渲染进度。
 - 可从自然语言、文本六维、Cinematic Brief 或 Scene IR 一键运行到白模视频。
+- CLI 的一键命令由独立异步 Workflow 服务编排；后续 UI 复用同一阶段、事件、失败语义和 `pipeline_summary.json`，不会维护第二套生成逻辑。
 
 ## 研究范围
 

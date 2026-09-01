@@ -63,6 +63,49 @@ class TerminalReporter:
             prefix = f"\033[{_color_code(color)}m{prefix}\033[0m"
         print(f"{prefix}  {message}", file=self.stream, flush=True)
 
+    def _on_pipeline_started(self, payload: dict[str, Any]) -> None:
+        self.stage(
+            "一键管线",
+            f"从 {_start_label(payload.get('started_from'))} 开始，目标是生成白模视频",
+        )
+
+    def _on_pipeline_semantic_started(self, payload: dict[str, Any]) -> None:
+        label = "自然语言" if payload.get("source_kind") == "text" else "文本六维"
+        self.stage(
+            "自然语言解析",
+            f"开始处理{label}，调用 {payload.get('provider')}/{payload.get('model')}",
+        )
+
+    def _on_pipeline_semantic_completed(self, payload: dict[str, Any]) -> None:
+        self.success(
+            "自然语言解析",
+            f"文本六维与 Cinematic Brief 已保存 · {_seconds(payload.get('elapsed_seconds'))}",
+        )
+
+    def _on_pipeline_input_ready(self, payload: dict[str, Any]) -> None:
+        label = _start_label(payload.get("kind"))
+        path = payload.get("path") or "内存输入"
+        self.success("输入就绪", f"已读取 {label}：{path}")
+
+    def _on_pipeline_planning_started(self, _payload: dict[str, Any]) -> None:
+        self.stage("场景规划", "将 Cinematic Brief 转换为可提交 Scene IR")
+
+    def _on_pipeline_execution_started(self, _payload: dict[str, Any]) -> None:
+        self.stage("Blender 执行", "构建场景、运行验证并渲染白模视频")
+
+    def _on_pipeline_failed(self, payload: dict[str, Any]) -> None:
+        self.failure("一键管线", f"{payload.get('stage', 'unknown')}：{payload.get('error', '未知错误')}")
+
+    def _on_pipeline_finished(self, payload: dict[str, Any]) -> None:
+        message = (
+            f"状态 {_status_label(str(payload.get('status')))} · "
+            f"{_seconds(payload.get('elapsed_seconds'))} · {payload.get('summary_path', '')}"
+        )
+        if payload.get("status") == "success":
+            self.success("一键管线", message)
+        else:
+            self.warning("一键管线", message)
+
     def _on_run_started(self, payload: dict[str, Any]) -> None:
         self.stage(
             "场景规划",

@@ -4,9 +4,7 @@ import argparse
 import asyncio
 import json
 import os
-import shutil
 import sys
-import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -38,10 +36,11 @@ from cinescaffold.planning.runner import (
     InterpreterRunConfig,
     InterpreterRunner,
 )
-from cinescaffold.planning.trace import CostRates, TraceConfig, provider_usage_summary
+from cinescaffold.planning.trace import CostRates, TraceConfig
 from cinescaffold.platforms import default_blender_path, default_mcp_command
 from cinescaffold.providers import DeepSeekProvider, MockProvider, OpenAIProvider
 from cinescaffold.semantic import SemanticParseResult, SemanticParserConfig, parse_semantic_input
+from cinescaffold.workflow import PipelineRunConfig, PipelineSource, WorkflowRunner
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -468,14 +467,7 @@ def _parse_semantic_source(
         "语义解析",
         f"读取 {len(source_text)} 个字符的{source_label}，调用 {provider.name}/{provider.model}",
     )
-    config = SemanticParserConfig(
-        system_template_path=args.system_template,
-        rules_path=args.rules,
-        format_example_path=args.format_example,
-        model_output_schema_path=args.schema,
-        translation_rules_path=args.translation_rules,
-        translation_parameters_schema_path=args.translation_schema,
-    )
+    config = _semantic_parser_config(args)
     result = parse_semantic_input(
         source_text,
         provider,
@@ -503,6 +495,17 @@ def _parse_semantic_source(
         textual_output_path.write_text(result.textual_six.render(), encoding="utf-8")
         reporter.success("文本六维", str(textual_output_path.resolve()))
     return result
+
+
+def _semantic_parser_config(args: argparse.Namespace) -> SemanticParserConfig:
+    return SemanticParserConfig(
+        system_template_path=args.system_template,
+        rules_path=args.rules,
+        format_example_path=args.format_example,
+        model_output_schema_path=args.schema,
+        translation_rules_path=args.translation_rules,
+        translation_parameters_schema_path=args.translation_schema,
+    )
 
 
 def _create_provider(args: argparse.Namespace) -> Any:
@@ -554,7 +557,18 @@ def _plan_brief(
     brief: dict[str, Any],
     output_dir: Path,
 ) -> Any:
-    config = InterpreterRunConfig(
+    config = _planning_run_config(args, output_dir)
+    result = asyncio.run(
+        InterpreterRunner(config, progress_callback=reporter.event).run(brief)
+    )
+    return result
+
+
+def _planning_run_config(
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> InterpreterRunConfig:
+    return InterpreterRunConfig(
         provider=args.provider,
         model=args.model,
         base_url=args.base_url,
@@ -581,10 +595,6 @@ def _plan_brief(
         ),
         cost_rates=_cost_rates(args),
     )
-    result = asyncio.run(
-        InterpreterRunner(config, progress_callback=reporter.event).run(brief)
-    )
-    return result
 
 
 def _run_execute(args: argparse.Namespace) -> int:
@@ -606,7 +616,18 @@ def _execute_scene_ir(
     payload: dict[str, Any],
     output_dir: Path,
 ) -> Any:
-    config = ExecutionConfig(
+    config = _execution_run_config(args, output_dir)
+    result = asyncio.run(
+        ExecutionRunner(config, progress_callback=reporter.event).run(payload)
+    )
+    return result
+
+
+def _execution_run_config(
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> ExecutionConfig:
+    return ExecutionConfig(
         output_dir=output_dir,
         blender_path=args.blender_path,
         mcp_command=args.mcp_command,
@@ -615,17 +636,13 @@ def _execute_scene_ir(
         render_profile=args.render_profile,
         render_timeout_seconds=args.render_timeout_seconds,
     )
-    result = asyncio.run(
-        ExecutionRunner(config, progress_callback=reporter.event).run(payload)
-    )
-    return result
 
 
 def _run_pipeline(args: argparse.Namespace) -> int:
     reporter = _reporter(args)
-    started = time.monotonic()
     output_dir = args.output_dir.resolve()
-    summary_path = output_dir / "pipeline_summary.json"
+    semantic_args: argparse.Namespace | None = None
+    semantic_provider: Any | None = None
     has_textual_six = args.text_six is not None or args.text_six_file is not None
     started_from = (
         "text"
@@ -638,123 +655,56 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     )
 
     # 先读取外部输入，避免覆盖时删除位于旧运行目录中的来源文件。
-    brief: dict[str, Any] | None = None
-    scene_ir_payload: dict[str, Any] | None = None
-    semantic_source: tuple[str, str] | None = None
     if args.brief is not None:
-        brief = _read_json_object(args.brief, "Cinematic Brief")
-    elif args.scene_ir is not None:
-        scene_ir_payload = _read_json_object(args.scene_ir, "Scene IR")
-    else:
-        semantic_source = _semantic_source(args)
-
-    _prepare_pipeline_output(output_dir, started_from, args.overwrite)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    reporter.stage("一键管线", f"从 {started_from} 开始，目标是生成白模视频")
-    summary: dict[str, Any] = {
-        "schema_version": "0.1",
-        "status": "running",
-        "started_from": started_from,
-        "output_dir": str(output_dir),
-        "elapsed_seconds": 0.0,
-        "stages": {},
-        "artifacts": {},
-        "error": None,
-    }
-
-    if semantic_source is not None:
-        semantic_args = _stage_args(args, args.semantic_settings)
-        brief_path = output_dir / "cinematic_brief.json"
-        textual_path = output_dir / "textual_six_dimensions.txt"
-        semantic_started = time.monotonic()
-        source_text, source_kind = semantic_source
-        semantic_result = _parse_semantic_source(
-            semantic_args,
-            reporter,
-            source_text,
-            source_kind,
-            brief_path,
-            textual_path,
+        source = PipelineSource(
+            kind="brief",
+            payload=_read_json_object(args.brief, "Cinematic Brief"),
+            artifact_path=args.brief,
         )
-        brief = semantic_result.brief
-        provider_usage = brief.get("provenance", {}).get("provider_usage")
-        summary["stages"]["semantic"] = {
-            "status": "success",
-            "provider": semantic_args.provider,
-            "model": semantic_args.model or "mock-cinematic-brief-v0.4",
-            "elapsed_seconds": round(time.monotonic() - semantic_started, 6),
-            "usage": provider_usage_summary(
-                provider_usage if isinstance(provider_usage, dict) else None,
-                _cost_rates(semantic_args),
-            ),
-        }
-        summary["artifacts"]["cinematic_brief"] = str(brief_path)
-        summary["artifacts"]["textual_six_dimensions"] = str(textual_path)
-    elif args.brief is not None:
-        assert brief is not None
-        summary["artifacts"]["cinematic_brief"] = str(args.brief.resolve())
-        reporter.success("输入就绪", f"已读取 Cinematic Brief：{args.brief.resolve()}")
+    elif args.scene_ir is not None:
+        source = PipelineSource(
+            kind="scene_ir",
+            payload=_read_json_object(args.scene_ir, "Scene IR"),
+            artifact_path=args.scene_ir,
+        )
     else:
-        assert scene_ir_payload is not None
-        summary["artifacts"]["scene_ir"] = str(args.scene_ir.resolve())
-        reporter.success("输入就绪", f"已读取 Scene IR：{args.scene_ir.resolve()}")
+        semantic_args = _stage_args(args, args.semantic_settings)
+        source_text, semantic_kind = _semantic_source(args)
+        source = PipelineSource(
+            kind="text" if semantic_kind == "natural_text" else "textual_six",
+            text=source_text,
+        )
+        semantic_provider = _create_provider(semantic_args)
 
-    if brief is not None:
-        reporter.stage("场景规划", "将 Cinematic Brief 转换为可提交 Scene IR")
-        planning_args = _stage_args(args, args.planning_settings)
-        planning_dir = output_dir / "planning"
-        planning_result = _plan_brief(planning_args, reporter, brief, planning_dir)
-        planning_payload = planning_result.model_dump(mode="json")
-        summary["stages"]["planning"] = planning_payload
-        if planning_result.status != "success":
-            summary["status"] = "planning_failed"
-            summary["error"] = _planning_error(planning_result.error)
-            return _finish_pipeline(args, reporter, summary, summary_path, started)
-        scene_ir_name = planning_result.artifacts.get("scene_ir")
-        if not scene_ir_name:
-            raise ValueError("规划成功但没有生成 final_scene_ir.json")
-        scene_ir_path = planning_dir / scene_ir_name
-        scene_ir_payload = _read_json_object(scene_ir_path, "Scene IR")
-        summary["artifacts"]["scene_ir"] = str(scene_ir_path)
-
-    if scene_ir_payload is None:
-        raise ValueError("一键管线没有获得可执行 Scene IR")
-    reporter.stage("Blender 执行", "构建场景、运行验证并渲染白模视频")
-    execution_dir = output_dir / "execution"
-    execution_result = _execute_scene_ir(args, reporter, scene_ir_payload, execution_dir)
-    execution_payload = execution_result.model_dump(mode="json")
-    summary["stages"]["execution"] = execution_payload
-    summary["status"] = execution_result.status
-    summary["error"] = execution_result.error
-    if execution_result.render and execution_result.render.get("artifact"):
-        summary["artifacts"]["video"] = execution_result.render["artifact"]
-    return _finish_pipeline(args, reporter, summary, summary_path, started)
-
-
-def _prepare_pipeline_output(output_dir: Path, started_from: str, overwrite: bool) -> None:
-    owned_paths = [
-        output_dir / "pipeline_summary.json",
-        output_dir / "execution",
-    ]
-    if started_from in {"text", "textual_six", "brief"}:
-        owned_paths.append(output_dir / "planning")
-    if started_from in {"text", "textual_six"}:
-        owned_paths.append(output_dir / "cinematic_brief.json")
-        owned_paths.append(output_dir / "textual_six_dimensions.txt")
-
-    conflicts = [path for path in owned_paths if path.exists() or path.is_symlink()]
-    if conflicts and not overwrite:
-        rendered = ", ".join(str(path) for path in conflicts)
-        raise ValueError(f"一键管线产物已存在；请换输出目录或显式使用 --overwrite：{rendered}")
-    if not overwrite:
-        return
-
-    # 只清理管线拥有的固定路径，不删除输出根目录中的其他资料。
-    for path in conflicts:
-        if path.is_symlink() or path.is_file():
-            path.unlink()
-        elif path.is_dir():
-            shutil.rmtree(path)
+    planning_args = _stage_args(args, args.planning_settings)
+    config = PipelineRunConfig(
+        output_dir=output_dir,
+        planning=_planning_run_config(planning_args, output_dir / "planning"),
+        execution=_execution_run_config(args, output_dir / "execution"),
+        semantic_provider=semantic_provider,
+        semantic_parser=(
+            _semantic_parser_config(semantic_args)
+            if semantic_args is not None
+            else None
+        ),
+        semantic_cost_rates=(
+            _cost_rates(semantic_args) if semantic_args is not None else None
+        ),
+        overwrite=args.overwrite,
+    )
+    summary = asyncio.run(
+        WorkflowRunner(
+            config,
+            progress_callback=reporter.event,
+            planning_runner_type=InterpreterRunner,
+            execution_runner_type=ExecutionRunner,
+        ).run(source)
+    )
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print_pipeline_summary(summary)
+    return 0 if summary["status"] == "success" else 1
 
 
 def _stage_args(args: argparse.Namespace, settings: ModelSettings) -> argparse.Namespace:
@@ -780,36 +730,6 @@ def _semantic_source(args: argparse.Namespace) -> tuple[str, str]:
     if getattr(args, "text_six_file", None) is not None:
         return args.text_six_file.read_text(encoding="utf-8"), "textual_six"
     raise ValueError("缺少自然语言或文本六维输入")
-
-
-def _planning_error(error: dict[str, str] | None) -> str:
-    if not error:
-        return "场景规划未成功提交 Scene IR"
-    return error.get("message", str(error))
-
-
-def _finish_pipeline(
-    args: argparse.Namespace,
-    reporter: TerminalReporter,
-    summary: dict[str, Any],
-    summary_path: Path,
-    started: float,
-) -> int:
-    summary["elapsed_seconds"] = round(time.monotonic() - started, 6)
-    summary["artifacts"]["pipeline_summary"] = str(summary_path)
-    summary_path.write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    if summary["status"] == "success":
-        reporter.success("一键管线", f"全部完成；记录已写入 {summary_path}")
-    else:
-        reporter.warning("一键管线", f"在状态 {summary['status']} 停止")
-    if args.json:
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
-    else:
-        print_pipeline_summary(summary)
-    return 0 if summary["status"] == "success" else 1
 
 
 def _cost_rates(args: argparse.Namespace) -> CostRates | None:
