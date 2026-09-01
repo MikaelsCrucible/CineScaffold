@@ -28,6 +28,12 @@ ALLOWED_KEYS = {
     "semantic_thinking_mode",
     "semantic_reasoning_effort",
     "semantic_max_tokens",
+    "semantic_input_cost_per_million",
+    "semantic_output_cost_per_million",
+    "semantic_cache_read_cost_per_million",
+    "semantic_cache_write_cost_per_million",
+    "semantic_cost_currency",
+    "semantic_price_source",
     "planning_provider",
     "planning_model",
     "planning_thinking_mode",
@@ -72,6 +78,11 @@ INTEGER_KEYS = {
     "planning_trace_max_string_chars",
 }
 FLOAT_KEYS = {"semantic_timeout", "planning_max_seconds", "execution_render_timeout_seconds"}
+PRICE_KEYS = {
+    f"{stage}_{kind}_cost_per_million"
+    for stage in ("semantic", "planning")
+    for kind in ("input", "output", "cache_read", "cache_write")
+}
 CONFIG_KEY_ORDER = tuple(sorted(ALLOWED_KEYS, key=lambda key: (key != "config_version", key)))
 
 
@@ -170,20 +181,8 @@ def save_config(path: Path, updates: dict[str, str | None]) -> LoadedConfig:
     """合并并原子写回简单配置；None 表示保留，空字符串表示删除。"""
 
     existing = load_config(path) if path.is_file() else LoadedConfig(path=None, data={})
-    data = dict(existing.data)
-    for key, value in updates.items():
-        normalized_key = key.lower()
-        if normalized_key not in ALLOWED_KEYS:
-            raise ConfigurationError(f"配置存在未知字段：{normalized_key}")
-        if value is None:
-            continue
-        normalized_value = str(value).strip()
-        if normalized_value:
-            data[normalized_key] = normalized_value
-        else:
-            data.pop(normalized_key, None)
-    data.setdefault("config_version", "1")
-    _validate_config(data)
+    merged = merge_config(existing, updates)
+    data = merged.data
 
     target = path.resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +206,29 @@ def save_config(path: Path, updates: dict[str, str | None]) -> LoadedConfig:
         if temporary.exists():
             temporary.unlink()
     return LoadedConfig(path=target, data=data)
+
+
+def merge_config(
+    config: LoadedConfig,
+    updates: dict[str, str | None],
+) -> LoadedConfig:
+    """校验并合并内存配置，不触碰磁盘。"""
+
+    data = dict(config.data)
+    for key, value in updates.items():
+        normalized_key = key.lower()
+        if normalized_key not in ALLOWED_KEYS:
+            raise ConfigurationError(f"配置存在未知字段：{normalized_key}")
+        if value is None:
+            continue
+        normalized_value = str(value).strip()
+        if normalized_value:
+            data[normalized_key] = normalized_value
+        else:
+            data.pop(normalized_key, None)
+    data.setdefault("config_version", "1")
+    _validate_config(data)
+    return LoadedConfig(path=config.path, data=data)
 
 
 def public_config_values(config: LoadedConfig) -> dict[str, str | bool]:
@@ -278,6 +300,16 @@ def _validate_config(data: dict[str, str]) -> None:
             raise ConfigurationError(f"{key} 必须是正数") from error
         if parsed <= 0:
             raise ConfigurationError(f"{key} 必须是正数")
+    for key in PRICE_KEYS:
+        value = data.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = float(value)
+        except ValueError as error:
+            raise ConfigurationError(f"{key} 必须是非负数") from error
+        if parsed < 0:
+            raise ConfigurationError(f"{key} 必须是非负数")
     if data.get("execution_render_backend") not in (None, "background", "mcp"):
         raise ConfigurationError("execution_render_backend 必须是 background 或 mcp")
     if data.get("execution_render_profile") not in (None, "preview", "control"):
