@@ -9,6 +9,7 @@
 - UI 设置中心、文件导入、实时进度、事件日志、分阶段 token/成本、视频预览与本地产物入口。
 - macOS、Windows、Linux 的 Blender/MCP 默认路径和打开文件边界。
 - 可选 `nicegui==3.16.0` 依赖及继承核心版本冻结的 `requirements-ui.lock`。
+- Windows x64 便携安装包、双击安装/启动脚本、平台专用依赖锁与原生 GitHub Actions 构建。
 
 ### Changed
 
@@ -22,3 +23,4 @@
 - 226 个测试与 5 个 subtests 通过。
 - 真实浏览器完成桌面、700 px 响应式、设置与四入口交互检查。
 - Mock 端到端 UI 冒烟通过语义、规划、Blender MCP、Runtime Validation、Workbench 渲染和视频回放。
+- Windows 发行包在 `windows-latest` 中安装锁定依赖、运行回归并组装带 SHA-256 的 ZIP。

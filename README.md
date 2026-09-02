@@ -100,6 +100,16 @@ uv pip install --python .venv/bin/python --no-deps --editable .
 
 UI 是可选依赖；仅使用 CLI 时不需要安装它。未采用锁文件的开发环境也可用 `pip install -e ".[ui]"`，正式测试仍建议使用锁文件。
 
+### Windows x64 发行包
+
+面向非技术协作者的 Windows 包由 GitHub Actions 在真实 `windows-latest` 环境构建。下载并完整解压 `CineScaffold-Windows-x64-v*.zip` 后：
+
+1. 双击 `Install-CineScaffold.cmd`，自动建立包内隔离的 Python 3.12 环境并安装 Windows 锁定依赖。
+2. 按包内 `README-Windows.md` 安装 Blender 5.2.1 LTS 与官方 Blender MCP Add-on。
+3. 双击 `Start-CineScaffold.cmd` 启动 Studio。
+
+该包不要求用户预装 Python，也不修改系统 Python；首次安装依赖联网。Blender 与 Add-on 因体积和许可证边界不随 CineScaffold 打包。Windows 专用锁保持与核心/UI 锁相同版本，只用 `pywin32` 相关包替代非 Windows 的 `uvloop`。
+
 Blender MCP 作为外部工具单独安装：
 
 ```bash
