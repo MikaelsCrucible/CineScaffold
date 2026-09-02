@@ -58,7 +58,11 @@ jobs:
         run: |
           uv build --wheel --out-dir dist\wheel
           $version = .venv\Scripts\python.exe -c "import cinescaffold; print(cinescaffold.__version__)"
-          $wheel = Get-ChildItem dist\wheel\cinescaffold-*.whl | Select-Object -Single
+          $wheels = @(Get-ChildItem dist\wheel\cinescaffold-*.whl)
+          if ($wheels.Count -ne 1) {
+            throw "Expected exactly one CineScaffold wheel, found $($wheels.Count)"
+          }
+          $wheel = $wheels[0]
           $commit = git rev-parse HEAD
           .venv\Scripts\python.exe scripts\build_windows_release.py `
             --wheel $wheel.FullName `
