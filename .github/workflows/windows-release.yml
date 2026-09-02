@@ -37,7 +37,9 @@ jobs:
             --generate-hashes `
             --custom-compile-command "uv pip compile requirements-windows.in --constraints requirements-ui.lock --python-version 3.12 --python-platform x86_64-pc-windows-msvc --generate-hashes --output-file requirements-windows.lock" `
             --output-file requirements-windows.generated.lock
-          if ((Get-FileHash requirements-windows.lock).Hash -ne (Get-FileHash requirements-windows.generated.lock).Hash) {
+          $expected = [IO.File]::ReadAllText("requirements-windows.lock").Replace("`r`n", "`n")
+          $generated = [IO.File]::ReadAllText("requirements-windows.generated.lock").Replace("`r`n", "`n")
+          if ($expected -cne $generated) {
             git diff --no-index -- requirements-windows.lock requirements-windows.generated.lock
             throw "requirements-windows.lock is stale"
           }
