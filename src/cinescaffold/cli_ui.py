@@ -287,22 +287,23 @@ class TerminalReporter:
     def _on_factory_template_failed(self, payload: dict[str, Any]) -> None:
         self.failure("Blender", str(payload.get("error", "模板创建失败")))
 
-    def _on_mcp_build_started(self, payload: dict[str, Any]) -> None:
-        self._line("→", "Blender MCP", "根据 Scene IR 构建代理场景", "blue")
+    def _on_scene_build_started(self, payload: dict[str, Any]) -> None:
+        backend = str(payload.get("backend", "background"))
+        self._line("→", "Blender 构建", f"通过 {backend} 后端构建代理场景", "blue")
 
-    def _on_mcp_build_completed(self, payload: dict[str, Any]) -> None:
+    def _on_scene_build_completed(self, payload: dict[str, Any]) -> None:
         message = (
             f"Blender {payload.get('blender_version', '?')} · "
             f"Runtime validation={payload.get('validation_passed', False)} · "
             f"violations={payload.get('violation_count', '?')}"
         )
         if payload.get("validation_passed"):
-            self.success("Blender MCP", message)
+            self.success("Blender 构建", message)
         else:
-            self.warning("Blender MCP", message)
+            self.warning("Blender 构建", message)
 
-    def _on_mcp_build_failed(self, payload: dict[str, Any]) -> None:
-        self.failure("Blender MCP", str(payload.get("error", "构建失败")))
+    def _on_scene_build_failed(self, payload: dict[str, Any]) -> None:
+        self.failure("Blender 构建", str(payload.get("error", "构建失败")))
 
     def _on_render_started(self, payload: dict[str, Any]) -> None:
         self.stage(

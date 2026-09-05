@@ -509,11 +509,17 @@ def _settings_form(ui: Any, controller: UiSessionController, elements: dict[str,
     with ui.expansion("Blender 与渲染", icon="view_in_ar").classes("w-full settings-group"):
         with ui.grid(columns=2).classes("w-full gap-3 settings-grid"):
             text("execution_blender_path", "Blender 可执行文件")
-            text("execution_mcp_command", "blender-mcp 可执行文件")
+            text("execution_mcp_command", "blender-mcp 可执行文件（可选）")
+            select(
+                "execution_build_backend",
+                "场景构建后端",
+                {"": "默认（Background）", "background": "Background", "mcp": "MCP"},
+            )
+            text("execution_build_timeout_seconds", "场景构建超时（秒）")
             select(
                 "execution_render_backend",
                 "渲染后端",
-                {"": "默认", "background": "Background", "mcp": "MCP"},
+                {"": "默认（Background）", "background": "Background", "mcp": "MCP"},
             )
             select(
                 "execution_render_profile",

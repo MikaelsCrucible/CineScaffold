@@ -134,12 +134,15 @@ def event_message(event_type: str, payload: dict[str, Any]) -> str | None:
         "pipeline_semantic_started": "正在把输入转换为六维语义",
         "pipeline_semantic_completed": "文本六维与 Cinematic Brief 已完成",
         "pipeline_planning_started": "场景规划 Agent 已启动",
-        "pipeline_execution_started": "正在通过 Blender MCP 构建场景",
+        "pipeline_execution_started": "正在通过 Blender 构建并渲染场景",
         "execution_validation_completed": (
             f"Scene IR 已校验：{payload.get('entity_count', '?')} 个实体，"
             f"{payload.get('frame_count', '?')} 帧"
         ),
-        "mcp_build_completed": (
+        "scene_build_started": (
+            f"开始通过 {payload.get('backend', 'background')} 后端构建 Blender 场景"
+        ),
+        "scene_build_completed": (
             f"Blender 场景已构建：violations={payload.get('violation_count', '?')}"
         ),
         "render_started": f"开始渲染 {payload.get('profile', '')} 白模视频",

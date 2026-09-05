@@ -96,6 +96,11 @@ class UiStateTest(unittest.TestCase):
         )
         self.assertEqual(message, "模型响应 #2：输入 123 / 输出 45 tokens")
 
+    def test_event_log_identifies_scene_build_backend(self) -> None:
+        message = event_message("scene_build_started", {"backend": "background"})
+
+        self.assertEqual(message, "开始通过 background 后端构建 Blender 场景")
+
 
 if __name__ == "__main__":
     unittest.main()

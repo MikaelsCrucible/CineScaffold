@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from cinescaffold.blender.runtime import (
     _blender_render_engine,
@@ -54,6 +55,27 @@ class _FakeExecutionRunner(ExecutionRunner):
         (self.output_dir / "template_blender.log").write_text("fake\n", encoding="utf-8")
 
 
+class _FakeBackgroundExecutionRunner(ExecutionRunner):
+    async def _build_scene_background(self, scene_ir_path, scene_ir_hash):
+        (self.output_dir / "scene.blend").write_bytes(b"fake-blend")
+        (self.output_dir / "runtime_snapshot.json").write_text("{}\n", encoding="utf-8")
+        (self.output_dir / "runtime_validation.json").write_text(
+            '{"passed": true}\n',
+            encoding="utf-8",
+        )
+        return {
+            "status": "ok",
+            "scene_ir_hash": scene_ir_hash,
+            "validation_passed": True,
+            "transport": "background_blender",
+        }
+
+    async def _render_video_background(self, scene_blend):
+        preview = scene_blend.parent / "diagnostic_preview.mp4"
+        preview.write_bytes(b"fake-video")
+        return {"status": "ok", "artifact": str(preview)}
+
+
 class _FakeShading:
     light = ""
     color_type = ""
@@ -79,6 +101,7 @@ class ExecutionTest(unittest.TestCase):
                 _FakeExecutionRunner(
                     ExecutionConfig(
                         output_dir=Path(directory),
+                        build_backend="mcp",
                         render_backend="mcp",
                     ),
                     adapter=_FakeAdapter(),
@@ -88,7 +111,7 @@ class ExecutionTest(unittest.TestCase):
 
         self.assertEqual(result.status, "success")
         self.assertEqual(events[0], "execution_validation_started")
-        self.assertIn("mcp_build_started", events)
+        self.assertIn("scene_build_started", events)
         self.assertIn("render_started", events)
         self.assertEqual(events[-1], "execution_finished")
 
@@ -117,7 +140,11 @@ class ExecutionTest(unittest.TestCase):
             del entity["ground_interaction"]
         with tempfile.TemporaryDirectory() as directory:
             runner = _FakeExecutionRunner(
-                ExecutionConfig(output_dir=Path(directory), render_backend="mcp"),
+                ExecutionConfig(
+                    output_dir=Path(directory),
+                    build_backend="mcp",
+                    render_backend="mcp",
+                ),
                 adapter=_FakeAdapter(),
             )
             result = asyncio.run(runner.run(payload))
@@ -201,11 +228,73 @@ class ExecutionTest(unittest.TestCase):
         self.assertIn("from cinescaffold.blender.runtime import apply_scene_ir", code)
         self.assertNotIn("bpy.ops", code)
 
+    def test_background_build_bootstrap_reads_ir_and_writes_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = ExecutionRunner(ExecutionConfig(output_dir=root))
+            code = runner._background_build_code(
+                root / "scene_ir.json",
+                "sha256:test",
+                root / "result.json",
+            )
+
+        compile(code, "<background-build>", "exec")
+        self.assertIn("from cinescaffold.blender.runtime import apply_scene_ir", code)
+        self.assertIn("scene_ir.json", code)
+        self.assertNotIn("bpy.ops", code)
+
+    def test_background_build_launches_factory_startup_without_mcp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blender = root / "blender"
+            blender.write_bytes(b"")
+            (root / "scene.blend").write_bytes(b"fake-blend")
+            (root / "background_build_result.json").write_text(
+                '{"status":"ok","validation_passed":true}',
+                encoding="utf-8",
+            )
+            runner = ExecutionRunner(
+                ExecutionConfig(output_dir=root, blender_path=blender)
+            )
+            with patch("cinescaffold.execution.runner.subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = ""
+                run.return_value.stderr = ""
+                result = asyncio.run(
+                    runner._build_scene_background(root / "scene_ir.json", "sha256:test")
+                )
+                command = run.call_args.args[0]
+
+        self.assertEqual(
+            command[:3],
+            [str(blender.resolve()), "--background", "--factory-startup"],
+        )
+        self.assertEqual(result["transport"], "background_blender")
+
+    def test_background_is_default_and_does_not_create_mcp_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "execution"
+            runner = _FakeBackgroundExecutionRunner(ExecutionConfig(output_dir=output_dir))
+            result = asyncio.run(runner.run(self.scene_ir.model_dump(mode="json")))
+            manifest = json.loads(
+                (output_dir / "execution_manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(manifest["build_backend"], "background")
+        self.assertEqual(manifest["render_backend"], "background")
+        self.assertNotIn("mcp_tool", manifest)
+        self.assertFalse((output_dir / "factory_template.blend").exists())
+
     def test_runner_completes_without_agent_and_writes_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory) / "execution"
             runner = _FakeExecutionRunner(
-                ExecutionConfig(output_dir=output_dir, render_backend="mcp"),
+                ExecutionConfig(
+                    output_dir=output_dir,
+                    build_backend="mcp",
+                    render_backend="mcp",
+                ),
                 adapter=_FakeAdapter(),
             )
             result = asyncio.run(runner.run(self.scene_ir.model_dump(mode="json")))
@@ -216,6 +305,7 @@ class ExecutionTest(unittest.TestCase):
         self.assertEqual(result.status, "success")
         self.assertEqual(manifest["status"], "success")
         self.assertIn("diagnostic_preview", manifest["artifact_sha256"])
+        self.assertEqual(manifest["build_backend"], "mcp")
         self.assertEqual(manifest["render_backend"], "mcp")
         self.assertEqual(manifest["render_profile"], "preview")
 
@@ -225,6 +315,7 @@ class ExecutionTest(unittest.TestCase):
             runner = _FakeExecutionRunner(
                 ExecutionConfig(
                     output_dir=output_dir,
+                    build_backend="mcp",
                     render_backend="mcp",
                     render_profile="control",
                 ),
@@ -253,7 +344,7 @@ class ExecutionTest(unittest.TestCase):
             output_dir = Path(directory)
             (output_dir / "scene.blend").write_bytes(b"existing")
             runner = _FakeExecutionRunner(
-                ExecutionConfig(output_dir=output_dir),
+                ExecutionConfig(output_dir=output_dir, build_backend="mcp"),
                 adapter=_FakeAdapter(),
             )
 
@@ -264,7 +355,7 @@ class ExecutionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory)
             runner = _FakeExecutionRunner(
-                ExecutionConfig(output_dir=output_dir),
+                ExecutionConfig(output_dir=output_dir, build_backend="mcp"),
                 adapter=_FailingAdapter(),
             )
             result = asyncio.run(runner.run(self.scene_ir.model_dump(mode="json")))

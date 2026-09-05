@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipMcp
+    [switch]$InstallMcp
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,16 +56,16 @@ if (-not (Test-Path -LiteralPath $Config)) {
     Copy-Item -LiteralPath $ConfigExample -Destination $Config
 }
 
-Write-Host "[4/4] 正在准备 Blender MCP Server……" -ForegroundColor Cyan
-if ($SkipMcp) {
-    Write-Warning "已跳过 Blender MCP Server 安装。"
+Write-Host "[4/4] 正在检查可选 Blender MCP Server……" -ForegroundColor Cyan
+if (-not $InstallMcp) {
+    Write-Host "默认使用后台 Blender，已跳过可选 MCP Server。" -ForegroundColor DarkGray
 } elseif (Get-Command git.exe -ErrorAction SilentlyContinue) {
     $McpSource = "git+https://projects.blender.org/lab/blender_mcp.git@4309a39646e644261624bfcd2bca669b343b7621#subdirectory=mcp"
     Invoke-Checked $Uv "tool" "install" "--python" "3.12" "--force" "--with" "mcp[cli]>=1.2,<2" "--from" $McpSource "blender-mcp"
 } else {
-    Write-Warning "未找到 Git，暂未自动安装 Blender MCP Server。请按 README-Windows.md 的说明安装 Git 后重新运行本安装程序。"
+    Write-Warning "未找到 Git，无法安装可选 Blender MCP Server。"
 }
 
 Write-Host ""
 Write-Host "CineScaffold 已安装到发行包自己的隔离目录。" -ForegroundColor Green
-Write-Host "下一步：确认 Blender 5.2.1 LTS 与官方 MCP Add-on 已安装，然后双击 Start-CineScaffold.cmd。"
+Write-Host "下一步：确认 Blender 5.2.1 LTS 已安装，然后双击 Start-CineScaffold.cmd。"

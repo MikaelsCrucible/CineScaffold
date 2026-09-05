@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Scene IR 构建默认改为直接启动无窗口 Blender，不再先创建 factory template 或要求 Blender MCP。
+- 构建与渲染分别支持 `background` 和 `mcp` 后端；MCP 保留为显式兼容选项，并延迟到实际使用时初始化。
+- 执行 manifest 升级到 v0.2，记录独立的 `build_backend`、`render_backend`、后台结果和日志产物。
+- Windows 安装默认跳过 MCP Server；只有显式传入 `-InstallMcp` 时才安装可选兼容后端。
+
+### Verification
+
+- Python 3.12 完整离线回归 234 项测试通过。
+- Blender 5.2.1 LTS 真实后台冒烟通过：10 秒/240 帧 Scene IR 完成构建、零 violation Runtime Validation，并输出 120 帧 640×360 Workbench 诊断视频；端到端执行耗时约 4.5 秒。
+- 同一样本的 MCP 构建兼容冒烟通过，Runtime Snapshot 与 Validation 和后台构建逐字节一致；单次端到端约 4.3 秒，因此当前测量不足以声称有渲染性能提升。
+
 ## 0.7.0 — 2026-09-02
 
 ### Added

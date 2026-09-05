@@ -112,7 +112,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     execute_parser = subparsers.add_parser(
         "execute",
-        help="将已提交 Scene IR 通过官方 Blender MCP 渲染为白模视频",
+        help="将已提交 Scene IR 通过后台 Blender 构建并渲染为白模视频",
     )
     execute_parser.add_argument("--scene-ir", type=Path, required=True)
     execute_parser.add_argument("--output-dir", type=Path, required=True)
@@ -279,10 +279,17 @@ def _add_execution_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mcp-command", type=Path)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
+        "--build-backend",
+        choices=("background", "mcp"),
+        default=None,
+        help="默认由无窗口 Blender 直接构建；mcp 保留为兼容后端",
+    )
+    parser.add_argument("--build-timeout-seconds", type=float)
+    parser.add_argument(
         "--render-backend",
         choices=("background", "mcp"),
         default=None,
-        help="默认用无 MCP 调用时限的后台 Blender 渲染；构建仍经官方 MCP",
+        help="默认由无窗口 Blender 直接渲染；mcp 保留为兼容后端",
     )
     parser.add_argument(
         "--render-profile",
@@ -424,12 +431,19 @@ def _apply_execution_config(args: argparse.Namespace, config: LoadedConfig) -> N
     mcp = args.mcp_command or config.data.get("execution_mcp_command")
     args.blender_path = Path(blender) if blender else default_blender_path()
     args.mcp_command = Path(mcp) if mcp else default_mcp_command()
+    args.build_backend = (
+        args.build_backend or config.data.get("execution_build_backend") or "background"
+    )
     args.render_backend = (
         args.render_backend or config.data.get("execution_render_backend") or "background"
     )
     args.render_profile = (
         args.render_profile or config.data.get("execution_render_profile") or "preview"
     )
+    build_timeout = (
+        args.build_timeout_seconds or config.data.get("execution_build_timeout_seconds")
+    )
+    args.build_timeout_seconds = float(build_timeout) if build_timeout is not None else 180.0
     timeout = args.render_timeout_seconds or config.data.get("execution_render_timeout_seconds")
     args.render_timeout_seconds = float(timeout) if timeout is not None else 600.0
 
@@ -649,6 +663,8 @@ def _execution_run_config(
         blender_path=args.blender_path,
         mcp_command=args.mcp_command,
         overwrite=args.overwrite,
+        build_backend=args.build_backend,
+        build_timeout_seconds=args.build_timeout_seconds,
         render_backend=args.render_backend,
         render_profile=args.render_profile,
         render_timeout_seconds=args.render_timeout_seconds,

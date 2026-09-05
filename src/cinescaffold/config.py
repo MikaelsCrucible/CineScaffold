@@ -58,6 +58,8 @@ ALLOWED_KEYS = {
     "planning_price_source",
     "execution_blender_path",
     "execution_mcp_command",
+    "execution_build_backend",
+    "execution_build_timeout_seconds",
     "execution_render_backend",
     "execution_render_profile",
     "execution_render_timeout_seconds",
@@ -77,7 +79,12 @@ INTEGER_KEYS = {
     "planning_trace_max_event_bytes",
     "planning_trace_max_string_chars",
 }
-FLOAT_KEYS = {"semantic_timeout", "planning_max_seconds", "execution_render_timeout_seconds"}
+FLOAT_KEYS = {
+    "semantic_timeout",
+    "planning_max_seconds",
+    "execution_build_timeout_seconds",
+    "execution_render_timeout_seconds",
+}
 PRICE_KEYS = {
     f"{stage}_{kind}_cost_per_million"
     for stage in ("semantic", "planning")
@@ -310,8 +317,9 @@ def _validate_config(data: dict[str, str]) -> None:
             raise ConfigurationError(f"{key} 必须是非负数") from error
         if parsed < 0:
             raise ConfigurationError(f"{key} 必须是非负数")
-    if data.get("execution_render_backend") not in (None, "background", "mcp"):
-        raise ConfigurationError("execution_render_backend 必须是 background 或 mcp")
+    for key in ("execution_build_backend", "execution_render_backend"):
+        if data.get(key) not in (None, "background", "mcp"):
+            raise ConfigurationError(f"{key} 必须是 background 或 mcp")
     if data.get("execution_render_profile") not in (None, "preview", "control"):
         raise ConfigurationError("execution_render_profile 必须是 preview 或 control")
 

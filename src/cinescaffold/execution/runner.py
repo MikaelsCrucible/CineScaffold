@@ -9,13 +9,11 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
 from cinescaffold.errors import ExecutionError
-from cinescaffold.execution.mcp import MCP_BUILD_TOOL, OfficialBlenderMCPAdapter
-from cinescaffold.execution.validation import validate_scene_ir_for_execution
 from cinescaffold.planning.ir import SceneIR
 from cinescaffold.planning.store import canonical_hash
 from cinescaffold.platforms import default_blender_path, default_mcp_command
@@ -33,6 +31,23 @@ class ExecutionResult(BaseModel):
     error: str | None = None
 
 
+class BlenderMCPAdapter(Protocol):
+    async def apply_scene_ir(
+        self,
+        *,
+        scene_ir: SceneIR,
+        scene_ir_hash: str,
+        template_blend: Path,
+        output_dir: Path,
+    ) -> dict[str, Any]: ...
+
+    async def render_video(
+        self,
+        scene_blend: Path,
+        render_profile: str,
+    ) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class ExecutionConfig:
     output_dir: Path
@@ -40,7 +55,9 @@ class ExecutionConfig:
     mcp_command: Path = default_mcp_command()
     overwrite: bool = False
     template_timeout_seconds: float = 60.0
+    build_timeout_seconds: float = 180.0
     render_timeout_seconds: float = 600.0
+    build_backend: Literal["background", "mcp"] = "background"
     render_backend: Literal["background", "mcp"] = "background"
     render_profile: Literal["preview", "control"] = "preview"
 
@@ -52,19 +69,18 @@ class ExecutionRunner:
         self,
         config: ExecutionConfig,
         *,
-        adapter: OfficialBlenderMCPAdapter | None = None,
+        adapter: BlenderMCPAdapter | None = None,
         progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.config = config
         self.progress_callback = progress_callback
         self.output_dir = config.output_dir.resolve()
-        self.adapter = adapter or OfficialBlenderMCPAdapter(
-            mcp_command=config.mcp_command,
-            blender_path=config.blender_path,
-            log_path=self.output_dir / "blender_mcp.log",
-        )
+        self.adapter = adapter
 
     async def run(self, payload: dict[str, Any]) -> ExecutionResult:
+        # Avoid coupling package import order between the planner commit gate and executor.
+        from cinescaffold.execution.validation import validate_scene_ir_for_execution
+
         started = time.monotonic()
         self._emit("execution_validation_started")
         try:
@@ -91,39 +107,41 @@ class ExecutionRunner:
             encoding="utf-8",
         )
         self._emit("execution_workspace_completed", output_dir=str(self.output_dir))
-        template_path = self.output_dir / "factory_template.blend"
-        self._emit("factory_template_started", blender_path=str(self.config.blender_path))
         try:
-            self._create_factory_template(template_path)
-        except Exception as error:
-            self._emit("factory_template_failed", error=str(error))
-            raise
-        self._emit("factory_template_completed", path=str(template_path))
-
-        try:
-            self._emit("mcp_build_started", tool=MCP_BUILD_TOOL)
-            build = await self.adapter.apply_scene_ir(
-                scene_ir=scene_ir,
-                scene_ir_hash=scene_ir_hash,
-                template_blend=template_path,
-                output_dir=self.output_dir,
+            self._emit(
+                "scene_build_started",
+                backend=self.config.build_backend,
+                timeout_seconds=self.config.build_timeout_seconds,
             )
+            if self.config.build_backend == "mcp":
+                build = await self._build_scene_mcp(scene_ir, scene_ir_hash)
+            else:
+                build = await self._build_scene_background(normalized_ir_path, scene_ir_hash)
         except Exception as error:
-            self._emit("mcp_build_failed", error=str(error))
+            self._emit(
+                "scene_build_failed",
+                backend=self.config.build_backend,
+                error=str(error),
+            )
             result = ExecutionResult(
                 status="execution_failed",
                 scene_ir_hash=scene_ir_hash,
-                build={"status": "failed", "stage": "mcp_build", "message": str(error)},
+                build={
+                    "status": "failed",
+                    "stage": f"{self.config.build_backend}_build",
+                    "message": str(error),
+                },
                 render=None,
                 artifacts=self._existing_artifacts(),
                 elapsed_seconds=time.monotonic() - started,
-                error=f"Blender MCP 构建失败：{error}",
+                error=f"Blender 场景构建失败：{error}",
             )
             self._write_manifest(scene_ir, result)
             self._emit("execution_finished", status=result.status, elapsed_seconds=result.elapsed_seconds)
             return result
         self._emit(
-            "mcp_build_completed",
+            "scene_build_completed",
+            backend=self.config.build_backend,
             status=build.get("status"),
             blender_version=build.get("blender_version"),
             validation_passed=build.get("validation_passed"),
@@ -153,7 +171,10 @@ class ExecutionRunner:
                 timeout_seconds=self.config.render_timeout_seconds,
             )
             if self.config.render_backend == "mcp":
-                render = await self.adapter.render_video(scene_blend, self.config.render_profile)
+                render = await self._mcp_adapter().render_video(
+                    scene_blend,
+                    self.config.render_profile,
+                )
             else:
                 render = await self._render_video_background(scene_blend)
         except Exception as error:
@@ -206,8 +227,116 @@ class ExecutionRunner:
         except Exception:
             pass
 
+    async def _build_scene_background(
+        self,
+        scene_ir_path: Path,
+        scene_ir_hash: str,
+    ) -> dict[str, Any]:
+        blender_path = self._validated_blender_path()
+        result_path = self.output_dir / "background_build_result.json"
+        code = self._background_build_code(scene_ir_path, scene_ir_hash, result_path)
+        try:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    str(blender_path),
+                    "--background",
+                    "--factory-startup",
+                    "--python-expr",
+                    code,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=self.config.build_timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            self._write_blender_log(
+                self.output_dir / "build_blender.log",
+                error.stdout or "",
+                error.stderr or "",
+            )
+            raise ExecutionError(
+                f"后台 Blender 构建超过 {self.config.build_timeout_seconds:g} 秒"
+            ) from error
+        self._write_blender_log(
+            self.output_dir / "build_blender.log",
+            completed.stdout,
+            completed.stderr,
+        )
+        result = self._read_background_result(
+            result_path,
+            completed.returncode,
+            "后台 Blender 构建失败；请查看 build_blender.log",
+        )
+        if not (self.output_dir / "scene.blend").is_file():
+            raise ExecutionError("后台 Blender 构建未生成 scene.blend")
+        return result | {"transport": "background_blender"}
+
+    def _background_build_code(
+        self,
+        scene_ir_path: Path,
+        scene_ir_hash: str,
+        result_path: Path,
+    ) -> str:
+        source_root = Path(__file__).resolve().parents[2]
+        return "\n".join(
+            (
+                "import json, sys",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root)!r})",
+                "from cinescaffold.blender.runtime import apply_scene_ir",
+                (
+                    f"scene_ir = json.loads(Path({str(scene_ir_path.resolve())!r})"
+                    ".read_text(encoding='utf-8'))"
+                ),
+                (
+                    "result = apply_scene_ir("
+                    f"scene_ir, {str(self.output_dir)!r}, {scene_ir_hash!r})"
+                ),
+                (
+                    f"Path({str(result_path.resolve())!r}).write_text("
+                    "json.dumps(result, ensure_ascii=False), encoding='utf-8')"
+                ),
+            )
+        )
+
+    async def _build_scene_mcp(
+        self,
+        scene_ir: SceneIR,
+        scene_ir_hash: str,
+    ) -> dict[str, Any]:
+        template_path = self.output_dir / "factory_template.blend"
+        self._emit("factory_template_started", blender_path=str(self.config.blender_path))
+        try:
+            await asyncio.to_thread(self._create_factory_template, template_path)
+        except Exception as error:
+            self._emit("factory_template_failed", error=str(error))
+            raise
+        self._emit("factory_template_completed", path=str(template_path))
+        return await self._mcp_adapter().apply_scene_ir(
+            scene_ir=scene_ir,
+            scene_ir_hash=scene_ir_hash,
+            template_blend=template_path,
+            output_dir=self.output_dir,
+        )
+
+    def _mcp_adapter(self) -> BlenderMCPAdapter:
+        if self.adapter is None:
+            # Keep the MCP client import off the default background-only path.
+            from cinescaffold.execution.mcp import OfficialBlenderMCPAdapter
+
+            self.adapter = OfficialBlenderMCPAdapter(
+                mcp_command=self.config.mcp_command,
+                blender_path=self.config.blender_path,
+                log_path=self.output_dir / "blender_mcp.log",
+                build_timeout_seconds=self.config.build_timeout_seconds,
+                render_timeout_seconds=self.config.render_timeout_seconds,
+            )
+        return self.adapter
+
     async def _render_video_background(self, scene_blend: Path) -> dict[str, Any]:
-        blender_path = self.config.blender_path.resolve()
+        blender_path = self._validated_blender_path()
         result_path = self.output_dir / "background_render_result.json"
         code = self._background_render_code(result_path)
         try:
@@ -226,14 +355,24 @@ class ExecutionRunner:
                 check=False,
             )
         except subprocess.TimeoutExpired as error:
-            self._write_render_log(error.stdout or "", error.stderr or "")
+            self._write_blender_log(
+                self.output_dir / "render_blender.log",
+                error.stdout or "",
+                error.stderr or "",
+            )
             raise ExecutionError(
                 f"后台 Blender 渲染超过 {self.config.render_timeout_seconds:g} 秒"
             ) from error
-        self._write_render_log(completed.stdout, completed.stderr)
-        if completed.returncode != 0 or not result_path.is_file():
-            raise ExecutionError("后台 Blender 渲染失败；请查看 render_blender.log")
-        result = json.loads(result_path.read_text(encoding="utf-8"))
+        self._write_blender_log(
+            self.output_dir / "render_blender.log",
+            completed.stdout,
+            completed.stderr,
+        )
+        result = self._read_background_result(
+            result_path,
+            completed.returncode,
+            "后台 Blender 渲染失败；请查看 render_blender.log",
+        )
         expected = self._render_output_path()
         if result.get("status") != "ok" or not expected.is_file():
             raise ExecutionError("后台 Blender 未生成白模视频")
@@ -255,11 +394,34 @@ class ExecutionRunner:
             )
         )
 
-    def _write_render_log(self, stdout: str | bytes, stderr: str | bytes) -> None:
+    def _validated_blender_path(self) -> Path:
+        blender_path = self.config.blender_path.resolve()
+        if not blender_path.is_file():
+            raise ExecutionError(f"Blender 命令不存在：{blender_path}")
+        return blender_path
+
+    @staticmethod
+    def _read_background_result(
+        result_path: Path,
+        returncode: int,
+        failure_message: str,
+    ) -> dict[str, Any]:
+        if returncode != 0 or not result_path.is_file():
+            raise ExecutionError(failure_message)
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ExecutionError(f"{failure_message}；结果文件无效") from error
+        if not isinstance(result, dict):
+            raise ExecutionError(f"{failure_message}；结果不是 JSON 对象")
+        return result
+
+    @staticmethod
+    def _write_blender_log(path: Path, stdout: str | bytes, stderr: str | bytes) -> None:
         def normalize(value: str | bytes) -> str:
             return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
 
-        (self.output_dir / "render_blender.log").write_text(
+        path.write_text(
             normalize(stdout) + normalize(stderr),
             encoding="utf-8",
         )
@@ -278,6 +440,8 @@ class ExecutionRunner:
             "template_blender.log",
             "render_blender.log",
             "background_render_result.json",
+            "background_build_result.json",
+            "build_blender.log",
         )
         conflicts = [name for name in reserved if (self.output_dir / name).exists()]
         if conflicts and not self.config.overwrite:
@@ -331,6 +495,8 @@ class ExecutionRunner:
             "template_log": "template_blender.log",
             "render_log": "render_blender.log",
             "background_render_result": "background_render_result.json",
+            "background_build_result": "background_build_result.json",
+            "build_log": "build_blender.log",
         }
         return {
             artifact_id: str((self.output_dir / name).resolve())
@@ -344,13 +510,13 @@ class ExecutionRunner:
             for artifact_id, path in result.artifacts.items()
         }
         manifest = {
-            "manifest_version": "0.1",
+            "manifest_version": "0.2",
             "created_at": datetime.now(UTC).isoformat(),
             "status": result.status,
             "scene_ir_hash": result.scene_ir_hash,
             "scene_ir_schema_version": scene_ir.schema_version,
-            "executor_api_version": "0.3",
-            "mcp_tool": MCP_BUILD_TOOL,
+            "executor_api_version": "0.4",
+            "build_backend": self.config.build_backend,
             "render_backend": self.config.render_backend,
             "render_profile": self.config.render_profile,
             "blender_expected": scene_ir.provenance.expected_blender,
@@ -361,6 +527,10 @@ class ExecutionRunner:
             "render": result.render,
             "error": result.error,
         }
+        if self.config.build_backend == "mcp" or self.config.render_backend == "mcp":
+            from cinescaffold.execution.mcp import MCP_BUILD_TOOL
+
+            manifest["mcp_tool"] = MCP_BUILD_TOOL
         (self.output_dir / "execution_manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

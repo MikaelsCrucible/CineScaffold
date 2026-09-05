@@ -66,6 +66,44 @@ class CliTest(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("Studio 已停止", stderr.getvalue())
 
+    def test_execute_passes_independent_build_and_render_backends(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scene_ir = root / "scene_ir.json"
+            scene_ir.write_text("{}\n", encoding="utf-8")
+            configs = []
+
+            def runner_factory(config, *, progress_callback=None):
+                configs.append(config)
+                return _PipelineExecutionRunner(
+                    config,
+                    progress_callback=progress_callback,
+                )
+
+            with patch("cinescaffold.cli.ExecutionRunner", side_effect=runner_factory):
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    status = main(
+                        [
+                            "execute",
+                            "--scene-ir",
+                            str(scene_ir),
+                            "--output-dir",
+                            str(root / "execution"),
+                            "--build-backend",
+                            "mcp",
+                            "--build-timeout-seconds",
+                            "45",
+                            "--render-backend",
+                            "background",
+                            "--quiet",
+                        ]
+                    )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(configs[0].build_backend, "mcp")
+        self.assertEqual(configs[0].build_timeout_seconds, 45.0)
+        self.assertEqual(configs[0].render_backend, "background")
+
     def test_parse_uses_simple_config_without_exposing_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

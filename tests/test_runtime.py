@@ -23,6 +23,8 @@ class RuntimeConfigTest(unittest.TestCase):
                     "semantic_output_cost_per_million": "0.2",
                     "planning_input_cost_per_million": "1.0",
                     "planning_output_cost_per_million": "2.0",
+                    "execution_build_backend": "background",
+                    "execution_build_timeout_seconds": "240",
                     "execution_render_profile": "control",
                 },
             )
@@ -39,6 +41,8 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertEqual(str(config.semantic_cost_rates.input_per_million), "0.1")
         self.assertEqual(str(config.planning.cost_rates.input_per_million), "1.0")
         self.assertEqual(config.execution.render_profile, "preview")
+        self.assertEqual(config.execution.build_backend, "background")
+        self.assertEqual(config.execution.build_timeout_seconds, 240.0)
 
     def test_memory_merge_validates_without_writing(self) -> None:
         original = LoadedConfig(None, {"semantic_provider": "mock"})

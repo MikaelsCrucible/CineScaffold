@@ -23,11 +23,15 @@ class OfficialBlenderMCPAdapter:
         blender_path: Path,
         source_root: Path | None = None,
         log_path: Path | None = None,
+        build_timeout_seconds: float = 180.0,
+        render_timeout_seconds: float = 600.0,
     ) -> None:
         self.mcp_command = mcp_command.resolve()
         self.blender_path = blender_path.resolve()
         self.source_root = (source_root or Path(__file__).resolve().parents[2]).resolve()
         self.log_path = log_path.resolve() if log_path else None
+        self.build_timeout_seconds = build_timeout_seconds
+        self.render_timeout_seconds = render_timeout_seconds
 
     async def apply_scene_ir(
         self,
@@ -38,16 +42,30 @@ class OfficialBlenderMCPAdapter:
         output_dir: Path,
     ) -> dict[str, Any]:
         code = self._apply_code(scene_ir, scene_ir_hash, output_dir)
-        return await self._call_cli_tool(template_blend, code)
+        return await self._call_cli_tool(
+            template_blend,
+            code,
+            read_timeout=self.build_timeout_seconds,
+        )
 
     async def render_video(self, scene_blend: Path, render_profile: str) -> dict[str, Any]:
-        return await self._call_cli_tool(scene_blend, self._render_code(render_profile))
+        return await self._call_cli_tool(
+            scene_blend,
+            self._render_code(render_profile),
+            read_timeout=self.render_timeout_seconds,
+        )
 
     async def render_preview(self, scene_blend: Path) -> dict[str, Any]:
         """兼容旧调用，保持完整控制视频。"""
         return await self.render_video(scene_blend, "control")
 
-    async def _call_cli_tool(self, blend_file: Path, code: str) -> dict[str, Any]:
+    async def _call_cli_tool(
+        self,
+        blend_file: Path,
+        code: str,
+        *,
+        read_timeout: float,
+    ) -> dict[str, Any]:
         self._validate_runtime_paths(blend_file)
         transport = StdioTransport(
             command=str(self.mcp_command),
@@ -59,7 +77,7 @@ class OfficialBlenderMCPAdapter:
         toolset = MCPToolset(
             transport,
             tool_error_behavior="error",
-            read_timeout=180.0,
+            read_timeout=read_timeout,
         )
         tools = await toolset.list_tools()
         if MCP_BUILD_TOOL not in {tool.name for tool in tools}:

@@ -185,6 +185,8 @@ def _execution_config(
         blender_path=Path(blender) if blender else default_blender_path(),
         mcp_command=Path(mcp) if mcp else default_mcp_command(),
         overwrite=overwrite,
+        build_backend=data.get("execution_build_backend", "background"),
+        build_timeout_seconds=float(data.get("execution_build_timeout_seconds", "180")),
         render_backend=data.get("execution_render_backend", "background"),
         render_profile=render_profile or data.get("execution_render_profile", "preview"),
         render_timeout_seconds=float(data.get("execution_render_timeout_seconds", "600")),

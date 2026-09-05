@@ -25,7 +25,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
   -> Candidate + Validator + Commit Gate
   -> Constraint Plan + Scene IR
   -> 确定性 ExecutionRunner
-  -> Blender MCP + Blender Executor
+  -> Background Blender Executor（MCP 可选）
   -> .blend 场景与白模视频
   -> 视频生成模型（后续阶段）
 ```
@@ -53,7 +53,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - Agent 可见接口固定右手 Z-up、路径方向和屏幕坐标约定；推断机位下的解析轨道需通过投影可读性门禁。
 - 每个量化为移动的主体阶段还需通过通用投影运动可读性门禁；仅有世界坐标位移、但屏幕轨迹和尺度变化都过小的 Candidate 不得提交。
 - 未明确要求迎面或背面跟拍时，线性主体运动与摄影机视线必须保留至少 20° 的中位斜视夹角，避免 Agent 仅靠迎面尺寸变化通过运动可读性门禁；明确机位保留用户要求并记录 warning。
-- 通过官方 Blender Lab MCP 调用固定 Blender Executor，不把任意 Blender Python 暴露给模型。
+- 默认通过无窗口 Blender CLI 调用固定 Executor；官方 Blender Lab MCP 仅作为显式兼容后端。两种路径都不把任意 Blender Python 暴露给模型。
 - 输出 `.blend`、运行时验证、执行 manifest 和 H.264 白模视频。
 - CLI 实时显示 Agent 请求、工具调用、token、revision、验证和渲染进度。
 - 可从自然语言、文本六维、Cinematic Brief 或 Scene IR 一键运行到白模视频。
@@ -76,7 +76,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 
 - Python `3.12.x`
 - Blender `5.2.1 LTS`
-- 官方 Blender Lab MCP `1.0.0`
+- 可选：官方 Blender Lab MCP `1.0.0`（仅使用 `mcp` 构建或渲染后端时需要）
 - macOS 原型环境使用 `uv` 管理 Python 与工具依赖
 
 ## 安装
@@ -105,12 +105,12 @@ UI 是可选依赖；仅使用 CLI 时不需要安装它。未采用锁文件的
 面向非技术协作者的 Windows 包由 GitHub Actions 在真实 `windows-latest` 环境构建。下载并完整解压 `CineScaffold-Windows-x64-v*.zip` 后：
 
 1. 双击 `Install-CineScaffold.cmd`，自动建立包内隔离的 Python 3.12 环境并安装 Windows 锁定依赖。
-2. 按包内 `README-Windows.md` 安装 Blender 5.2.1 LTS 与官方 Blender MCP Add-on。
+2. 按包内 `README-Windows.md` 安装 Blender 5.2.1 LTS。
 3. 双击 `Start-CineScaffold.cmd` 启动 Studio。
 
-该包不要求用户预装 Python，也不修改系统 Python；首次安装依赖联网。Blender 与 Add-on 因体积和许可证边界不随 CineScaffold 打包。Windows 专用锁保持与核心/UI 锁相同版本，只用 `pywin32` 相关包替代非 Windows 的 `uvloop`。
+该包不要求用户预装 Python，也不修改系统 Python；首次安装依赖联网。Blender 因体积和许可证边界不随 CineScaffold 打包。Windows 专用锁保持与核心/UI 锁相同版本，只用 `pywin32` 相关包替代非 Windows 的 `uvloop`。
 
-Blender MCP 作为外部工具单独安装：
+默认链路不需要 MCP。只有显式配置 `execution_build_backend = mcp` 或 `execution_render_backend = mcp` 时，才需要把 Blender MCP 作为外部工具单独安装：
 
 ```bash
 uv tool install --python 3.12 \
@@ -119,7 +119,7 @@ uv tool install --python 3.12 \
   blender-mcp
 ```
 
-还需要在 Blender 中安装并启用官方 MCP Add-on。上游安装说明见 [Blender Lab MCP](https://www.blender.org/lab/mcp-server/)。
+该兼容模式还需要在 Blender 中安装并启用官方 MCP Add-on。上游安装说明见 [Blender Lab MCP](https://www.blender.org/lab/mcp-server/)。
 
 ## 配置文件
 
@@ -141,7 +141,7 @@ api_key = 填写 API KEY
 
 配置也可以分别指定 `semantic_provider/model` 和 `planning_provider/model`。完整可选字段及注释见 [`.cinescaffold.example.conf`](.cinescaffold.example.conf)。命令行参数优先于配置文件；未找到配置值时，API Key 仍可从 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 环境变量读取。
 
-配置还可以保存 Agent 预算、分阶段成本单价、Blender/MCP 路径和渲染选项。macOS、Windows 与 Linux 会分别寻找常见 Blender 和 `blender-mcp` 可执行文件；显式路径始终优先。UI 设置中心与 CLI 共用同一配置校验器，保存时不会把已配置 API Key 回传到浏览器，并在覆盖前生成本地 `.bak`。
+配置还可以保存 Agent 预算、分阶段成本单价、Blender 路径、构建/渲染后端与超时。构建和渲染默认都是 `background`；`mcp` 是显式兼容选项。macOS、Windows 与 Linux 会分别寻找常见 Blender 和可选 `blender-mcp` 可执行文件；显式路径始终优先。UI 设置中心与 CLI 共用同一配置校验器，保存时不会把已配置 API Key 回传到浏览器，并在覆盖前生成本地 `.bak`。
 
 OpenAI Semantic Parser 使用 Responses API。`semantic_reasoning_effort` 会作为 `reasoning.effort` 实际发送；GPT-5.6 可使用 `none/low/medium/high/xhigh/max`。例如：
 
@@ -205,7 +205,7 @@ Windows 使用同一套 UI 和 Workflow，无需重写前端；激活命令改�
 cinescaffold ui
 ```
 
-Windows 仍需单独安装 Blender、官方 Blender MCP，并在设置面板确认两个可执行文件路径。程序会使用 Windows 的 `explorer` 打开输出目录；macOS 使用 `open`，Linux 使用 `xdg-open`。如不希望自动打开浏览器，可使用 `cinescaffold ui --no-open`。
+Windows 仍需单独安装 Blender，并在设置面板确认可执行文件路径；默认不需要 Blender MCP。程序会使用 Windows 的 `explorer` 打开输出目录；macOS 使用 `open`，Linux 使用 `xdg-open`。如不希望自动打开浏览器，可使用 `cinescaffold ui --no-open`。
 
 ### 一键运行
 
@@ -304,6 +304,8 @@ cinescaffold execute \
   --render-profile control
 ```
 
+执行阶段默认用两个隔离的无窗口 Blender 进程：第一个从 factory startup 直接读取规范化 Scene IR，构建、运行 Runtime Validation 并保存 `scene.blend`；第二个打开该文件渲染视频。这样省去 MCP Server、Add-on、工具发现和中间 template 文件，同时保留构建与渲染的独立日志及失败边界。兼容性测试可分别传入 `--build-backend mcp`、`--render-backend mcp`。
+
 ## CLI 输出
 
 默认模式面向人工演示：进度写入 `stderr`，最终摘要写入 `stdout`。所有阶段都支持：
@@ -343,4 +345,4 @@ v0.7 已完成自然语言、文本六维、Cinematic Brief 与 Scene IR 四入�
 
 ## 许可证
 
-仓库目前尚未附带 CineScaffold 自身的开源许可证；公开可见不等于已经授予复制、修改或分发许可。Blender 与 Blender MCP 使用各自的许可证，后者作为外部工具独立安装。
+仓库目前尚未附带 CineScaffold 自身的开源许可证；公开可见不等于已经授予复制、修改或分发许可。Blender 与可选 Blender MCP 使用各自的许可证，后者作为外部工具独立安装。

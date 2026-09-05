@@ -87,6 +87,22 @@ class ConfigTest(unittest.TestCase):
             with self.assertRaisesRegex(ConfigurationError, "未知字段"):
                 load_config(path)
 
+    def test_execution_backends_and_build_timeout_are_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.conf"
+            path.write_text(
+                "execution_build_backend = background\n"
+                "execution_render_backend = mcp\n"
+                "execution_build_timeout_seconds = 240\n",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            with self.assertRaisesRegex(ConfigurationError, "execution_build_backend"):
+                save_config(path, {"execution_build_backend": "invalid"})
+
+        self.assertEqual(config.data["execution_build_backend"], "background")
+        self.assertEqual(config.data["execution_build_timeout_seconds"], "240")
+
     def test_low_effort_is_not_accepted_as_thinking_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.conf"
