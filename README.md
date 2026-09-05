@@ -304,7 +304,9 @@ cinescaffold execute \
   --render-profile control
 ```
 
-执行阶段默认用两个隔离的无窗口 Blender 进程：第一个从 factory startup 直接读取规范化 Scene IR，构建、运行 Runtime Validation 并保存 `scene.blend`；第二个打开该文件渲染视频。这样省去 MCP Server、Add-on、工具发现和中间 template 文件，同时保留构建与渲染的独立日志及失败边界。兼容性测试可分别传入 `--build-backend mcp`、`--render-backend mcp`。
+当构建与渲染都使用默认 `background` 后端时，执行阶段默认只启动一个无窗口 Blender 进程：从 factory startup 读取规范化 Scene IR，构建场景、运行 Runtime Validation、立即保存 `scene.blend`，再在同一进程中渲染视频。这样同时省去第二次 Blender 启动和 `.blend` 重载，以及 MCP Server、Add-on、工具发现和中间 template 文件。构建结果会在渲染前先落盘，因此渲染失败仍可保留已验证的场景并被正确归类。
+
+需要隔离日志或定位构建/渲染问题时可传入 `--process-mode split`，恢复两个后台 Blender 进程。只要构建或渲染任一阶段选择 `mcp`，系统也会自动使用 Split；兼容性测试可分别传入 `--build-backend mcp`、`--render-backend mcp`。对应配置项为 `execution_process_mode = fused|split`。
 
 ## CLI 输出
 

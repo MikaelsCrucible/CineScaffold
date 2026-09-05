@@ -75,6 +75,17 @@ class _FakeBackgroundExecutionRunner(ExecutionRunner):
         preview.write_bytes(b"fake-video")
         return {"status": "ok", "artifact": str(preview)}
 
+    async def _build_and_render_background(self, scene_ir_path, scene_ir_hash):
+        build = await self._build_scene_background(scene_ir_path, scene_ir_hash)
+        render = await self._render_video_background(self.output_dir / "scene.blend")
+        return build, render, None
+
+
+class _FakeFusedRenderFailureRunner(_FakeBackgroundExecutionRunner):
+    async def _build_and_render_background(self, scene_ir_path, scene_ir_hash):
+        build = await self._build_scene_background(scene_ir_path, scene_ir_hash)
+        return build, None, "render crash"
+
 
 class _FakeShading:
     light = ""
@@ -271,6 +282,107 @@ class ExecutionTest(unittest.TestCase):
         )
         self.assertEqual(result["transport"], "background_blender")
 
+    def test_fused_bootstrap_saves_build_result_before_rendering(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = ExecutionRunner(ExecutionConfig(output_dir=root))
+            code = runner._background_fused_code(
+                root / "scene_ir.json",
+                "sha256:test",
+                root / "build.json",
+                root / "render.json",
+            )
+
+        compile(code, "<background-fused>", "exec")
+        self.assertIn("apply_scene_ir, render_clay_video", code)
+        self.assertLess(code.index("build.json"), code.index("render_clay_video('preview')"))
+        self.assertNotIn("bpy.ops", code)
+
+    def test_fused_background_launches_one_factory_process(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blender = root / "blender"
+            blender.write_bytes(b"")
+            (root / "scene.blend").write_bytes(b"fake-blend")
+            (root / "diagnostic_preview.mp4").write_bytes(b"fake-video")
+            (root / "background_build_result.json").write_text(
+                '{"status":"ok","validation_passed":true}',
+                encoding="utf-8",
+            )
+            (root / "background_render_result.json").write_text(
+                '{"status":"ok"}',
+                encoding="utf-8",
+            )
+            runner = ExecutionRunner(
+                ExecutionConfig(
+                    output_dir=root,
+                    blender_path=blender,
+                    build_timeout_seconds=12,
+                    render_timeout_seconds=34,
+                )
+            )
+            with patch("cinescaffold.execution.runner.subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = ""
+                run.return_value.stderr = ""
+                build, render, error = asyncio.run(
+                    runner._build_and_render_background(
+                        root / "scene_ir.json",
+                        "sha256:test",
+                    )
+                )
+                command = run.call_args.args[0]
+
+        self.assertEqual(
+            command[:3],
+            [str(blender.resolve()), "--background", "--factory-startup"],
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], 46)
+        self.assertEqual(build["transport"], "background_blender")
+        self.assertEqual(render["transport"], "background_blender")
+        self.assertIsNone(error)
+
+    def test_fused_background_preserves_build_when_render_crashes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blender = root / "blender"
+            blender.write_bytes(b"")
+            (root / "scene.blend").write_bytes(b"fake-blend")
+            (root / "background_build_result.json").write_text(
+                '{"status":"ok","validation_passed":true}',
+                encoding="utf-8",
+            )
+            runner = ExecutionRunner(
+                ExecutionConfig(output_dir=root, blender_path=blender)
+            )
+            with patch("cinescaffold.execution.runner.subprocess.run") as run:
+                run.return_value.returncode = 1
+                run.return_value.stdout = ""
+                run.return_value.stderr = "render crash"
+                build, render, error = asyncio.run(
+                    runner._build_and_render_background(
+                        root / "scene_ir.json",
+                        "sha256:test",
+                    )
+                )
+
+        self.assertEqual(build["status"], "ok")
+        self.assertIsNone(render)
+        self.assertIn("渲染失败", error)
+
+    def test_fused_render_crash_is_reported_as_render_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "execution"
+            runner = _FakeFusedRenderFailureRunner(
+                ExecutionConfig(output_dir=output_dir)
+            )
+            result = asyncio.run(runner.run(self.scene_ir.model_dump(mode="json")))
+
+        self.assertEqual(result.status, "render_failed")
+        self.assertEqual(result.build["status"], "ok")
+        self.assertEqual(result.render["stage"], "background_render")
+        self.assertIn("blend", result.artifacts)
+
     def test_background_is_default_and_does_not_create_mcp_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory) / "execution"
@@ -283,8 +395,24 @@ class ExecutionTest(unittest.TestCase):
         self.assertEqual(result.status, "success")
         self.assertEqual(manifest["build_backend"], "background")
         self.assertEqual(manifest["render_backend"], "background")
+        self.assertEqual(manifest["requested_process_mode"], "fused")
+        self.assertEqual(manifest["process_mode"], "fused")
         self.assertNotIn("mcp_tool", manifest)
         self.assertFalse((output_dir / "factory_template.blend").exists())
+
+    def test_split_mode_keeps_two_background_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "execution"
+            runner = _FakeBackgroundExecutionRunner(
+                ExecutionConfig(output_dir=output_dir, process_mode="split")
+            )
+            result = asyncio.run(runner.run(self.scene_ir.model_dump(mode="json")))
+            manifest = json.loads(
+                (output_dir / "execution_manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(manifest["process_mode"], "split")
 
     def test_runner_completes_without_agent_and_writes_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -307,6 +435,8 @@ class ExecutionTest(unittest.TestCase):
         self.assertIn("diagnostic_preview", manifest["artifact_sha256"])
         self.assertEqual(manifest["build_backend"], "mcp")
         self.assertEqual(manifest["render_backend"], "mcp")
+        self.assertEqual(manifest["requested_process_mode"], "fused")
+        self.assertEqual(manifest["process_mode"], "split")
         self.assertEqual(manifest["render_profile"], "preview")
 
     def test_control_profile_keeps_formal_output_path(self) -> None:

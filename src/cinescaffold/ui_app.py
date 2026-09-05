@@ -522,6 +522,11 @@ def _settings_form(ui: Any, controller: UiSessionController, elements: dict[str,
                 {"": "默认（Background）", "background": "Background", "mcp": "MCP"},
             )
             select(
+                "execution_process_mode",
+                "后台进程模式",
+                {"": "默认（Fused）", "fused": "Fused", "split": "Split（诊断）"},
+            )
+            select(
                 "execution_render_profile",
                 "默认渲染规格",
                 {"": "默认", "preview": "Preview", "control": "Control"},

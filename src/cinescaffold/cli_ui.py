@@ -289,7 +289,11 @@ class TerminalReporter:
 
     def _on_scene_build_started(self, payload: dict[str, Any]) -> None:
         backend = str(payload.get("backend", "background"))
-        self._line("→", "Blender 构建", f"通过 {backend} 后端构建代理场景", "blue")
+        if payload.get("process_mode") == "fused":
+            message = "通过单个后台 Blender 进程构建、验证并渲染"
+        else:
+            message = f"通过 {backend} 后端构建代理场景"
+        self._line("→", "Blender 构建", message, "blue")
 
     def _on_scene_build_completed(self, payload: dict[str, Any]) -> None:
         message = (

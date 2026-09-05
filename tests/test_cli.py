@@ -95,6 +95,8 @@ class CliTest(unittest.TestCase):
                             "45",
                             "--render-backend",
                             "background",
+                            "--process-mode",
+                            "split",
                             "--quiet",
                         ]
                     )
@@ -103,6 +105,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(configs[0].build_backend, "mcp")
         self.assertEqual(configs[0].build_timeout_seconds, 45.0)
         self.assertEqual(configs[0].render_backend, "background")
+        self.assertEqual(configs[0].process_mode, "split")
 
     def test_parse_uses_simple_config_without_exposing_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

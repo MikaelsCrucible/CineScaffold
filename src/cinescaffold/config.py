@@ -61,6 +61,7 @@ ALLOWED_KEYS = {
     "execution_build_backend",
     "execution_build_timeout_seconds",
     "execution_render_backend",
+    "execution_process_mode",
     "execution_render_profile",
     "execution_render_timeout_seconds",
 }
@@ -320,6 +321,8 @@ def _validate_config(data: dict[str, str]) -> None:
     for key in ("execution_build_backend", "execution_render_backend"):
         if data.get(key) not in (None, "background", "mcp"):
             raise ConfigurationError(f"{key} 必须是 background 或 mcp")
+    if data.get("execution_process_mode") not in (None, "fused", "split"):
+        raise ConfigurationError("execution_process_mode 必须是 fused 或 split")
     if data.get("execution_render_profile") not in (None, "preview", "control"):
         raise ConfigurationError("execution_render_profile 必须是 preview 或 control")
 

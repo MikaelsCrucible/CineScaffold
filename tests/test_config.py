@@ -93,15 +93,19 @@ class ConfigTest(unittest.TestCase):
             path.write_text(
                 "execution_build_backend = background\n"
                 "execution_render_backend = mcp\n"
+                "execution_process_mode = split\n"
                 "execution_build_timeout_seconds = 240\n",
                 encoding="utf-8",
             )
             config = load_config(path)
             with self.assertRaisesRegex(ConfigurationError, "execution_build_backend"):
                 save_config(path, {"execution_build_backend": "invalid"})
+            with self.assertRaisesRegex(ConfigurationError, "execution_process_mode"):
+                save_config(path, {"execution_process_mode": "invalid"})
 
         self.assertEqual(config.data["execution_build_backend"], "background")
         self.assertEqual(config.data["execution_build_timeout_seconds"], "240")
+        self.assertEqual(config.data["execution_process_mode"], "split")
 
     def test_low_effort_is_not_accepted_as_thinking_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

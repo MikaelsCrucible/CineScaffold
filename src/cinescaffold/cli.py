@@ -292,6 +292,12 @@ def _add_execution_arguments(parser: argparse.ArgumentParser) -> None:
         help="默认由无窗口 Blender 直接渲染；mcp 保留为兼容后端",
     )
     parser.add_argument(
+        "--process-mode",
+        choices=("fused", "split"),
+        default=None,
+        help="后台构建和渲染默认合并在一个 Blender 进程；split 用于分阶段诊断",
+    )
+    parser.add_argument(
         "--render-profile",
         choices=("preview", "control"),
         default=None,
@@ -436,6 +442,9 @@ def _apply_execution_config(args: argparse.Namespace, config: LoadedConfig) -> N
     )
     args.render_backend = (
         args.render_backend or config.data.get("execution_render_backend") or "background"
+    )
+    args.process_mode = (
+        args.process_mode or config.data.get("execution_process_mode") or "fused"
     )
     args.render_profile = (
         args.render_profile or config.data.get("execution_render_profile") or "preview"
@@ -666,6 +675,7 @@ def _execution_run_config(
         build_backend=args.build_backend,
         build_timeout_seconds=args.build_timeout_seconds,
         render_backend=args.render_backend,
+        process_mode=args.process_mode,
         render_profile=args.render_profile,
         render_timeout_seconds=args.render_timeout_seconds,
     )

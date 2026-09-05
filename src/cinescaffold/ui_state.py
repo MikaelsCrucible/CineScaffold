@@ -140,7 +140,9 @@ def event_message(event_type: str, payload: dict[str, Any]) -> str | None:
             f"{payload.get('frame_count', '?')} 帧"
         ),
         "scene_build_started": (
-            f"开始通过 {payload.get('backend', 'background')} 后端构建 Blender 场景"
+            "开始通过单个后台 Blender 进程构建、验证并渲染"
+            if payload.get("process_mode") == "fused"
+            else f"开始通过 {payload.get('backend', 'background')} 后端构建 Blender 场景"
         ),
         "scene_build_completed": (
             f"Blender 场景已构建：violations={payload.get('violation_count', '?')}"

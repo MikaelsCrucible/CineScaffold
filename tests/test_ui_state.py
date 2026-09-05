@@ -101,6 +101,14 @@ class UiStateTest(unittest.TestCase):
 
         self.assertEqual(message, "开始通过 background 后端构建 Blender 场景")
 
+    def test_event_log_identifies_fused_background_pipeline(self) -> None:
+        message = event_message(
+            "scene_build_started",
+            {"backend": "background", "process_mode": "fused"},
+        )
+
+        self.assertEqual(message, "开始通过单个后台 Blender 进程构建、验证并渲染")
+
 
 if __name__ == "__main__":
     unittest.main()

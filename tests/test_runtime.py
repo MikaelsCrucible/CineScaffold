@@ -25,6 +25,7 @@ class RuntimeConfigTest(unittest.TestCase):
                     "planning_output_cost_per_million": "2.0",
                     "execution_build_backend": "background",
                     "execution_build_timeout_seconds": "240",
+                    "execution_process_mode": "split",
                     "execution_render_profile": "control",
                 },
             )
@@ -43,6 +44,7 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertEqual(config.execution.render_profile, "preview")
         self.assertEqual(config.execution.build_backend, "background")
         self.assertEqual(config.execution.build_timeout_seconds, 240.0)
+        self.assertEqual(config.execution.process_mode, "split")
 
     def test_memory_merge_validates_without_writing(self) -> None:
         original = LoadedConfig(None, {"semantic_provider": "mock"})

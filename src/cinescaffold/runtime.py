@@ -188,6 +188,7 @@ def _execution_config(
         build_backend=data.get("execution_build_backend", "background"),
         build_timeout_seconds=float(data.get("execution_build_timeout_seconds", "180")),
         render_backend=data.get("execution_render_backend", "background"),
+        process_mode=data.get("execution_process_mode", "fused"),
         render_profile=render_profile or data.get("execution_render_profile", "preview"),
         render_timeout_seconds=float(data.get("execution_render_timeout_seconds", "600")),
     )

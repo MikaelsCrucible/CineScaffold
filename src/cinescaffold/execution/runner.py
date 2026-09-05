@@ -59,6 +59,7 @@ class ExecutionConfig:
     render_timeout_seconds: float = 600.0
     build_backend: Literal["background", "mcp"] = "background"
     render_backend: Literal["background", "mcp"] = "background"
+    process_mode: Literal["fused", "split"] = "fused"
     render_profile: Literal["preview", "control"] = "preview"
 
 
@@ -107,13 +108,24 @@ class ExecutionRunner:
             encoding="utf-8",
         )
         self._emit("execution_workspace_completed", output_dir=str(self.output_dir))
+        process_mode = self._effective_process_mode()
+        fused_render: dict[str, Any] | None = None
+        fused_render_error: str | None = None
         try:
             self._emit(
                 "scene_build_started",
                 backend=self.config.build_backend,
+                process_mode=process_mode,
                 timeout_seconds=self.config.build_timeout_seconds,
             )
-            if self.config.build_backend == "mcp":
+            if process_mode == "fused":
+                build, fused_render, fused_render_error = (
+                    await self._build_and_render_background(
+                        normalized_ir_path,
+                        scene_ir_hash,
+                    )
+                )
+            elif self.config.build_backend == "mcp":
                 build = await self._build_scene_mcp(scene_ir, scene_ir_hash)
             else:
                 build = await self._build_scene_background(normalized_ir_path, scene_ir_hash)
@@ -166,11 +178,18 @@ class ExecutionRunner:
             self._emit(
                 "render_started",
                 backend=self.config.render_backend,
+                process_mode=process_mode,
                 profile=self.config.render_profile,
                 frame_count=scene_ir.timeline.frame_count,
                 timeout_seconds=self.config.render_timeout_seconds,
             )
-            if self.config.render_backend == "mcp":
+            if process_mode == "fused":
+                if fused_render_error is not None:
+                    raise ExecutionError(fused_render_error)
+                if fused_render is None:
+                    raise ExecutionError("合并后台 Blender 未返回渲染结果")
+                render = fused_render
+            elif self.config.render_backend == "mcp":
                 render = await self._mcp_adapter().render_video(
                     scene_blend,
                     self.config.render_profile,
@@ -272,6 +291,127 @@ class ExecutionRunner:
         if not (self.output_dir / "scene.blend").is_file():
             raise ExecutionError("后台 Blender 构建未生成 scene.blend")
         return result | {"transport": "background_blender"}
+
+    async def _build_and_render_background(
+        self,
+        scene_ir_path: Path,
+        scene_ir_hash: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+        """在一个 Blender 进程中构建、校验、保存并渲染。"""
+        blender_path = self._validated_blender_path()
+        build_result_path = self.output_dir / "background_build_result.json"
+        render_result_path = self.output_dir / "background_render_result.json"
+        log_path = self.output_dir / "fused_blender.log"
+        code = self._background_fused_code(
+            scene_ir_path,
+            scene_ir_hash,
+            build_result_path,
+            render_result_path,
+        )
+        timeout_seconds = (
+            self.config.build_timeout_seconds + self.config.render_timeout_seconds
+        )
+        try:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    str(blender_path),
+                    "--background",
+                    "--factory-startup",
+                    "--python-expr",
+                    code,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            self._write_blender_log(log_path, error.stdout or "", error.stderr or "")
+            if build_result_path.is_file():
+                build = self._read_background_result(
+                    build_result_path,
+                    0,
+                    "合并后台 Blender 构建结果无效；请查看 fused_blender.log",
+                )
+                return (
+                    build | {"transport": "background_blender"},
+                    None,
+                    f"合并后台 Blender 渲染超过 {timeout_seconds:g} 秒总预算",
+                )
+            raise ExecutionError(
+                f"合并后台 Blender 构建超过 {timeout_seconds:g} 秒总预算"
+            ) from error
+
+        self._write_blender_log(log_path, completed.stdout, completed.stderr)
+        build = self._read_background_result(
+            build_result_path,
+            0,
+            "合并后台 Blender 构建失败；请查看 fused_blender.log",
+        )
+        build = build | {"transport": "background_blender"}
+        if not (self.output_dir / "scene.blend").is_file():
+            raise ExecutionError("合并后台 Blender 构建未生成 scene.blend")
+        if build.get("status") != "ok" or build.get("validation_passed") is not True:
+            return build, None, None
+        if completed.returncode != 0 or not render_result_path.is_file():
+            return build, None, "合并后台 Blender 渲染失败；请查看 fused_blender.log"
+        try:
+            render = self._read_background_result(
+                render_result_path,
+                0,
+                "合并后台 Blender 渲染失败；请查看 fused_blender.log",
+            )
+        except ExecutionError as error:
+            return build, None, str(error)
+        expected = self._render_output_path()
+        if render.get("status") != "ok" or not expected.is_file():
+            return build, None, "合并后台 Blender 未生成白模视频"
+        return build, render | {"transport": "background_blender"}, None
+
+    def _background_fused_code(
+        self,
+        scene_ir_path: Path,
+        scene_ir_hash: str,
+        build_result_path: Path,
+        render_result_path: Path,
+    ) -> str:
+        source_root = Path(__file__).resolve().parents[2]
+        return "\n".join(
+            (
+                "import json, sys, time",
+                "from pathlib import Path",
+                f"sys.path.insert(0, {str(source_root)!r})",
+                (
+                    "from cinescaffold.blender.runtime import "
+                    "apply_scene_ir, render_clay_video"
+                ),
+                (
+                    f"scene_ir = json.loads(Path({str(scene_ir_path.resolve())!r})"
+                    ".read_text(encoding='utf-8'))"
+                ),
+                "build_started = time.monotonic()",
+                (
+                    "build = apply_scene_ir("
+                    f"scene_ir, {str(self.output_dir)!r}, {scene_ir_hash!r})"
+                ),
+                "build['elapsed_seconds'] = time.monotonic() - build_started",
+                "build['transport'] = 'background_blender'",
+                (
+                    f"Path({str(build_result_path.resolve())!r}).write_text("
+                    "json.dumps(build, ensure_ascii=False), encoding='utf-8')"
+                ),
+                "if build.get('status') == 'ok' and build.get('validation_passed') is True:",
+                "    render_started = time.monotonic()",
+                f"    render = render_clay_video({self.config.render_profile!r})",
+                "    render['elapsed_seconds'] = time.monotonic() - render_started",
+                "    render['transport'] = 'background_blender'",
+                (
+                    f"    Path({str(render_result_path.resolve())!r}).write_text("
+                    "json.dumps(render, ensure_ascii=False), encoding='utf-8')"
+                ),
+            )
+        )
 
     def _background_build_code(
         self,
@@ -442,6 +582,7 @@ class ExecutionRunner:
             "background_render_result.json",
             "background_build_result.json",
             "build_blender.log",
+            "fused_blender.log",
         )
         conflicts = [name for name in reserved if (self.output_dir / name).exists()]
         if conflicts and not self.config.overwrite:
@@ -497,6 +638,7 @@ class ExecutionRunner:
             "background_render_result": "background_render_result.json",
             "background_build_result": "background_build_result.json",
             "build_log": "build_blender.log",
+            "fused_log": "fused_blender.log",
         }
         return {
             artifact_id: str((self.output_dir / name).resolve())
@@ -510,14 +652,16 @@ class ExecutionRunner:
             for artifact_id, path in result.artifacts.items()
         }
         manifest = {
-            "manifest_version": "0.2",
+            "manifest_version": "0.3",
             "created_at": datetime.now(UTC).isoformat(),
             "status": result.status,
             "scene_ir_hash": result.scene_ir_hash,
             "scene_ir_schema_version": scene_ir.schema_version,
-            "executor_api_version": "0.4",
+            "executor_api_version": "0.5",
             "build_backend": self.config.build_backend,
             "render_backend": self.config.render_backend,
+            "requested_process_mode": self.config.process_mode,
+            "process_mode": self._effective_process_mode(),
             "render_profile": self.config.render_profile,
             "blender_expected": scene_ir.provenance.expected_blender,
             "elapsed_seconds": result.elapsed_seconds,
@@ -539,6 +683,15 @@ class ExecutionRunner:
     def _render_output_path(self) -> Path:
         name = "diagnostic_preview.mp4" if self.config.render_profile == "preview" else "clay_preview.mp4"
         return self.output_dir / name
+
+    def _effective_process_mode(self) -> Literal["fused", "split"]:
+        if (
+            self.config.process_mode == "fused"
+            and self.config.build_backend == "background"
+            and self.config.render_backend == "background"
+        ):
+            return "fused"
+        return "split"
 
 
 def _sha256(path: Path) -> str:
