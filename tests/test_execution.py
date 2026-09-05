@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -75,16 +76,58 @@ class _FakeBackgroundExecutionRunner(ExecutionRunner):
         preview.write_bytes(b"fake-video")
         return {"status": "ok", "artifact": str(preview)}
 
-    async def _build_and_render_background(self, scene_ir_path, scene_ir_hash):
+    async def _build_and_render_background(
+        self,
+        scene_ir_path,
+        scene_ir_hash,
+        *,
+        frame_count,
+    ):
         build = await self._build_scene_background(scene_ir_path, scene_ir_hash)
+        self._emit_scene_build_completed(build)
+        self._emit_render_started("fused", frame_count)
         render = await self._render_video_background(self.output_dir / "scene.blend")
         return build, render, None
 
 
 class _FakeFusedRenderFailureRunner(_FakeBackgroundExecutionRunner):
-    async def _build_and_render_background(self, scene_ir_path, scene_ir_hash):
+    async def _build_and_render_background(
+        self,
+        scene_ir_path,
+        scene_ir_hash,
+        *,
+        frame_count,
+    ):
         build = await self._build_scene_background(scene_ir_path, scene_ir_hash)
+        self._emit_scene_build_completed(build)
+        self._emit_render_started("fused", frame_count)
         return build, None, "render crash"
+
+
+class _FakeProcess:
+    def __init__(self, *, returncode: int = 0, timeout_once: bool = False) -> None:
+        self.final_returncode = returncode
+        self.returncode: int | None = None
+        self.timeout_once = timeout_once
+        self.wait_timeouts: list[float | None] = []
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_timeouts.append(timeout)
+        if self.timeout_once:
+            self.timeout_once = False
+            raise subprocess.TimeoutExpired("blender", timeout)
+        self.returncode = self.final_returncode
+        return self.final_returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.terminated = True
 
 
 class _FakeShading:
@@ -313,31 +356,36 @@ class ExecutionTest(unittest.TestCase):
                 '{"status":"ok"}',
                 encoding="utf-8",
             )
+            events: list[str] = []
             runner = ExecutionRunner(
                 ExecutionConfig(
                     output_dir=root,
                     blender_path=blender,
                     build_timeout_seconds=12,
                     render_timeout_seconds=34,
-                )
+                ),
+                progress_callback=lambda event, payload: events.append(event),
             )
-            with patch("cinescaffold.execution.runner.subprocess.run") as run:
-                run.return_value.returncode = 0
-                run.return_value.stdout = ""
-                run.return_value.stderr = ""
+            process = _FakeProcess()
+            with patch(
+                "cinescaffold.execution.runner.subprocess.Popen",
+                return_value=process,
+            ) as popen:
                 build, render, error = asyncio.run(
                     runner._build_and_render_background(
                         root / "scene_ir.json",
                         "sha256:test",
+                        frame_count=240,
                     )
                 )
-                command = run.call_args.args[0]
+                command = popen.call_args.args[0]
 
         self.assertEqual(
             command[:3],
             [str(blender.resolve()), "--background", "--factory-startup"],
         )
-        self.assertEqual(run.call_args.kwargs["timeout"], 46)
+        self.assertEqual(process.wait_timeouts, [34])
+        self.assertLess(events.index("scene_build_completed"), events.index("render_started"))
         self.assertEqual(build["transport"], "background_blender")
         self.assertEqual(render["transport"], "background_blender")
         self.assertIsNone(error)
@@ -355,20 +403,90 @@ class ExecutionTest(unittest.TestCase):
             runner = ExecutionRunner(
                 ExecutionConfig(output_dir=root, blender_path=blender)
             )
-            with patch("cinescaffold.execution.runner.subprocess.run") as run:
-                run.return_value.returncode = 1
-                run.return_value.stdout = ""
-                run.return_value.stderr = "render crash"
+            process = _FakeProcess(returncode=1)
+            with patch(
+                "cinescaffold.execution.runner.subprocess.Popen",
+                return_value=process,
+            ):
                 build, render, error = asyncio.run(
                     runner._build_and_render_background(
                         root / "scene_ir.json",
                         "sha256:test",
+                        frame_count=240,
                     )
                 )
 
         self.assertEqual(build["status"], "ok")
         self.assertIsNone(render)
         self.assertIn("渲染失败", error)
+
+    def test_fused_render_timeout_is_not_increased_by_build_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blender = root / "blender"
+            blender.write_bytes(b"")
+            (root / "scene.blend").write_bytes(b"fake-blend")
+            (root / "background_build_result.json").write_text(
+                '{"status":"ok","validation_passed":true}',
+                encoding="utf-8",
+            )
+            runner = ExecutionRunner(
+                ExecutionConfig(
+                    output_dir=root,
+                    blender_path=blender,
+                    build_timeout_seconds=12,
+                    render_timeout_seconds=34,
+                )
+            )
+            process = _FakeProcess(timeout_once=True)
+            with patch(
+                "cinescaffold.execution.runner.subprocess.Popen",
+                return_value=process,
+            ):
+                build, render, error = asyncio.run(
+                    runner._build_and_render_background(
+                        root / "scene_ir.json",
+                        "sha256:test",
+                        frame_count=240,
+                    )
+                )
+
+        self.assertEqual(build["status"], "ok")
+        self.assertIsNone(render)
+        self.assertEqual(process.wait_timeouts, [34, 5.0])
+        self.assertTrue(process.terminated)
+        self.assertIn("超过 34 秒", error)
+
+    def test_fused_build_timeout_terminates_before_render_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blender = root / "blender"
+            blender.write_bytes(b"")
+            events: list[str] = []
+            runner = ExecutionRunner(
+                ExecutionConfig(
+                    output_dir=root,
+                    blender_path=blender,
+                    build_timeout_seconds=0.01,
+                ),
+                progress_callback=lambda event, payload: events.append(event),
+            )
+            process = _FakeProcess()
+            with patch(
+                "cinescaffold.execution.runner.subprocess.Popen",
+                return_value=process,
+            ):
+                with self.assertRaisesRegex(ExecutionError, "构建超过 0.01 秒"):
+                    asyncio.run(
+                        runner._build_and_render_background(
+                            root / "scene_ir.json",
+                            "sha256:test",
+                            frame_count=240,
+                        )
+                    )
+
+        self.assertTrue(process.terminated)
+        self.assertNotIn("render_started", events)
 
     def test_fused_render_crash_is_reported_as_render_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

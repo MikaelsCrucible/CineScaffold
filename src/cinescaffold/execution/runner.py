@@ -123,6 +123,7 @@ class ExecutionRunner:
                     await self._build_and_render_background(
                         normalized_ir_path,
                         scene_ir_hash,
+                        frame_count=scene_ir.timeline.frame_count,
                     )
                 )
             elif self.config.build_backend == "mcp":
@@ -151,14 +152,8 @@ class ExecutionRunner:
             self._write_manifest(scene_ir, result)
             self._emit("execution_finished", status=result.status, elapsed_seconds=result.elapsed_seconds)
             return result
-        self._emit(
-            "scene_build_completed",
-            backend=self.config.build_backend,
-            status=build.get("status"),
-            blender_version=build.get("blender_version"),
-            validation_passed=build.get("validation_passed"),
-            violation_count=build.get("violation_count"),
-        )
+        if process_mode != "fused":
+            self._emit_scene_build_completed(build)
         if build.get("status") != "ok" or build.get("validation_passed") is not True:
             result = ExecutionResult(
                 status="runtime_mismatch",
@@ -175,14 +170,8 @@ class ExecutionRunner:
 
         scene_blend = self.output_dir / "scene.blend"
         try:
-            self._emit(
-                "render_started",
-                backend=self.config.render_backend,
-                process_mode=process_mode,
-                profile=self.config.render_profile,
-                frame_count=scene_ir.timeline.frame_count,
-                timeout_seconds=self.config.render_timeout_seconds,
-            )
+            if process_mode != "fused":
+                self._emit_render_started(process_mode, scene_ir.timeline.frame_count)
             if process_mode == "fused":
                 if fused_render_error is not None:
                     raise ExecutionError(fused_render_error)
@@ -246,6 +235,26 @@ class ExecutionRunner:
         except Exception:
             pass
 
+    def _emit_scene_build_completed(self, build: dict[str, Any]) -> None:
+        self._emit(
+            "scene_build_completed",
+            backend=self.config.build_backend,
+            status=build.get("status"),
+            blender_version=build.get("blender_version"),
+            validation_passed=build.get("validation_passed"),
+            violation_count=build.get("violation_count"),
+        )
+
+    def _emit_render_started(self, process_mode: str, frame_count: int) -> None:
+        self._emit(
+            "render_started",
+            backend=self.config.render_backend,
+            process_mode=process_mode,
+            profile=self.config.render_profile,
+            frame_count=frame_count,
+            timeout_seconds=self.config.render_timeout_seconds,
+        )
+
     async def _build_scene_background(
         self,
         scene_ir_path: Path,
@@ -296,8 +305,10 @@ class ExecutionRunner:
         self,
         scene_ir_path: Path,
         scene_ir_hash: str,
+        *,
+        frame_count: int,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
-        """在一个 Blender 进程中构建、校验、保存并渲染。"""
+        """在一个 Blender 进程中执行，并分别监管构建与渲染阶段。"""
         blender_path = self._validated_blender_path()
         build_result_path = self.output_dir / "background_build_result.json"
         render_result_path = self.output_dir / "background_render_result.json"
@@ -308,66 +319,112 @@ class ExecutionRunner:
             build_result_path,
             render_result_path,
         )
-        timeout_seconds = (
-            self.config.build_timeout_seconds + self.config.render_timeout_seconds
-        )
+        command = [
+            str(blender_path),
+            "--background",
+            "--factory-startup",
+            "--python-expr",
+            code,
+        ]
+        process: subprocess.Popen[str] | None = None
+        log_handle = log_path.open("w", encoding="utf-8")
         try:
-            completed = await asyncio.to_thread(
-                subprocess.run,
-                [
-                    str(blender_path),
-                    "--background",
-                    "--factory-startup",
-                    "--python-expr",
-                    code,
-                ],
-                capture_output=True,
+            process = subprocess.Popen(
+                command,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=timeout_seconds,
-                check=False,
             )
-        except subprocess.TimeoutExpired as error:
-            self._write_blender_log(log_path, error.stdout or "", error.stderr or "")
-            if build_result_path.is_file():
+            try:
+                build = await asyncio.wait_for(
+                    self._wait_for_background_result(process, build_result_path),
+                    timeout=self.config.build_timeout_seconds,
+                )
+            except TimeoutError as error:
+                await asyncio.to_thread(self._terminate_process, process)
+                raise ExecutionError(
+                    f"合并后台 Blender 构建超过 {self.config.build_timeout_seconds:g} 秒"
+                ) from error
+
+            if build is None:
+                returncode = await asyncio.to_thread(process.wait)
                 build = self._read_background_result(
                     build_result_path,
-                    0,
-                    "合并后台 Blender 构建结果无效；请查看 fused_blender.log",
+                    returncode,
+                    "合并后台 Blender 构建失败；请查看 fused_blender.log",
                 )
-                return (
-                    build | {"transport": "background_blender"},
-                    None,
-                    f"合并后台 Blender 渲染超过 {timeout_seconds:g} 秒总预算",
-                )
-            raise ExecutionError(
-                f"合并后台 Blender 构建超过 {timeout_seconds:g} 秒总预算"
-            ) from error
 
-        self._write_blender_log(log_path, completed.stdout, completed.stderr)
-        build = self._read_background_result(
-            build_result_path,
-            0,
-            "合并后台 Blender 构建失败；请查看 fused_blender.log",
-        )
-        build = build | {"transport": "background_blender"}
-        if not (self.output_dir / "scene.blend").is_file():
-            raise ExecutionError("合并后台 Blender 构建未生成 scene.blend")
-        if build.get("status") != "ok" or build.get("validation_passed") is not True:
-            return build, None, None
-        if completed.returncode != 0 or not render_result_path.is_file():
-            return build, None, "合并后台 Blender 渲染失败；请查看 fused_blender.log"
+            build = build | {"transport": "background_blender"}
+            if not (self.output_dir / "scene.blend").is_file():
+                raise ExecutionError("合并后台 Blender 构建未生成 scene.blend")
+            self._emit_scene_build_completed(build)
+            if build.get("status") != "ok" or build.get("validation_passed") is not True:
+                await asyncio.to_thread(process.wait)
+                return build, None, None
+
+            self._emit_render_started("fused", frame_count)
+            try:
+                returncode = await asyncio.to_thread(
+                    process.wait,
+                    self.config.render_timeout_seconds,
+                )
+            except subprocess.TimeoutExpired:
+                await asyncio.to_thread(self._terminate_process, process)
+                return (
+                    build,
+                    None,
+                    f"合并后台 Blender 渲染超过 {self.config.render_timeout_seconds:g} 秒",
+                )
+            if returncode != 0 or not render_result_path.is_file():
+                return build, None, "合并后台 Blender 渲染失败；请查看 fused_blender.log"
+            try:
+                render = self._read_background_result(
+                    render_result_path,
+                    0,
+                    "合并后台 Blender 渲染失败；请查看 fused_blender.log",
+                )
+            except ExecutionError as error:
+                return build, None, str(error)
+            expected = self._render_output_path()
+            if render.get("status") != "ok" or not expected.is_file():
+                return build, None, "合并后台 Blender 未生成白模视频"
+            return build, render | {"transport": "background_blender"}, None
+        finally:
+            if process is not None and process.poll() is None:
+                await asyncio.to_thread(self._terminate_process, process)
+            log_handle.close()
+
+    @staticmethod
+    async def _wait_for_background_result(
+        process: subprocess.Popen[str],
+        result_path: Path,
+    ) -> dict[str, Any] | None:
+        """Wait until the complete build JSON is readable or Blender exits."""
+
+        while True:
+            if result_path.is_file():
+                try:
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    result = None
+                if isinstance(result, dict):
+                    return result
+            if process.poll() is not None:
+                return None
+            await asyncio.sleep(0.02)
+
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen[str]) -> None:
+        """Stop a timed-out Blender process without leaving a background child."""
+
+        if process.poll() is not None:
+            return
+        process.terminate()
         try:
-            render = self._read_background_result(
-                render_result_path,
-                0,
-                "合并后台 Blender 渲染失败；请查看 fused_blender.log",
-            )
-        except ExecutionError as error:
-            return build, None, str(error)
-        expected = self._render_output_path()
-        if render.get("status") != "ok" or not expected.is_file():
-            return build, None, "合并后台 Blender 未生成白模视频"
-        return build, render | {"transport": "background_blender"}, None
+            process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
 
     def _background_fused_code(
         self,
