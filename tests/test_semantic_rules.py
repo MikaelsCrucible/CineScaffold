@@ -10,10 +10,10 @@ from tests.helpers import ROOT, valid_model_output
 class SemanticRulesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.rules = load_translation_rules(
-            ROOT / "prompts/semantic_parser/translation_rules.json"
+            ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
         )
         self.schema = load_schema(
-            ROOT / "schemas/semantic_translation_parameters.schema.json"
+            ROOT / "src/cinescaffold/resources/schemas/semantic_translation_parameters.schema.json"
         )
 
     def test_loneliness_maps_to_fixed_profile_without_preview_lighting(self) -> None:
@@ -95,7 +95,7 @@ class SemanticRulesTest(unittest.TestCase):
 
     def test_invalid_radial_camera_rule_cannot_write_fixed_speed(self) -> None:
         rules = load_translation_rules(
-            ROOT / "prompts/semantic_parser/translation_rules.json"
+            ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
         )
         rules["emotion_classes"]["E1"]["camera"]["speed_mps"] = 0.67
 

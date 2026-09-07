@@ -39,7 +39,7 @@ from cinescaffold.planning.runner import (
 from cinescaffold.planning.trace import CostRates, TraceConfig
 from cinescaffold.platforms import default_blender_path, default_mcp_command
 from cinescaffold.providers import DeepSeekProvider, MockProvider, OpenAIProvider
-from cinescaffold.runtime import cost_rates_from_config
+from cinescaffold.runtime import RuntimeResourcePaths, cost_rates_from_config
 from cinescaffold.semantic import SemanticParseResult, SemanticParserConfig, parse_semantic_input
 from cinescaffold.workflow import PipelineRunConfig, PipelineSource, WorkflowRunner
 
@@ -164,6 +164,7 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_semantic_arguments(parser: argparse.ArgumentParser) -> None:
+    resources = RuntimeResourcePaths.from_package()
     parser.add_argument("--timeout", type=float)
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument(
@@ -176,42 +177,43 @@ def _add_semantic_arguments(parser: argparse.ArgumentParser) -> None:
         choices=("none", "low", "medium", "high", "xhigh", "max"),
         help="语义解析推理强度；DeepSeek 仅支持 low/high/max",
     )
-    parser.add_argument("--rules", type=Path, default=Path("prompts/semantic_parser/rules.md"))
+    parser.add_argument("--rules", type=Path, default=resources.semantic_rules)
     parser.add_argument(
         "--system-template",
         type=Path,
-        default=Path("prompts/semantic_parser/system.md"),
+        default=resources.semantic_system,
     )
     parser.add_argument(
         "--format-example",
         type=Path,
-        default=Path("prompts/semantic_parser/format_example.json"),
+        default=resources.semantic_example,
     )
     parser.add_argument(
         "--schema",
         type=Path,
-        default=Path("schemas/cinematic_brief_model_output.schema.json"),
+        default=resources.semantic_schema,
     )
     parser.add_argument(
         "--translation-rules",
         type=Path,
-        default=Path("prompts/semantic_parser/translation_rules.json"),
+        default=resources.translation_rules,
         help="四要素到六维的确定性量化表",
     )
     parser.add_argument(
         "--translation-schema",
         type=Path,
-        default=Path("schemas/semantic_translation_parameters.schema.json"),
+        default=resources.translation_schema,
         help="量化快照 Schema",
     )
     parser.add_argument("--mock-response", type=Path)
 
 
 def _add_planning_arguments(parser: argparse.ArgumentParser) -> None:
+    resources = RuntimeResourcePaths.from_package()
     parser.add_argument(
         "--system-prompt",
         type=Path,
-        default=Path("prompts/scene_planner/system.md"),
+        default=resources.planning_system,
     )
     parser.add_argument(
         "--resume-from",

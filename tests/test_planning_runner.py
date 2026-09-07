@@ -290,7 +290,7 @@ class InterpreterRunnerTest(unittest.TestCase):
                 provider="mock",
                 run_dir=run_dir,
                 run_id="test_planning_run",
-                system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+                system_prompt_path=ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md",
                 trace_config=TraceConfig(max_event_bytes=8_192, max_string_chars=1_024),
                 cost_rates=CostRates(
                     input_per_million=Decimal("1.25"),
@@ -360,7 +360,7 @@ class InterpreterRunnerTest(unittest.TestCase):
                             provider="mock",
                             run_dir=run_dir,
                             run_id=f"mock_design_{filename}",
-                            system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+                            system_prompt_path=ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md",
                         )
                     ).run(brief)
                 )
@@ -395,7 +395,7 @@ class InterpreterRunnerTest(unittest.TestCase):
                         provider="mock",
                         run_dir=root / "first",
                         run_id="checkpoint_source",
-                        system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+                        system_prompt_path=ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md",
                     )
                 ).run(valid_planning_brief())
             )
@@ -407,7 +407,7 @@ class InterpreterRunnerTest(unittest.TestCase):
                         run_dir=second_dir,
                         run_id="checkpoint_resume",
                         resume_from=root / "first" / "checkpoint_latest.json",
-                        system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+                        system_prompt_path=ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md",
                     )
                 ).run(valid_planning_brief())
             )
@@ -432,7 +432,7 @@ class InterpreterRunnerTest(unittest.TestCase):
                 provider="mock",
                 run_dir=Path(directory),
                 run_id="test_repair_run",
-                system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+                system_prompt_path=ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md",
             )
 
             result = asyncio.run(InterpreterRunner(config).run(brief))
@@ -463,7 +463,7 @@ class InterpreterRunnerTest(unittest.TestCase):
                 provider="mock",
                 run_dir=run_dir,
                 run_id="mock_full_power",
-                system_prompt_path=ROOT / "prompts/scene_planner/system.md",
+                system_prompt_path=ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md",
                 full_power_diagnostic=True,
             )
 

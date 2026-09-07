@@ -20,7 +20,7 @@ def main() -> None:
     for name, schema in schemas.items():
         schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
         schema["$id"] = f"https://cinescaffold.local/schemas/{name}"
-        path = ROOT / "schemas" / name
+        path = ROOT / "src/cinescaffold/resources/schemas" / name
         path.write_text(
             json.dumps(schema, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

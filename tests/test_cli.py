@@ -4,7 +4,7 @@ import json
 import io
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -153,13 +153,13 @@ class CliTest(unittest.TestCase):
                         "--text",
                         "测试描述",
                         "--system-template",
-                        str(ROOT / "prompts/semantic_parser/system.md"),
+                        str(ROOT / "src/cinescaffold/resources/prompts/semantic_parser/system.md"),
                         "--rules",
-                        str(ROOT / "prompts/semantic_parser/rules.md"),
+                        str(ROOT / "src/cinescaffold/resources/prompts/semantic_parser/rules.md"),
                         "--format-example",
-                        str(ROOT / "prompts/semantic_parser/format_example.json"),
+                        str(ROOT / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json"),
                         "--schema",
-                        str(ROOT / "schemas/cinematic_brief_model_output.schema.json"),
+                        str(ROOT / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json"),
                         "--output",
                         str(output),
                         "--quiet",
@@ -170,6 +170,30 @@ class CliTest(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(result["provenance"]["provider"], "mock")
         self.assertIn("15.0 秒", stdout.getvalue())
+
+    def test_mock_parse_uses_packaged_resources_outside_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "brief.json"
+            with chdir(root):
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    status = main(
+                        [
+                            "parse",
+                            "--provider",
+                            "mock",
+                            "--text",
+                            "测试描述",
+                            "--output",
+                            str(output),
+                            "--quiet",
+                        ]
+                    )
+
+            result = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 0)
+        self.assertEqual(result["provenance"]["provider"], "mock")
 
     def test_mock_plan_writes_scene_ir_and_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -191,7 +215,7 @@ class CliTest(unittest.TestCase):
                         "--output-dir",
                         str(output_dir),
                         "--system-prompt",
-                        str(ROOT / "prompts/scene_planner/system.md"),
+                        str(ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md"),
                         "--quiet",
                     ]
                 )
@@ -224,7 +248,7 @@ class CliTest(unittest.TestCase):
                         "--output-dir",
                         str(root / "run"),
                         "--system-prompt",
-                        str(ROOT / "prompts/scene_planner/system.md"),
+                        str(ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md"),
                         "--no-color",
                     ]
                 )
@@ -257,7 +281,7 @@ class CliTest(unittest.TestCase):
                         "--output-dir",
                         str(root / "run"),
                         "--system-prompt",
-                        str(ROOT / "prompts/scene_planner/system.md"),
+                        str(ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md"),
                         "--json",
                         "--quiet",
                     ]

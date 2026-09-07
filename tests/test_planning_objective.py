@@ -75,7 +75,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
         ]
         normalized, parameters = apply_translation_rules(
             brief["content"],
-            load_translation_rules(ROOT / "prompts/semantic_parser/translation_rules.json"),
+            load_translation_rules(ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"),
         )
         brief["schema_version"] = "0.2"
         brief["content"] = normalized

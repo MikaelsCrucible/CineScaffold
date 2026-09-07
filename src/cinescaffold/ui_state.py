@@ -88,7 +88,7 @@ class UiSessionController:
             output_dir=output,
             include_semantic=inputs.source_kind in {"text", "textual_six"},
             overwrite=inputs.overwrite,
-            resources=RuntimeResourcePaths.from_root(self.project_root),
+            resources=RuntimeResourcePaths.from_package(),
             render_profile=inputs.render_profile,
         )
         return source, config

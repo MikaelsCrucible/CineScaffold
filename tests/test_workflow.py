@@ -59,19 +59,19 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
         parser = None
         if semantic:
             response = json.loads(
-                (ROOT / "prompts/semantic_parser/format_example.json").read_text(encoding="utf-8")
+                (ROOT / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json").read_text(encoding="utf-8")
             )
             provider = MockProvider(response)
             parser = SemanticParserConfig(
-                system_template_path=ROOT / "prompts/semantic_parser/system.md",
-                rules_path=ROOT / "prompts/semantic_parser/rules.md",
-                format_example_path=ROOT / "prompts/semantic_parser/format_example.json",
+                system_template_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/system.md",
+                rules_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/rules.md",
+                format_example_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json",
                 model_output_schema_path=ROOT
-                / "schemas/cinematic_brief_model_output.schema.json",
+                / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json",
                 translation_rules_path=ROOT
-                / "prompts/semantic_parser/translation_rules.json",
+                / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json",
                 translation_parameters_schema_path=ROOT
-                / "schemas/semantic_translation_parameters.schema.json",
+                / "src/cinescaffold/resources/schemas/semantic_translation_parameters.schema.json",
             )
         return PipelineRunConfig(
             output_dir=root / "run",

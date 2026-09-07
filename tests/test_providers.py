@@ -13,7 +13,7 @@ from tests.helpers import ROOT, valid_model_output
 
 class ProviderTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.schema = load_schema(ROOT / "schemas/cinematic_brief_model_output.schema.json")
+        self.schema = load_schema(ROOT / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json")
         self.output = valid_model_output()
 
     def test_openai_uses_responses_structured_output(self) -> None:

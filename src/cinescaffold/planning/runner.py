@@ -43,6 +43,7 @@ from cinescaffold.planning.trace import (
     TracingModel,
     usage_summary,
 )
+from cinescaffold.resources.paths import RuntimeResourcePaths
 
 
 DEFAULT_MAX_REQUESTS = 48
@@ -59,7 +60,7 @@ class InterpreterRunConfig(BaseModel):
     model: str | None = None
     base_url: str | None = None
     api_key: str | None = Field(default=None, exclude=True)
-    system_prompt_path: Path = Path("prompts/scene_planner/system.md")
+    system_prompt_path: Path = RuntimeResourcePaths.from_package().planning_system
     run_dir: Path
     resume_from: Path | None = None
     run_id: str | None = None

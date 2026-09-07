@@ -1,0 +1,1 @@
+"""Scene-planning prompt resources."""

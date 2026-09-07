@@ -14,12 +14,12 @@ class SemanticParserTest(unittest.TestCase):
     def test_mock_provider_builds_provenance_envelope(self) -> None:
         provider = MockProvider(valid_model_output())
         config = SemanticParserConfig(
-            system_template_path=ROOT / "prompts/semantic_parser/system.md",
-            rules_path=ROOT / "prompts/semantic_parser/rules.md",
-            format_example_path=ROOT / "prompts/semantic_parser/format_example.json",
-            model_output_schema_path=ROOT / "schemas/cinematic_brief_model_output.schema.json",
-            translation_rules_path=ROOT / "prompts/semantic_parser/translation_rules.json",
-            translation_parameters_schema_path=ROOT / "schemas/semantic_translation_parameters.schema.json",
+            system_template_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/system.md",
+            rules_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/rules.md",
+            format_example_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json",
+            model_output_schema_path=ROOT / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json",
+            translation_rules_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json",
+            translation_parameters_schema_path=ROOT / "src/cinescaffold/resources/schemas/semantic_translation_parameters.schema.json",
         )
         result = parse_cinematic_brief("测试自然语言", provider, config)
 
@@ -46,12 +46,12 @@ class SemanticParserTest(unittest.TestCase):
     def test_textual_six_input_is_preserved_and_labeled(self) -> None:
         provider = MockProvider(valid_model_output())
         config = SemanticParserConfig(
-            system_template_path=ROOT / "prompts/semantic_parser/system.md",
-            rules_path=ROOT / "prompts/semantic_parser/rules.md",
-            format_example_path=ROOT / "prompts/semantic_parser/format_example.json",
-            model_output_schema_path=ROOT / "schemas/cinematic_brief_model_output.schema.json",
-            translation_rules_path=ROOT / "prompts/semantic_parser/translation_rules.json",
-            translation_parameters_schema_path=ROOT / "schemas/semantic_translation_parameters.schema.json",
+            system_template_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/system.md",
+            rules_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/rules.md",
+            format_example_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json",
+            model_output_schema_path=ROOT / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json",
+            translation_rules_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json",
+            translation_parameters_schema_path=ROOT / "src/cinescaffold/resources/schemas/semantic_translation_parameters.schema.json",
         )
 
         result = parse_semantic_input(TEXTUAL_SIX, provider, config, source_kind="textual_six")
@@ -63,12 +63,12 @@ class SemanticParserTest(unittest.TestCase):
     def test_invalid_mock_response_is_rejected_locally(self) -> None:
         provider = MockProvider({"summary": "不完整"})
         config = SemanticParserConfig(
-            system_template_path=ROOT / "prompts/semantic_parser/system.md",
-            rules_path=ROOT / "prompts/semantic_parser/rules.md",
-            format_example_path=ROOT / "prompts/semantic_parser/format_example.json",
-            model_output_schema_path=ROOT / "schemas/cinematic_brief_model_output.schema.json",
-            translation_rules_path=ROOT / "prompts/semantic_parser/translation_rules.json",
-            translation_parameters_schema_path=ROOT / "schemas/semantic_translation_parameters.schema.json",
+            system_template_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/system.md",
+            rules_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/rules.md",
+            format_example_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json",
+            model_output_schema_path=ROOT / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json",
+            translation_rules_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json",
+            translation_parameters_schema_path=ROOT / "src/cinescaffold/resources/schemas/semantic_translation_parameters.schema.json",
         )
         with self.assertRaises(SchemaValidationError):
             parse_cinematic_brief("测试自然语言", provider, config)

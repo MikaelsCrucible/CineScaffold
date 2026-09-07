@@ -25,8 +25,8 @@ def main() -> int:
     package_dir.mkdir(parents=True)
 
     _copy_tree(root / "packaging/windows", package_dir)
-    _copy_tree(root / "prompts", package_dir / "prompts")
-    _copy_tree(root / "schemas", package_dir / "schemas")
+    _copy_tree(root / "src/cinescaffold/resources/prompts", package_dir / "prompts")
+    _copy_tree(root / "src/cinescaffold/resources/schemas", package_dir / "schemas")
     _copy_tree(root / "examples", package_dir / "examples")
     shutil.copy2(root / ".cinescaffold.example.conf", package_dir / ".cinescaffold.example.conf")
 

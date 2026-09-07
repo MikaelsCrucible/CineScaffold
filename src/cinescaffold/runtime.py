@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -22,31 +21,9 @@ from cinescaffold.planning.runner import (
 from cinescaffold.planning.trace import CostRates, TraceConfig
 from cinescaffold.platforms import default_blender_path, default_mcp_command
 from cinescaffold.providers import DeepSeekProvider, MockProvider, OpenAIProvider
+from cinescaffold.resources.paths import RuntimeResourcePaths
 from cinescaffold.semantic import SemanticParserConfig
 from cinescaffold.workflow import PipelineRunConfig
-
-
-@dataclass(frozen=True)
-class RuntimeResourcePaths:
-    semantic_system: Path
-    semantic_rules: Path
-    semantic_example: Path
-    semantic_schema: Path
-    translation_rules: Path
-    translation_schema: Path
-    planning_system: Path
-
-    @classmethod
-    def from_root(cls, root: Path) -> RuntimeResourcePaths:
-        return cls(
-            semantic_system=root / "prompts/semantic_parser/system.md",
-            semantic_rules=root / "prompts/semantic_parser/rules.md",
-            semantic_example=root / "prompts/semantic_parser/format_example.json",
-            semantic_schema=root / "schemas/cinematic_brief_model_output.schema.json",
-            translation_rules=root / "prompts/semantic_parser/translation_rules.json",
-            translation_schema=root / "schemas/semantic_translation_parameters.schema.json",
-            planning_system=root / "prompts/scene_planner/system.md",
-        )
 
 
 def build_pipeline_run_config(
@@ -60,7 +37,7 @@ def build_pipeline_run_config(
 ) -> PipelineRunConfig:
     """把已校验的用户配置转换为完整运行配置。"""
 
-    paths = resources or RuntimeResourcePaths.from_root(Path.cwd())
+    paths = resources or RuntimeResourcePaths.from_package()
     semantic_provider = None
     semantic_parser = None
     semantic_cost_rates = None

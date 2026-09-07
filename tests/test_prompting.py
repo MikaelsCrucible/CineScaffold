@@ -15,16 +15,16 @@ class PromptingTest(unittest.TestCase):
             rules_path.write_text("这是外部规则。", encoding="utf-8")
             bundle = build_prompt(
                 description="测试描述",
-                system_template_path=ROOT / "prompts/semantic_parser/system.md",
+                system_template_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/system.md",
                 rules_path=rules_path,
-                format_example_path=ROOT / "prompts/semantic_parser/format_example.json",
+                format_example_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json",
             )
         self.assertIn("这是外部规则。", bundle.system_prompt)
         self.assertIn("测试描述", bundle.user_prompt)
         self.assertIn("仅表示字段形状", bundle.user_prompt)
 
     def test_scene_planner_prompt_freezes_coordinate_and_visibility_semantics(self) -> None:
-        prompt = (ROOT / "prompts/scene_planner/system.md").read_text(encoding="utf-8")
+        prompt = (ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md").read_text(encoding="utf-8")
 
         self.assertIn("右手 `+Z-up`", prompt)
         self.assertIn("`+plane_normal`", prompt)
@@ -33,7 +33,7 @@ class PromptingTest(unittest.TestCase):
         self.assertIn("soft score 作为记录用的质量指标而非阻断条件", prompt)
 
     def test_semantic_rules_freeze_priority_axis_and_lighting_scope(self) -> None:
-        rules = (ROOT / "prompts/semantic_parser/rules.md").read_text(encoding="utf-8")
+        rules = (ROOT / "src/cinescaffold/resources/prompts/semantic_parser/rules.md").read_text(encoding="utf-8")
 
         self.assertIn("明确摄影机、构图或光源要求优先于情绪映射", rules)
         self.assertIn("世界前方为 `(0,-1,0)`", rules)

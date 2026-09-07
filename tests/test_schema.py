@@ -9,7 +9,7 @@ from tests.helpers import ROOT, valid_model_output
 
 class SchemaTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.schema = load_schema(ROOT / "schemas/cinematic_brief_model_output.schema.json")
+        self.schema = load_schema(ROOT / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json")
 
     def test_valid_output_passes(self) -> None:
         validate_model_output(valid_model_output(), self.schema)

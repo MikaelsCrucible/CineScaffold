@@ -7,7 +7,6 @@ from pathlib import Path
 from cinescaffold.config import LoadedConfig, merge_config
 from cinescaffold.errors import ConfigurationError
 from cinescaffold.runtime import RuntimeResourcePaths, build_pipeline_run_config
-from tests.helpers import ROOT
 
 
 class RuntimeConfigTest(unittest.TestCase):
@@ -34,7 +33,6 @@ class RuntimeConfigTest(unittest.TestCase):
                 output_dir=root / "run",
                 include_semantic=True,
                 overwrite=True,
-                resources=RuntimeResourcePaths.from_root(ROOT),
                 render_profile="preview",
             )
 
@@ -45,6 +43,14 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertEqual(config.execution.build_backend, "background")
         self.assertEqual(config.execution.build_timeout_seconds, 240.0)
         self.assertEqual(config.execution.process_mode, "split")
+        self.assertTrue(config.semantic_parser.system_template_path.is_file())
+        self.assertTrue(config.planning.system_prompt_path.is_file())
+
+    def test_packaged_resource_paths_are_complete(self) -> None:
+        resources = RuntimeResourcePaths.from_package()
+
+        for path in resources.__dict__.values():
+            self.assertTrue(path.is_file(), path)
 
     def test_memory_merge_validates_without_writing(self) -> None:
         original = LoadedConfig(None, {"semantic_provider": "mock"})

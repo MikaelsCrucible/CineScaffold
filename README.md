@@ -100,6 +100,58 @@ uv pip install --python .venv/bin/python --no-deps --editable .
 
 UI 是可选依赖；仅使用 CLI 时不需要安装它。未采用锁文件的开发环境也可用 `pip install -e ".[ui]"`，正式测试仍建议使用锁文件。
 
+### 作为 Python 核心库安装
+
+CineScaffold 的运行时 Prompt 与 JSON Schema 已随 wheel 安装，不要求调用方位于源码仓库，也不依赖当前工作目录。另一个仓库在本地联调时可以使用可编辑安装：
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ../CineScaffold
+python -c "import cinescaffold; print(cinescaffold.__version__)"
+```
+
+生产环境应依赖正式 tag 或完整 commit，而不是 `main`：
+
+```text
+cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.0
+```
+
+嵌入式调用只依赖 [`cinescaffold.api`](src/cinescaffold/api.py) 的公共入口；`planning`、`execution` 等子模块属于内部实现：
+
+```python
+import asyncio
+import json
+from pathlib import Path
+
+from cinescaffold.api import (
+    PipelineSource,
+    build_pipeline_run_config,
+    load_config,
+    run_pipeline,
+)
+
+
+async def main() -> None:
+    scene_ir = json.loads(Path("scene_ir.json").read_text(encoding="utf-8"))
+    config = build_pipeline_run_config(
+        load_config(),
+        output_dir=Path("output"),
+        include_semantic=False,
+        overwrite=False,
+    )
+    result = await run_pipeline(
+        PipelineSource(kind="scene_ir", payload=scene_ir),
+        config,
+    )
+    print(result["status"])
+
+
+asyncio.run(main())
+```
+
+需要替换 Prompt 或 Schema 的研究工具仍可显式构造 `RuntimeResourcePaths`；缺省始终使用 wheel 内冻结资源。
+
 ### Windows x64 发行包
 
 面向非技术协作者的 Windows 包由 GitHub Actions 在真实 `windows-latest` 环境构建。下载并完整解压 `CineScaffold-Windows-x64-v*.zip` 后：
@@ -260,7 +312,7 @@ cinescaffold parse \
 
 Mock Provider 不理解文本，只返回指定的模拟响应。未传入 `--mock-response` 时，它仅用于检查 Schema 和 CLI 接口。
 
-语义说明位于 [`prompts/semantic_parser/rules.md`](prompts/semantic_parser/rules.md)，固定数值位于 [`prompts/semantic_parser/translation_rules.json`](prompts/semantic_parser/translation_rules.json)。新解析结果使用 Cinematic Brief v0.5：语义模型直接输出类型化的动作、运动模式、目标、载体、路径、动作后置状态，以及摄影机相对主体运动的 `front/rear/side/three_quarter/unspecified` 关系。Provenance 额外记录输入来自自然语言还是文本六维，并用 SHA-256 绑定同步保存的人类可读文本。确定性代码只校验这些字段并查表量化，不再用关键词子串重新猜测动作或机位含义。旧 v0.1–v0.4 Brief 仍可直接进入规划。用户明确要求始终优先于规则推导和缺省值；径向推近/后拉的速度由起止距离和实际时长计算。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
+语义说明位于 [`resources/prompts/semantic_parser/rules.md`](src/cinescaffold/resources/prompts/semantic_parser/rules.md)，固定数值位于 [`resources/prompts/semantic_parser/translation_rules.json`](src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json)。新解析结果使用 Cinematic Brief v0.5：语义模型直接输出类型化的动作、运动模式、目标、载体、路径、动作后置状态，以及摄影机相对主体运动的 `front/rear/side/three_quarter/unspecified` 关系。Provenance 额外记录输入来自自然语言还是文本六维，并用 SHA-256 绑定同步保存的人类可读文本。确定性代码只校验这些字段并查表量化，不再用关键词子串重新猜测动作或机位含义。旧 v0.1–v0.4 Brief 仍可直接进入规划。用户明确要求始终优先于规则推导和缺省值；径向推近/后拉的速度由起止距离和实际时长计算。光源量化只留给后续视频生成阶段，Blender 白模仍使用中性、无阴影的技术照明。
 
 规划门禁不仅检查实体是否在三维世界中移动，还检查每个移动阶段在摄影机投影中的轨迹范围和尺度变化。默认推断机位若让运动在白模里近似静止，Agent 必须调整运动方向、机位或距离；用户明确指定摄影机设计时保留其要求，并把同项降为 warning。
 
@@ -339,11 +391,11 @@ cinescaffold execute \
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-JSON Schema 位于 [`schemas/`](schemas/)，Prompt 位于 [`prompts/`](prompts/)，核心实现位于 [`src/cinescaffold/`](src/cinescaffold/)。
+JSON Schema 与 Prompt 位于 [`src/cinescaffold/resources/`](src/cinescaffold/resources/)，核心实现位于 [`src/cinescaffold/`](src/cinescaffold/)。这些资源是源码运行与 wheel 安装共用的唯一权威副本。
 
 ## 项目状态
 
-v0.7 已完成自然语言、文本六维、Cinematic Brief 与 Scene IR 四入口到 Blender 白模视频的统一 CLI/UI 管线，并实现首版四要素到六维规则。下一阶段重点是用审核样本评估并冻结该规则、扩充通用 Validator、输出 Depth/Object ID 控制素材，并建立可重复的视频模型对照实验。
+v0.8 在 v0.7 统一 CLI/UI 管线基础上补齐可嵌入核心库边界：运行资源随 wheel 分发、默认路径不依赖源码工作目录，并提供稳定的 `cinescaffold.api`。下一阶段重点是用审核样本评估并冻结规则、扩充通用 Validator、输出 Depth/Object ID 控制素材，并建立可重复的视频模型对照实验。
 
 ## 许可证
 

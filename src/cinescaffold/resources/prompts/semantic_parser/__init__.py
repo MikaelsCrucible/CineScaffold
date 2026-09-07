@@ -1,0 +1,1 @@
+"""Semantic-parser prompt resources."""
