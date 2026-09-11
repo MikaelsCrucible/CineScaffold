@@ -15,7 +15,7 @@ from cinescaffold.planning.design import (
 from cinescaffold.planning.domain import PlanningProfile
 from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
 from cinescaffold.planning.models import _mock_scene_skeleton
-from cinescaffold.planning.objective import project_objective_brief
+from cinescaffold.planning.objective import ObjectiveRequirement, project_objective_brief
 from cinescaffold.planning.toolkit import ScenePlanningToolkit
 from tests.helpers import valid_planning_brief
 
@@ -244,6 +244,20 @@ class PlanningDesignTest(unittest.TestCase):
 
     def test_nested_orbit_option_is_commit_ready_and_target_relative(self) -> None:
         toolkit = _example_toolkit("solar_system_10s.json")
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "translation_parameters": {
+                    "camera": {
+                        "height_m": 1.5,
+                        "focal_length_mm": 50.0,
+                        "movement": "static",
+                        "start_distance_m": 15.0,
+                        "end_distance_m": 15.0,
+                        "source_status": "default",
+                    }
+                }
+            }
+        )
         toolkit.submit_scene_skeleton(_solar_skeleton())
 
         result = toolkit.request_design_options(
@@ -307,6 +321,99 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertAlmostEqual(visibility.keyframes[-1].time_seconds, 7.0)
         self.assertEqual(carried.path.space, "target_relative")
         self.assertEqual(carried.path.target_id, "car")
+
+    def test_motion_phase_uses_narrower_motion_interval_than_shared_event(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+        toolkit.objective_brief.subject_motion[1].update(
+            start_time_seconds=3.0,
+            end_time_seconds=6.0,
+        )
+        toolkit.objective_brief.subject_motion[2].update(
+            start_time_seconds=6.0,
+            end_time_seconds=8.0,
+        )
+        shared_event = {
+            "id": "arrival_and_boarding",
+            "description": "车辆到达后人物上车",
+            "start_time_seconds": 3.0,
+            "end_time_seconds": 8.0,
+            "reference_ids": ["car", "man"],
+            "source_status": "inferred",
+        }
+        toolkit.objective_brief.timeline["events"].append(shared_event)
+        for index in (1, 2):
+            toolkit.objective_brief.subject_motion[index]["motion_semantics"] = {
+                "action_kind": "approach" if index == 1 else "board",
+                "motion_type": "moving" if index == 1 else "interactive",
+                "motion_mode": "self_propelled" if index == 1 else "local_interaction",
+                "direction_mode": "toward_target",
+                "target_id": "man" if index == 1 else "car",
+                "carrier_id": None,
+                "path_type": "linear" if index == 1 else "stationary",
+                "timeline_event_id": "arrival_and_boarding",
+                "postconditions": {
+                    "contained_by_id": "car" if index == 2 else None,
+                    "external_visibility": "hidden" if index == 2 else "unchanged",
+                },
+                "source_status": "inferred",
+            }
+        skeleton = _pickup_skeleton()
+        skeleton["motion_phases"][1]["timeline_event_id"] = "arrival_and_boarding"
+        skeleton["motion_phases"][2]["timeline_event_id"] = "arrival_and_boarding"
+        skeleton["motion_phases"][3]["timeline_event_id"] = "arrival_and_boarding"
+        toolkit.submit_scene_skeleton(skeleton)
+
+        options = toolkit.request_design_options(max_options=1)
+        toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
+        state = toolkit.store.get()
+
+        self.assertEqual(
+            [item.time_seconds for item in state.motion_tracks["design_motion_car"].keyframes[:2]],
+            [3.0, 6.0],
+        )
+        self.assertEqual(
+            [item.time_seconds for item in state.motion_tracks["design_motion_man"].keyframes],
+            [6.0, 8.0],
+        )
+        codes = {item["code"] for item in toolkit.validate_candidate()["violations"]}
+        self.assertNotIn("MOTION_MODE_STATIONARY_VIOLATED", codes)
+
+    def test_explicit_visibility_becomes_hard_keep_in_frame_constraint(self) -> None:
+        base = _desert_toolkit()
+        visibility_ref = "content.composition.visibility_requirements[0].requirement"
+        objective = base.objective_brief.model_copy(
+            update={
+                "composition": base.objective_brief.composition
+                | {
+                    "visibility_requirements": [
+                        {
+                            "subject_id": "ship_01",
+                            "requirement": {
+                                "value": "远处可见",
+                                "source_status": "explicit",
+                                "source_text": "远处有巨大的飞船",
+                            },
+                        }
+                    ]
+                },
+                "explicit_requirements": [
+                    *base.objective_brief.explicit_requirements,
+                    ObjectiveRequirement(path=visibility_ref, value="远处可见"),
+                ],
+            }
+        )
+        toolkit = ScenePlanningToolkit(objective)
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+
+        options = toolkit.request_design_options(max_options=1)
+        applied = toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
+        constraint = toolkit.store.get().constraints["design_visibility_ship_01_0"]
+
+        self.assertEqual(applied["status"], "ok")
+        self.assertEqual(constraint.type, "keep_in_frame")
+        self.assertEqual(constraint.strength, "hard")
+        self.assertEqual(constraint.source_ref, visibility_ref)
+        self.assertEqual(constraint.parameters.minimum_inside_fraction, 0.01)
 
     def test_design_handles_late_approach_world_forward_and_carried_binding(self) -> None:
         toolkit = _example_toolkit("roadside_pickup_12s.json")

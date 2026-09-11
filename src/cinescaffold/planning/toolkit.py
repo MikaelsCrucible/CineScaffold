@@ -55,7 +55,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.22"
+TOOLKIT_VERSION = "0.23"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -2375,8 +2375,12 @@ def _typed_motion_semantic_violations(
         baseline = positions[0]
         movement_extent = max(length(subtract(item, baseline)) for item in positions)
         motion_mode = semantics.get("motion_mode")
+        action_kind = semantics.get("action_kind")
         stationary_tolerance = 1e-4
-        if motion_mode in {"stationary", "local_interaction"}:
+        displacement_action = action_kind in {"board", "disembark"}
+        if motion_mode == "stationary" or (
+            motion_mode == "local_interaction" and not displacement_action
+        ):
             if movement_extent > stationary_tolerance:
                 violations.append(
                     _violation(
@@ -2389,7 +2393,7 @@ def _typed_motion_semantic_violations(
                         adjustable_variables=[f"motion_tracks.{subject_id}"],
                     )
                 )
-        elif motion_mode == "self_propelled":
+        elif motion_mode == "self_propelled" or displacement_action:
             if movement_extent <= stationary_tolerance:
                 violations.append(
                     _violation(
@@ -3548,8 +3552,8 @@ def _hard_semantic_violations(
         for track in state.camera.tracks.values():
             if track.source_ref:
                 locations.setdefault(track.source_ref, set()).add("camera_track")
-    # 同一运动可能在动作、空间关系和时间事件中重复表达，统一继承其映射证据。
-    for equivalent_refs in _equivalent_motion_source_refs(objective_brief):
+    # 同一客观要求可能在 Brief 的多个字段中重复表达，统一继承映射证据。
+    for equivalent_refs in _equivalent_explicit_source_refs(objective_brief):
         equivalent_locations = set().union(
             *(locations.get(source_ref, set()) for source_ref in equivalent_refs)
         )
@@ -3611,7 +3615,7 @@ def _explicit_requirement_binding_violations(
     objective_brief: ObjectivePlanningBrief,
 ) -> list[Violation]:
     """确认来源映射指向 Brief 声明的实体，而不只检查字段类别。"""
-    equivalent_groups = _equivalent_motion_source_refs(objective_brief)
+    equivalent_groups = _equivalent_explicit_source_refs(objective_brief)
     violations: list[Violation] = []
     for source_ref in state.required_source_refs:
         expected_ids = _expected_source_entity_ids(objective_brief, source_ref)
@@ -3648,6 +3652,7 @@ def _expected_source_entity_ids(
     subject_prefix = "content.subjects["
     motion_prefix = "content.subject_motion["
     relation_prefix = "content.scene_design.relationships["
+    layer_prefix = "content.scene_design.spatial_layers["
     try:
         if source_ref.startswith(subject_prefix):
             index = int(source_ref[len(subject_prefix):].split("]", 1)[0])
@@ -3666,6 +3671,14 @@ def _expected_source_entity_ids(
                     relationship.get("subject_id"),
                     relationship.get("reference_id"),
                 )
+                if isinstance(entity_id, str)
+            }
+        if source_ref.startswith(layer_prefix):
+            index = int(source_ref[len(layer_prefix):].split("]", 1)[0])
+            layer = objective_brief.scene_design.get("spatial_layers", [])[index]
+            return {
+                entity_id
+                for entity_id in layer.get("content_ids", [])
                 if isinstance(entity_id, str)
             }
     except (IndexError, TypeError, ValueError, AttributeError):
@@ -3772,6 +3785,8 @@ def _equivalent_motion_source_refs(
             for ref in (
                 f"content.subject_motion[{motion_index}].action",
                 f"content.subject_motion[{motion_index}].motion_semantics",
+                f"content.subject_motion[{motion_index}].direction",
+                f"content.subject_motion[{motion_index}].trajectory",
             )
             if ref in explicit_refs
         }
@@ -3802,6 +3817,69 @@ def _equivalent_motion_source_refs(
         if len(refs) > 1:
             groups.append(refs)
     return groups
+
+
+def _equivalent_explicit_source_refs(
+    objective_brief: ObjectivePlanningBrief,
+) -> list[set[str]]:
+    return [
+        *_equivalent_motion_source_refs(objective_brief),
+        *_equivalent_spatial_layer_source_refs(objective_brief),
+    ]
+
+
+def _equivalent_spatial_layer_source_refs(
+    objective_brief: ObjectivePlanningBrief,
+) -> list[set[str]]:
+    """Pair explicit foreground/background layers with matching distance relations."""
+
+    explicit_refs = {item.path for item in objective_brief.explicit_requirements}
+    layers = objective_brief.scene_design.get("spatial_layers", [])
+    relationships = objective_brief.scene_design.get("relationships", [])
+    groups: list[set[str]] = []
+    for layer_index, layer in enumerate(layers):
+        layer_ref = f"content.scene_design.spatial_layers[{layer_index}]"
+        if not isinstance(layer, dict) or layer_ref not in explicit_refs:
+            continue
+        content_ids = {
+            item for item in layer.get("content_ids", []) if isinstance(item, str)
+        }
+        layer_class = _depth_semantic_class(layer.get("layer"))
+        if not content_ids or layer_class is None:
+            continue
+        refs = {layer_ref}
+        for relation_index, relationship in enumerate(relationships):
+            relation_ref = f"content.scene_design.relationships[{relation_index}]"
+            if not isinstance(relationship, dict) or relation_ref not in explicit_refs:
+                continue
+            relation_ids = {
+                item
+                for item in (
+                    relationship.get("subject_id"),
+                    relationship.get("reference_id"),
+                )
+                if isinstance(item, str)
+            }
+            relation_class = _depth_semantic_class(
+                " ".join(
+                    str(relationship.get(name) or "")
+                    for name in ("type", "strength")
+                )
+            )
+            if content_ids & relation_ids and relation_class == layer_class:
+                refs.add(relation_ref)
+        if len(refs) > 1:
+            groups.append(refs)
+    return groups
+
+
+def _depth_semantic_class(value: Any) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if any(marker in normalized for marker in ("远", "far", "background", "后景")):
+        return "far"
+    if any(marker in normalized for marker in ("近", "near", "foreground", "前景")):
+        return "near"
+    return None
 
 
 def _required_constraint_types(

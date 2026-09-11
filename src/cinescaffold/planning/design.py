@@ -760,11 +760,7 @@ def _build_relation_constraints(
             "constraint_id": f"skeleton_motion_{phase.phase_id}",
             "strength": "hard" if phase.source_status == "explicit" else "soft",
             "subjects": [phase.subject_id],
-            "time_range_seconds": _event_range(
-                objective,
-                phase.timeline_event_id,
-                duration,
-            ),
+            "time_range_seconds": _phase_range(objective, phase, duration),
             "source_status": phase.source_status,
             "source_ref": phase.source_ref,
         }
@@ -822,11 +818,7 @@ def _build_relation_constraints(
                     },
                 }
             else:
-                start, end = _event_range(
-                    objective,
-                    phase.timeline_event_id,
-                    duration,
-                )
+                start, end = _phase_range(objective, phase, duration)
                 frame_step = (
                     candidate.timeline.fps_denominator
                     / candidate.timeline.fps_numerator
@@ -870,7 +862,7 @@ def _build_motion(
         grouped.items(),
         key=lambda item: min(
             (
-                _event_range(objective, phase.timeline_event_id, duration)[0]
+                _phase_range(objective, phase, duration)[0]
                 for phase in item[1]
                 if phase.kind == "linear_move"
             ),
@@ -892,11 +884,7 @@ def _build_motion(
                     "track_id": f"design_orbit_{subject_id}",
                     "target_entity_id": subject_id,
                     "type": "path_follow",
-                    "time_range_seconds": _event_range(
-                        objective,
-                        orbit.timeline_event_id,
-                        duration,
-                    ),
+                    "time_range_seconds": _phase_range(objective, orbit, duration),
                     "path": {
                         "representation": orbit.path_family,
                         "space": "target_relative",
@@ -956,13 +944,9 @@ def _build_motion(
             keyframes: list[TrackKeyframe] = []
             for phase in sorted(
                 moving,
-                key=lambda item: _event_range(
-                    objective,
-                    item.timeline_event_id,
-                    duration,
-                )[0],
+                key=lambda item: _phase_range(objective, item, duration)[0],
             ):
-                start, end = _event_range(objective, phase.timeline_event_id, duration)
+                start, end = _phase_range(objective, phase, duration)
                 keyframes.append(
                     TrackKeyframe(
                         time_seconds=start,
@@ -1010,15 +994,11 @@ def _build_motion(
         carried_phases = [item for item in phases if item.kind == "carried"]
         for phase in sorted(
             carried_phases,
-            key=lambda item: _event_range(
-                objective,
-                item.timeline_event_id,
-                duration,
-            )[0],
+            key=lambda item: _phase_range(objective, item, duration)[0],
         ):
             if phase.carrier_id is None:
                 continue
-            start, end = _event_range(objective, phase.timeline_event_id, duration)
+            start, end = _phase_range(objective, phase, duration)
             subject = candidate.entities[subject_id]
             carrier = candidate.entities[phase.carrier_id]
             subject_z = (subject.solved_transform.translation_m or (0.0, 0.0, 0.0))[2]
@@ -1047,11 +1027,7 @@ def _build_motion(
         if visibility_phases:
             transitions: list[tuple[float, bool, str]] = []
             for phase in visibility_phases:
-                start, end = _event_range(
-                    objective,
-                    phase.timeline_event_id,
-                    duration,
-                )
+                start, end = _phase_range(objective, phase, duration)
                 transition_time = start if phase.transition_at == "at_start" else end
                 transitions.append(
                     (
@@ -1113,7 +1089,7 @@ def _build_camera(
     end_distance *= distance_scale
     height = float(parameters.get("height_m") or 1.5)
     has_orbit = any(item.kind == "orbit" for item in skeleton.motion_phases)
-    if has_orbit and "height_m" not in parameters:
+    if has_orbit and not _has_explicit_camera_elevation(objective):
         # 缺省轨道镜头提高俯视夹角，避免圆轨道投影成直线往返。
         focus_height = _proxy_half_height(
             candidate.entities[skeleton.camera_intent.focus_target_id]
@@ -1223,6 +1199,36 @@ def _add_composition_constraints(
         )
         candidate.constraints[constraint.constraint_id] = constraint
 
+    for index, item in enumerate(objective.composition.get("visibility_requirements", [])):
+        if not isinstance(item, dict):
+            continue
+        subject_id = item.get("subject_id")
+        requirement = item.get("requirement")
+        if (
+            not isinstance(subject_id, str)
+            or subject_id not in candidate.entities
+            or not isinstance(requirement, dict)
+            or requirement.get("source_status") != "explicit"
+        ):
+            continue
+        source_ref = f"content.composition.visibility_requirements[{index}].requirement"
+        constraint = ConstraintSpec.model_validate(
+            {
+                "constraint_id": f"design_visibility_{subject_id}_{index}",
+                "type": "keep_in_frame",
+                "strength": "hard",
+                "subjects": [subject_id],
+                "time_range_seconds": [0.0, duration],
+                "parameters": {
+                    "entity_id": subject_id,
+                    "minimum_inside_fraction": 0.01,
+                },
+                "source_status": "explicit",
+                "source_ref": source_ref,
+            }
+        )
+        candidate.constraints[constraint.constraint_id] = constraint
+
 
 def _add_speed_constraints(
     objective: ObjectivePlanningBrief,
@@ -1245,11 +1251,7 @@ def _add_speed_constraints(
                     "hard" if phase.speed_source_status == "explicit" else "soft"
                 ),
                 "subjects": [phase.subject_id],
-                "time_range_seconds": _event_range(
-                    objective,
-                    phase.timeline_event_id,
-                    duration,
-                ),
+                "time_range_seconds": _phase_range(objective, phase, duration),
                 "parameters": {
                     "target_id": phase.subject_id,
                     "minimum_mps": minimum,
@@ -1485,6 +1487,36 @@ def _event_range(
                 if 0.0 <= start < end <= duration:
                     return (start, end)
     return (0.0, duration)
+
+
+def _has_explicit_camera_elevation(objective: ObjectivePlanningBrief) -> bool:
+    return any(
+        requirement.path.startswith(
+            ("content.camera.camera_height", "content.camera.view_angle")
+        )
+        for requirement in objective.explicit_requirements
+    )
+
+
+def _phase_range(
+    objective: ObjectivePlanningBrief,
+    phase: SkeletonMotionPhase,
+    duration: float,
+) -> tuple[float, float]:
+    """Prefer a motion's narrower interval when one event contains multiple phases."""
+
+    prefix = "content.subject_motion["
+    try:
+        if phase.source_ref.startswith(prefix):
+            index = int(phase.source_ref[len(prefix):].split("]", 1)[0])
+            motion = objective.subject_motion[index]
+            start = float(motion.get("start_time_seconds") or 0.0)
+            end = float(motion.get("end_time_seconds") or duration)
+            if 0.0 <= start < end <= duration:
+                return (start, end)
+    except (IndexError, TypeError, ValueError, AttributeError):
+        pass
+    return _event_range(objective, phase.timeline_event_id, duration)
 
 
 def _relation_time_range(

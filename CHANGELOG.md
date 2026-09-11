@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.8.2 — 2026-09-11
+
+### Fixed
+
+- Design 物化优先使用 `subject_motion` 自身的精确时间段，避免多个动作共用一个大事件时把车辆到达和人物上车错误合并。
+- 同一运动在 `action` / `direction` / `trajectory` / 空间关系 / 时间事件中的重复 explicit 表达共享映射证据；匹配的远景层与远距离关系同样处理，仍保留字段类型和实体绑定检查。
+- 用户明确要求主体可见时生成 hard `keep_in_frame` 约束。该约束只证明代理几何至少部分进入画面，不声称已验证遮挡关系。
+- `board` / `disembark` 的具体位移语义优先于泛化 `local_interaction` 标签，上下载人物不再被静止检查误拒。
+- 解析轨道在用户未明确指定相机高度或视角时忽略 Brief 中的系统默认高度，自动采用可辨识闭合轨道的斜俯视机位。
+
+### Verification
+
+- Python 3.12 完整离线回归 249 项通过。
+- 三条真实 `deepseek-flash` 规划结果在不增加模型调用的情况下离线重放，荒漠飞船、10 秒道路接车和嵌套公转均以 0 hard violation 通过 Commit Gate；Blender 5.2.1 LTS 实际构建后 Runtime Validation 均为 0 violation，并生成 640×360 / 12 fps H.264 预览。
+- 三条付费调用按 DeepSeek V4.1 Flash 当时非繁忙时段官方 token 价格估算分别为 ¥0.104007、¥0.185781 和 ¥0.234332，合计 ¥0.524120；账户余额的两位小数结算变化为 ¥0.53。
+
 ## 0.8.1 — 2026-09-11
 
 ### Fixed

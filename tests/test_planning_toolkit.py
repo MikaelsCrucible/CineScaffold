@@ -996,6 +996,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
     def test_equivalent_orbit_action_relationship_and_event_share_mapping(self) -> None:
         toolkit = _toolkit()
         action_ref = "content.subject_motion[0].action"
+        direction_ref = "content.subject_motion[0].direction"
         relationship_ref = "content.scene_design.relationships[0]"
         event_ref = "content.timeline.events[0]"
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
@@ -1004,6 +1005,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     {
                         "subject_id": "man_01",
                         "action": _annotated("围绕飞船公转", "男人围绕飞船公转"),
+                        "direction": _annotated("环绕飞船", "围绕飞船公转"),
                         "motion_semantics": {
                             "action_kind": "orbit",
                             "target_id": "ship_01",
@@ -1032,6 +1034,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 },
                 "explicit_requirements": [
                     ObjectiveRequirement(path=action_ref, value="围绕飞船公转"),
+                    ObjectiveRequirement(path=direction_ref, value="环绕飞船"),
                     ObjectiveRequirement(path=relationship_ref, value={"type": "orbits"}),
                     ObjectiveRequirement(path=event_ref, value={"id": "event_orbit"}),
                 ],
@@ -1039,7 +1042,12 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         )
 
         def replace_required_refs(state):
-            state.required_source_refs = [action_ref, relationship_ref, event_ref]
+            state.required_source_refs = [
+                action_ref,
+                direction_ref,
+                relationship_ref,
+                event_ref,
+            ]
             state.runner_mapped_source_refs = []
             return ([{"operation": "replace", "path": "required_source_refs"}], [])
 
@@ -1069,6 +1077,81 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
+
+    def test_equivalent_far_spatial_layer_and_relationship_share_mapping(self) -> None:
+        toolkit = _toolkit()
+        layer_ref = "content.scene_design.spatial_layers[0]"
+        relationship_ref = "content.scene_design.relationships[0]"
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "scene_design": {
+                    "spatial_layers": [
+                        {
+                            "layer": "远景",
+                            "content_ids": ["ship_01"],
+                            "source_status": "explicit",
+                        }
+                    ],
+                    "relationships": [
+                        {
+                            "type": "distance",
+                            "strength": "远",
+                            "subject_id": "ship_01",
+                            "reference_id": "man_01",
+                            "source_status": "explicit",
+                        }
+                    ],
+                },
+                "explicit_requirements": [
+                    ObjectiveRequirement(path=layer_ref, value={"layer": "远景"}),
+                    ObjectiveRequirement(
+                        path=relationship_ref,
+                        value={"type": "distance", "strength": "远"},
+                    ),
+                ],
+            }
+        )
+
+        def replace_required_refs(state):
+            state.required_source_refs = [layer_ref, relationship_ref]
+            state.runner_mapped_source_refs = []
+            return ([{"operation": "replace", "path": "required_source_refs"}], [])
+
+        toolkit.store.apply(replace_required_refs)
+        toolkit.apply_entity_patch([_man_entity(), _ship_entity()], [])
+        result = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "ship_behind_man",
+                    "type": "depth_order",
+                    "strength": "hard",
+                    "weight": 1.0,
+                    "subjects": ["ship_01", "man_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "near_entity_id": "man_01",
+                        "far_entity_id": "ship_01",
+                        "minimum_depth_gap_meters": 1.0,
+                    },
+                    "source_status": "explicit",
+                    "source_ref": relationship_ref,
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["hard_semantics"])
+
+        self.assertEqual(result["status"], "ok")
+        mapping_codes = {
+            "UNMAPPED_EXPLICIT_REQUIREMENT",
+            "EXPLICIT_REQUIREMENT_MAPPING_INCOMPATIBLE",
+            "EXPLICIT_REQUIREMENT_ENTITY_BINDING_MISMATCH",
+        }
+        self.assertFalse(
+            mapping_codes & {item["code"] for item in validation["violations"]},
+            validation["violations"],
+        )
 
     def test_push_in_uses_target_distance_instead_of_world_axis(self) -> None:
         toolkit = _toolkit()
