@@ -49,6 +49,8 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - Validator 按冻结时间线逐帧复验地面、投影、点式空间约束和类型化运动语义；明确要求的来源不仅要映射到正确字段，还必须绑定 Brief 指定的实体。Commit Gate 会再核对编译后逐帧 Scene IR 与已验证 Candidate 的位置、旋转、尺度、显隐、摄影机和焦距等价。
 - 用户明确要求“可见”时，白模阶段以 hard `keep_in_frame` 证明代理几何至少部分进入画面；这不等价于已验证真实遮挡、材质透明或最终生成视频的可见性。
 - Validator 发现共线机位、屏幕运动不可读、主体出画或投影尺寸不合格时，Toolkit 会确定性搜索少量经复验的摄影机策略；Agent 选择整体方案，不再逐项猜坐标和焦距。
+- 默认规划会把失败类型、当前/最佳 revision、完整 violation、能力缺口和剩余尝试数组成 `Recovery Context` 回灌给 Agent；`infeasible` / `unsupported` 声明不再立即终止。确定性修复搜索返回 `no_change` 后，只重新开放受 Schema 和 Validator 限制的手工 Mutation。
+- 完整修复用尽后，规划器优先保留并提交 Agent 已建立的最佳可执行 Candidate；若还没有可执行 Candidate，则从已类型 Objective Brief 确定性生成简化方案，不再请求 Provider。简化交付必须通过独立 Execution Safety Gate，同时保留未满足的语义 fidelity violations，不伪装成完整通过。
 - 支持世界、局部、目标相对和摄影机相对参考系。
 - 支持直线、圆、椭圆、平滑样条和 8 字等代理运动轨迹。
 - Agent 可见接口固定右手 Z-up、路径方向和屏幕坐标约定；推断机位下的解析轨道需通过投影可读性门禁。
@@ -235,7 +237,7 @@ planning_reasoning_effort = low
 
 DeepSeek 在 thinking 与 tools 同时启用时要求后续请求完整回传历史 `reasoning_content`。CineScaffold 依赖 PydanticAI 的 DeepSeek Profile 完成字段映射，并在这种模式下保留完整工具思考历史，不再应用 13-message 压缩窗口；普通工具前置正文仍会省略。对于 PydanticAI 2.36 尚未内置识别的官方别名 `deepseek-flash`，CineScaffold 0.8.1 还会显式声明 thinking 支持并禁用强制 `tool_choice=required`，让工具选择按 DeepSeek thinking 协议使用 `auto`。该协议可能明显增加后续请求上下文，正式实验需要把思考模式和上下文预算一起冻结。
 
-常规规划默认使用面向长思考工具循环的研究预算：48 次模型请求、80 次工具调用、单请求 128K 输入上下文、整轮累计 200K 输出 token、20 分钟墙钟时间和 5 次 Commit Gate 尝试。累计输入和输入输出总量默认不另设上限，但仍受上述单项门禁与供应商限制保护。每项均可通过 `--max-requests`、`--max-tool-calls`、`--max-context-tokens`、`--max-output-tokens`、`--max-seconds` 和 `--max-commit-attempts` 临时覆盖；论文批量实验应显式记录或冻结这些值。
+常规规划默认使用面向长思考工具循环的研究预算：48 次模型请求、80 次工具调用、单请求 128K 输入上下文、整轮累计 200K 输出 token、20 分钟墙钟时间和 5 次外层规划尝试。外层尝试同时覆盖 Commit Gate 拒绝、Agent 过早声明不可行/不支持，以及可恢复的供应商返回异常。累计输入和输入输出总量默认不另设上限，但仍受上述单项门禁与供应商限制保护。每项均可通过 `--max-requests`、`--max-tool-calls`、`--max-context-tokens`、`--max-output-tokens`、`--max-seconds` 和 `--max-commit-attempts` 临时覆盖；论文批量实验应显式记录或冻结这些值。
 
 嵌入式宿主可以在 `PipelineRunConfig` 设置 `max_provider_cost`、`provider_cost_currency`，并为 Semantic 与 Planning 提供同币种的冻结 `CostRates`。Core 在每次 Provider 响应返回 usage 后发出 `provider_cost_incurred`，累计达到或超过上限后在下一次请求前停止；所以这是事后门禁，最后一个已经发生的请求可能越线。价格快照、跨任务/跨进程的日额度、预留和未知账单结算由宿主负责，Core 不把估算成本冒充 Provider 账单。
 
@@ -330,6 +332,8 @@ cinescaffold plan \
 规划阶段同样读取 `.cinescaffold.conf`。如需临时实验覆盖，可以额外传入 `--provider` 和 `--model`，但不会修改配置文件。
 
 正常规划的前三个工具阶段固定为：提交无数值 Scene Skeleton、请求经 Validator 预测的 Design Options、按 `option_id` 原子应用一个候选。只有候选仍有结构化 violation 或 capability gap 时，低层 Patch、Solver 与修复建议工具才会按状态开放；从 checkpoint 恢复时则直接从已有 Candidate 继续。
+
+`planning_summary.json` 用 `delivery_tier=standard|recovered|simplified` 区分首次完整通过、外层恢复后完整通过和安全简化交付。`Recovery Context` 和简化交付遗留的 fidelity violations 保存在 Summary/Trace 中。研究用 `--full-power-diagnostic` 保留原始严格观测语义，不自动转为简化交付。墙钟、Token 或 Provider 金额预算耗尽也不会绕过对应门禁。
 
 定位供应商长推理或流式停顿时，可以显式开启一次性诊断特例：
 

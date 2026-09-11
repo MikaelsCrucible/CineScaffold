@@ -32,6 +32,7 @@ class _PlanningRunner:
             terminal_type="commit_request",
             scene_ir_hash="sha256:test",
             final_revision=1,
+            delivery_tier="standard",
             usage={"tokens": {"requests": 1, "tool_calls": 1}},
             artifacts={"scene_ir": "final_scene_ir.json"},
         )
@@ -117,6 +118,7 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
             summary = await runner.run(PipelineSource(kind="text", text="一个人在荒漠里等待"))
 
             self.assertEqual(summary["status"], "success")
+            self.assertEqual(summary["delivery_tier"], "standard")
             self.assertTrue((root / "run/cinematic_brief.json").is_file())
             self.assertTrue((root / "run/textual_six_dimensions.txt").is_file())
             self.assertTrue(Path(summary["artifacts"]["video"]).is_file())
@@ -135,6 +137,7 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
             summary = await runner.run(PipelineSource(kind="scene_ir", payload={}))
 
             self.assertEqual(summary["status"], "success")
+            self.assertEqual(summary["delivery_tier"], "standard")
             self.assertNotIn("semantic", summary["stages"])
             self.assertNotIn("planning", summary["stages"])
             self.assertIn("execution", summary["stages"])

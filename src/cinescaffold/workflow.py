@@ -77,6 +77,7 @@ class WorkflowRunner:
         summary: dict[str, Any] = {
             "schema_version": "0.2",
             "status": "running",
+            "delivery_tier": None,
             "started_from": source.kind,
             "output_dir": str(output_dir),
             "elapsed_seconds": 0.0,
@@ -148,6 +149,12 @@ class WorkflowRunner:
             summary["stages"]["execution"] = execution_result.model_dump(mode="json")
             summary["status"] = execution_result.status
             summary["error"] = execution_result.error
+            if execution_result.status == "success":
+                summary["delivery_tier"] = (
+                    planning_result.delivery_tier
+                    if brief is not None
+                    else "standard"
+                )
             if execution_result.render and execution_result.render.get("artifact"):
                 summary["artifacts"]["video"] = execution_result.render["artifact"]
             self._emit("pipeline_execution_completed", status=execution_result.status)

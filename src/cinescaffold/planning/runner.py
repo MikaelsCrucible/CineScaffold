@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import AgentRunError, UsageLimitExceeded
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from cinescaffold.planning.agent import PlanningDeps, create_planning_agent
@@ -28,9 +28,13 @@ from cinescaffold.planning.domain import (
     UnsupportedResult,
 )
 from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
-from cinescaffold.planning.models import create_planning_model
+from cinescaffold.planning.models import (
+    build_deterministic_scene_skeleton,
+    create_planning_model,
+)
 from cinescaffold.planning.objective import ObjectiveProjection, project_objective_brief
 from cinescaffold.planning.toolkit import (
+    EXECUTION_SAFETY_CHECKS,
     FULL_VALIDATION_CHECKS,
     TOOLKIT_VERSION,
     ScenePlanningToolkit,
@@ -105,6 +109,8 @@ class InterpreterRunResult(BaseModel):
     terminal_type: str | None
     scene_ir_hash: str | None
     final_revision: int
+    delivery_tier: Literal["standard", "recovered", "simplified"] | None = None
+    recovery_context: dict[str, Any] | None = None
     usage: dict[str, Any]
     artifacts: dict[str, str]
     error: dict[str, str] | None = None
@@ -139,6 +145,8 @@ class InterpreterRunner:
         toolkit: ScenePlanningToolkit | None = None
         commit_result: CommitGateResult | None = None
         terminal_type: str | None = None
+        delivery_tier: Literal["standard", "recovered", "simplified"] | None = None
+        recovery_context: dict[str, Any] | None = None
         status = "failed"
         error_payload: dict[str, str] | None = None
         model_label = self.config.model or "mock-scene-planner-v0.1"
@@ -332,22 +340,47 @@ class InterpreterRunner:
                         attempt=attempt,
                         current_revision=toolkit.store.current_revision,
                     )
-                    result = await agent.run(
-                        prompt,
-                        message_history=history,
-                        deps=deps,
-                        usage=usage,
-                        usage_limits=usage_limits,
-                        model_settings=model_settings,
-                        run_id=f"{run_id}_attempt_{attempt:02d}",
-                        conversation_id=run_id,
-                        event_stream_handler=(
-                            StreamTelemetryHandler(trace, tracing_model)
-                            if self.config.full_power_diagnostic
-                            and self.config.provider != "mock"
-                            else None
-                        ),
-                    )
+                    try:
+                        result = await agent.run(
+                            prompt,
+                            message_history=history,
+                            deps=deps,
+                            usage=usage,
+                            usage_limits=usage_limits,
+                            model_settings=model_settings,
+                            run_id=f"{run_id}_attempt_{attempt:02d}",
+                            conversation_id=run_id,
+                            event_stream_handler=(
+                                StreamTelemetryHandler(trace, tracing_model)
+                                if self.config.full_power_diagnostic
+                                and self.config.provider != "mock"
+                                else None
+                            ),
+                        )
+                    except UsageLimitExceeded:
+                        raise
+                    except AgentRunError as error:
+                        error_payload = {
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        }
+                        recovery_context = _recovery_context(
+                            toolkit,
+                            stage="agent_response",
+                            failure_class="invalid_or_truncated_model_response",
+                            attempts_remaining=_attempts_remaining(self.config, attempt),
+                        )
+                        trace.record(
+                            "planning_recovery_requested",
+                            attempt=attempt,
+                            error=error_payload,
+                            recovery_context=recovery_context,
+                        )
+                        if _can_retry(self.config, attempt):
+                            prompt = _recovery_prompt(recovery_context)
+                            continue
+                        status = "failed"
+                        break
                     history = result.all_messages()
                     terminal = result.output
                     terminal_type = terminal.type
@@ -363,30 +396,80 @@ class InterpreterRunner:
                     )
                     if isinstance(terminal, UnsupportedResult):
                         status = "unsupported"
-                        break
-                    if isinstance(terminal, InfeasibleResult):
+                    elif isinstance(terminal, InfeasibleResult):
                         status = "infeasible"
-                        break
-                    assert isinstance(terminal, CommitRequest)
-                    commit_result = SceneIRCommitGate(toolkit).commit(
-                        terminal,
-                        agent_run_id=run_id,
-                        trace_ref=trace_path.name,
+                    else:
+                        assert isinstance(terminal, CommitRequest)
+                        commit_result = SceneIRCommitGate(toolkit).commit(
+                            terminal,
+                            agent_run_id=run_id,
+                            trace_ref=trace_path.name,
+                        )
+                        trace.record(
+                            "commit_gate_completed",
+                            attempt=attempt,
+                            requested_revision=terminal.candidate_revision,
+                            status=commit_result.status,
+                            gate_mode=commit_result.gate_mode,
+                            scene_ir_hash=commit_result.scene_ir_hash,
+                            validation=commit_result.validation,
+                            violations=commit_result.violations,
+                        )
+                        if commit_result.status == "success":
+                            status = "success"
+                            delivery_tier = "standard" if attempt == 1 else "recovered"
+                            break
+                        status = "commit_rejected"
+
+                    recovery_context = _recovery_context(
+                        toolkit,
+                        stage=("commit_gate" if status == "commit_rejected" else "agent_terminal"),
+                        failure_class=status,
+                        attempts_remaining=_attempts_remaining(self.config, attempt),
+                        violations=(
+                            commit_result.violations
+                            if status == "commit_rejected" and commit_result
+                            else None
+                        ),
                     )
                     trace.record(
-                        "commit_gate_completed",
+                        "planning_recovery_requested",
                         attempt=attempt,
-                        requested_revision=terminal.candidate_revision,
-                        status=commit_result.status,
-                        scene_ir_hash=commit_result.scene_ir_hash,
-                        validation=commit_result.validation,
-                        violations=commit_result.violations,
+                        terminal_type=terminal_type,
+                        recovery_context=recovery_context,
                     )
-                    if commit_result.status == "success":
-                        status = "success"
+                    if not _can_retry(self.config, attempt):
                         break
-                    status = "commit_rejected"
-                    prompt = _repair_prompt(commit_result, toolkit.store.current_revision)
+                    prompt = _recovery_prompt(recovery_context)
+
+                if status != "success" and not self.config.full_power_diagnostic:
+                    toolkit, commit_result, recovery_context = _commit_simplified_delivery(
+                        toolkit,
+                        projection,
+                        profile,
+                        run_id=run_id,
+                        trace_path=trace_path,
+                        trace=trace,
+                        failure_class=status,
+                        previous_context=recovery_context,
+                    )
+                    if recovery_context["source"] == "deterministic_brief_fallback":
+                        write_candidate_checkpoint(
+                            run_dir / "fallback_checkpoints",
+                            run_id=run_id,
+                            toolkit_version=TOOLKIT_VERSION,
+                            source_brief_sha256=(
+                                projection.objective_brief.source_brief_sha256
+                            ),
+                            profile_id=profile.profile_id,
+                            candidate=toolkit.store.get(),
+                        )
+                    else:
+                        checkpoint_writer(toolkit.store.get())
+                    status = "success"
+                    terminal_type = "simplified_delivery"
+                    delivery_tier = "simplified"
+                    error_payload = None
         except TimeoutError as error:
             status = "budget_exhausted"
             error_payload = {"type": type(error).__name__, "message": str(error)}
@@ -435,6 +518,8 @@ class InterpreterRunner:
             terminal_type=terminal_type,
             scene_ir_hash=commit_result.scene_ir_hash if commit_result else None,
             final_revision=final_revision,
+            delivery_tier=delivery_tier,
+            recovery_context=recovery_context,
             usage=usage_data,
             artifacts=artifacts,
             error=error_payload,
@@ -445,6 +530,7 @@ class InterpreterRunner:
             "run_finished",
             status=status,
             terminal_type=terminal_type,
+            delivery_tier=delivery_tier,
             final_revision=final_revision,
             scene_ir_hash=summary.scene_ir_hash,
             usage=usage_data,
@@ -530,18 +616,166 @@ def _usage_limit_type(message: str) -> str:
     return "unknown_usage_limit"
 
 
-def _repair_prompt(result: CommitGateResult, current_revision: int) -> str:
-    feedback = {
-        "current_revision": current_revision,
-        "hard_pass": result.validation.get("hard_pass"),
-        "soft_score": result.validation.get("soft_score"),
-        "violations": result.violations,
+def _can_retry(config: InterpreterRunConfig, attempt: int) -> bool:
+    return not config.full_power_diagnostic and attempt < config.max_commit_attempts
+
+
+def _attempts_remaining(config: InterpreterRunConfig, attempt: int) -> int:
+    if config.full_power_diagnostic:
+        return 0
+    return max(0, config.max_commit_attempts - attempt)
+
+
+def _recovery_context(
+    toolkit: ScenePlanningToolkit,
+    *,
+    stage: str,
+    failure_class: str,
+    attempts_remaining: int,
+    violations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    current = toolkit.store.get()
+    validation = toolkit.validate_candidate(
+        revision=current.revision,
+        checks=FULL_VALIDATION_CHECKS,
+    )
+    best_revision = _best_executable_revision(toolkit)
+    effective_violations = violations or validation["violations"]
+    return {
+        "stage": stage,
+        "failure_class": failure_class,
+        "current_revision": current.revision,
+        "best_revision": best_revision,
+        "hard_pass": validation["data"]["hard_pass"],
+        "soft_score": validation["data"]["soft_score"],
+        "violations": effective_violations,
+        "capability_gaps": validation["capability_gaps"],
+        "repair_search_exhausted": toolkit.has_exhausted_repair_search,
+        "attempts_remaining": attempts_remaining,
+        "allowed_recovery_actions": [
+            "inspect_current_or_historical_candidate",
+            "apply_validator_scoped_patch_after_repair_search_exhaustion",
+            "restore_best_revision",
+            "solve_and_validate",
+            "request_full_fidelity_commit",
+            "allow_deterministic_simplified_delivery",
+        ],
     }
+
+
+def _recovery_prompt(feedback: dict[str, Any]) -> str:
     return (
-        "Commit Gate 拒绝了提交。只依据以下结构化证据继续检查、修复、求解和验证；"
-        "不要放松 explicit hard requirement。\n\n"
+        "上一轮未被系统接受为完整交付。根据以下 Recovery Context 继续；"
+        "不要从头重建，不要放松 explicit hard requirement，也不要重复已穷尽的修复搜索。"
+        "若确定性建议已返回 no_change，可仅针对 violation 指向字段使用重新开放的受控 Mutation，"
+        "修改后必须重新验证。系统会在完整修复仍不成功时独立生成简化交付。\n\n"
         + json.dumps(feedback, ensure_ascii=False, indent=2)
     )
+
+
+def _best_executable_revision(toolkit: ScenePlanningToolkit) -> int | None:
+    ranked: list[tuple[int, float, int]] = []
+    for revision in toolkit.store.revisions:
+        state = toolkit.store.get(revision)
+        if not state.entities or state.camera is None:
+            continue
+        safety = toolkit.validate_candidate(
+            revision=revision,
+            checks=EXECUTION_SAFETY_CHECKS,
+        )["data"]
+        if not safety["hard_pass"]:
+            continue
+        fidelity = toolkit.validate_candidate(
+            revision=revision,
+            checks=FULL_VALIDATION_CHECKS,
+        )["data"]
+        hard_count = sum(
+            item["severity"] == "hard" for item in fidelity["violations"]
+        )
+        ranked.append((hard_count, -float(fidelity["soft_score"]), -revision))
+    if not ranked:
+        return None
+    return -min(ranked)[2]
+
+
+def _commit_simplified_delivery(
+    toolkit: ScenePlanningToolkit,
+    projection: ObjectiveProjection,
+    profile: PlanningProfile,
+    *,
+    run_id: str,
+    trace_path: Path,
+    trace: TraceRecorder,
+    failure_class: str,
+    previous_context: dict[str, Any] | None,
+) -> tuple[ScenePlanningToolkit, CommitGateResult, dict[str, Any]]:
+    revision = _best_executable_revision(toolkit)
+    source = "best_agent_candidate"
+    if revision is None:
+        source = "deterministic_brief_fallback"
+        toolkit = ScenePlanningToolkit(projection.objective_brief, profile)
+        skeleton = build_deterministic_scene_skeleton(projection.objective_brief)
+        submitted = toolkit.submit_scene_skeleton(skeleton)
+        if submitted["status"] != "ok":
+            raise RuntimeError(
+                f"deterministic fallback skeleton was rejected: {submitted['warnings']}"
+            )
+        options = toolkit.request_design_options(preference="balanced", max_options=3)
+        candidates = options["data"].get("options", [])
+        if not candidates:
+            raise RuntimeError(
+                f"deterministic fallback produced no design option: {options['warnings']}"
+            )
+        selected = min(
+            candidates,
+            key=lambda item: (
+                item["predicted"]["hard_violation_count"],
+                -float(item["predicted"]["soft_score"]),
+                item["option_id"],
+            ),
+        )
+        applied = toolkit.apply_design_option(
+            selected["base_revision"],
+            selected["option_id"],
+        )
+        if applied["status"] != "ok":
+            raise RuntimeError(
+                f"deterministic fallback option was rejected: {applied['warnings']}"
+            )
+        revision = toolkit.store.current_revision
+
+    request = CommitRequest(
+        type="commit_request",
+        candidate_revision=revision,
+        summary="Deterministic simplified delivery after planning recovery was exhausted.",
+    )
+    result = SceneIRCommitGate(toolkit).commit_simplified(
+        request,
+        agent_run_id=run_id,
+        trace_ref=trace_path.name,
+    )
+    if result.status != "success":
+        raise RuntimeError("no Candidate passed the execution safety gate")
+    context = {
+        "stage": "simplified_delivery",
+        "failure_class": failure_class,
+        "current_revision": toolkit.store.current_revision,
+        "best_revision": revision,
+        "source": source,
+        "gate_mode": result.gate_mode,
+        "fidelity_violations": result.violations,
+        "previous": previous_context,
+    }
+    trace.record(
+        "simplified_delivery_committed",
+        requested_revision=revision,
+        source=source,
+        gate_mode=result.gate_mode,
+        scene_ir_hash=result.scene_ir_hash,
+        fidelity_validation=result.validation,
+        fidelity_violations=result.violations,
+    )
+    return toolkit, result, context
 
 
 def _persist_run_artifacts(
@@ -557,17 +791,25 @@ def _persist_run_artifacts(
         if (run_dir / name).exists():
             artifacts[key] = name
     if toolkit is not None:
+        artifact_revision = (
+            toolkit.store.committed_revision
+            if toolkit.store.committed_revision is not None
+            else toolkit.store.current_revision
+        )
         constraint_plan_path = run_dir / "constraint_plan.json"
         _write_json(
             constraint_plan_path,
             (
                 commit_result.constraint_plan
                 if commit_result and commit_result.status == "success"
-                else toolkit.store.get().model_dump(mode="json")
+                else toolkit.store.get(artifact_revision).model_dump(mode="json")
             ),
         )
         artifacts["constraint_plan"] = constraint_plan_path.name
-        validation = toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
+        validation = toolkit.validate_candidate(
+            revision=artifact_revision,
+            checks=FULL_VALIDATION_CHECKS,
+        )
         validation_path = run_dir / "planning_validation.json"
         _write_json(validation_path, validation["data"])
         artifacts["validation"] = validation_path.name

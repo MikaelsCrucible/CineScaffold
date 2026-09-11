@@ -5,6 +5,7 @@ import json
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from pydantic_ai.messages import (
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
+    ToolCallPart,
     ToolReturnPart,
 )
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
@@ -46,6 +48,69 @@ from tests.helpers import ROOT, valid_planning_brief
 
 
 class InterpreterRunnerTest(unittest.TestCase):
+    def test_infeasible_terminal_falls_back_to_executable_scene_ir(self) -> None:
+        def callback(messages, info) -> ModelResponse:
+            del messages
+            output_tool = next(
+                item for item in info.output_tools if item.name.endswith("InfeasibleResult")
+            )
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        output_tool.name,
+                        {
+                            "type": "infeasible",
+                            "conflicting_constraint_ids": ["claimed_conflict"],
+                            "evidence": ["model gave up before building a Candidate"],
+                            "attempted_revisions": [0],
+                        },
+                        tool_call_id="infeasible_terminal",
+                    )
+                ],
+                usage=RequestUsage(input_tokens=10, output_tokens=10),
+                finish_reason="stop",
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            model = FunctionModel(callback, model_name="infeasible-test")
+            config = InterpreterRunConfig(
+                provider="mock",
+                run_dir=run_dir,
+                run_id="simplified_delivery_test",
+                max_commit_attempts=2,
+            )
+            with patch(
+                "cinescaffold.planning.runner.create_planning_model",
+                return_value=model,
+            ):
+                result = asyncio.run(InterpreterRunner(config).run(valid_planning_brief()))
+            scene_ir = json.loads(
+                (run_dir / result.artifacts["scene_ir"]).read_text(encoding="utf-8")
+            )
+            trace = (run_dir / "planning_agent_tool_trace.jsonl").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.delivery_tier, "simplified")
+        self.assertEqual(result.terminal_type, "simplified_delivery")
+        self.assertEqual(result.recovery_context["stage"], "simplified_delivery")
+        self.assertEqual(
+            scene_ir["acceptance"]["required_validators"],
+            [
+                "schema",
+                "references",
+                "timeline",
+                "hierarchy",
+                "transforms",
+                "camera",
+                "rebuildability",
+            ],
+        )
+        self.assertIn("planning_recovery_requested", trace)
+        self.assertIn("simplified_delivery_committed", trace)
+
     def test_openai_provider_usage_uses_cache_aware_cost_snapshot(self) -> None:
         result = provider_usage_summary(
             {

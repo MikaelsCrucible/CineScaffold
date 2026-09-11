@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- 默认规划路径新增结构化 Recovery Context；Commit Gate 拒绝、Agent 过早声明不可行/不支持和可恢复的 Agent 异常会在原预算中续跑。
+- 将 Full Fidelity Gate 与 Execution Safety Gate 分离；完整恢复用尽后优先保留最佳 Agent Candidate，否则从 Objective Brief 确定性构建不增加 Provider 请求的简化交付。
+- 规划与 Pipeline Summary 新增 `standard/recovered/simplified` 交付等级，简化交付保留完整 fidelity violations 供产品提示和审计。
+
+### Changed
+
+- `suggest_repairs` 在当前 revision 确定性搜索穷尽后重新开放受控手工 Mutation，仍不允许绕过 Schema、Validator 或 Commit Gate。
+
 ## 0.8.3 — 2026-09-11
 
 ### Added

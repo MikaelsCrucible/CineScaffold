@@ -434,7 +434,9 @@ async def _prepare_manual_mutation_tool(
     if prepared is None:
         return None
     toolkit = ctx.deps.toolkit
-    if toolkit.has_repairable_violations or toolkit.has_current_repair_suggestions:
+    if toolkit.has_current_repair_suggestions:
+        return None
+    if toolkit.has_repairable_violations and not toolkit.has_exhausted_repair_search:
         return None
     return prepared
 

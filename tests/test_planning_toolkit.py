@@ -7,6 +7,7 @@ from cinescaffold.planning.domain import CommitRequest
 from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
 from cinescaffold.planning.objective import ObjectiveRequirement, project_objective_brief
 from cinescaffold.planning.toolkit import (
+    EXECUTION_SAFETY_CHECKS,
     FULL_VALIDATION_CHECKS,
     ScenePlanningToolkit,
     _direction_matches,
@@ -991,6 +992,37 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertFalse(validation["data"]["hard_pass"])
         self.assertTrue(
             any(item["code"] == "UNMAPPED_EXPLICIT_REQUIREMENT" for item in validation["violations"])
+        )
+
+        request = CommitRequest(
+            type="commit_request",
+            candidate_revision=toolkit.store.current_revision,
+            summary="exercise split delivery gates",
+        )
+        full = SceneIRCommitGate(toolkit).commit(
+            request,
+            agent_run_id="full_gate_test",
+            trace_ref="trace.jsonl",
+        )
+        simplified = SceneIRCommitGate(toolkit).commit_simplified(
+            request,
+            agent_run_id="safety_gate_test",
+            trace_ref="trace.jsonl",
+        )
+
+        self.assertEqual(full.status, "rejected")
+        self.assertEqual(full.gate_mode, "full_fidelity")
+        self.assertEqual(simplified.status, "success")
+        self.assertEqual(simplified.gate_mode, "execution_safety")
+        self.assertTrue(
+            any(
+                item["code"] == "UNMAPPED_EXPLICIT_REQUIREMENT"
+                for item in simplified.violations
+            )
+        )
+        self.assertEqual(
+            simplified.scene_ir.acceptance.required_validators,
+            EXECUTION_SAFETY_CHECKS,
         )
 
     def test_equivalent_orbit_action_relationship_and_event_share_mapping(self) -> None:

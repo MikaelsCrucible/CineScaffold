@@ -164,7 +164,10 @@ def _mock_design_actions(
     objective: ObjectivePlanningBrief,
 ) -> list[tuple[str, dict[str, Any]]]:
     return [
-        ("submit_scene_skeleton", {"skeleton": _mock_scene_skeleton(objective)}),
+        (
+            "submit_scene_skeleton",
+            {"skeleton": build_deterministic_scene_skeleton(objective)},
+        ),
         (
             "request_design_options",
             {"preference": "balanced", "max_options": 3},
@@ -184,8 +187,14 @@ def _mock_design_actions(
     ]
 
 
-def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
-    """Mock 只做确定性夹具，不代表正式语义推断实现。"""
+def build_deterministic_scene_skeleton(
+    objective: ObjectivePlanningBrief,
+) -> dict[str, Any]:
+    """Build a conservative symbolic skeleton from an already typed Objective Brief.
+
+    The planner mock and the product fallback share this path so fallback behavior
+    remains deterministic, validated, and independent of another Provider call.
+    """
 
     entities: list[dict[str, Any]] = []
     categories: dict[str, str] = {}
@@ -481,6 +490,12 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
             "source_ref": "content.camera.movement.type",
         },
     }
+
+
+def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
+    """Backward-compatible test helper for the deterministic fallback builder."""
+
+    return build_deterministic_scene_skeleton(objective)
 
 
 def _mock_proxy_family(category: str) -> str:

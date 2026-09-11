@@ -88,6 +88,18 @@ FULL_VALIDATION_CHECKS = [
     "hard_semantics",
     "rebuildability",
 ]
+
+# These checks prove that a Candidate can be compiled and executed safely. The
+# remaining full checks measure semantic fidelity and visual readability.
+EXECUTION_SAFETY_CHECKS = [
+    "schema",
+    "references",
+    "timeline",
+    "hierarchy",
+    "transforms",
+    "camera",
+    "rebuildability",
+]
 INSPECT_VIEWS = [
     "summary",
     "entities",
@@ -226,6 +238,7 @@ class ScenePlanningToolkit:
             expected = initial_candidate.model_copy(deep=True)
         self.store = CandidateStore(expected)
         self._repair_suggestions: dict[str, _CameraRepair] = {}
+        self._repair_search_exhausted_revision: int | None = None
         self._scene_skeleton: SceneSkeleton | None = None
         self._design_options: dict[str, DesignOption] = {}
         self._last_design_request_hash: str | None = None
@@ -263,6 +276,10 @@ class ScenePlanningToolkit:
             and item.base_candidate_hash == current_hash
             for item in self._repair_suggestions.values()
         )
+
+    @property
+    def has_exhausted_repair_search(self) -> bool:
+        return self._repair_search_exhausted_revision == self.store.current_revision
 
     def get_capabilities(self, sections: list[str] | None = None) -> dict[str, Any]:
         state = self.store.get()
@@ -1199,6 +1216,8 @@ class ScenePlanningToolkit:
             and (not requested_ids or item.id in requested_ids)
         ]
         if not selected:
+            if not requested_ids:
+                self._repair_search_exhausted_revision = selected_revision
             return _envelope(
                 selected_revision,
                 selected_revision,
@@ -1238,6 +1257,8 @@ class ScenePlanningToolkit:
         )
         for repair in repairs:
             self._repair_suggestions[repair.suggestion_id] = repair
+        if not repairs:
+            self._repair_search_exhausted_revision = selected_revision
         return _envelope(
             selected_revision,
             selected_revision,

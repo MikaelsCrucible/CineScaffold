@@ -28,6 +28,7 @@ from cinescaffold.planning.agent import (
     _prepare_candidate_tool,
     _prepare_design_apply_tool,
     _prepare_design_options_tool,
+    _prepare_manual_mutation_tool,
     _prepare_repair_apply_tool,
     _prepare_repair_suggestion_tool,
     _prepare_scene_skeleton_tool,
@@ -375,6 +376,21 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertIs(suggestion_ready, sentinel)
         self.assertIsNone(suggestion_after_search)
         self.assertIs(apply_ready, sentinel)
+
+    def test_manual_mutation_reopens_after_deterministic_repair_is_exhausted(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(0.0, 0.0, 0.9),
+            camera_position=(0.0, -10.0, 1.5),
+        )
+        toolkit.validate_candidate(checks=["motion"])
+        toolkit._repair_search_exhausted_revision = toolkit.store.current_revision
+        sentinel = object()
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(_deps(Path(directory), toolkit))
+
+            prepared = asyncio.run(_prepare_manual_mutation_tool(context, sentinel))
+
+        self.assertIs(prepared, sentinel)
 
 
 def _deps(

@@ -43,6 +43,7 @@
 5. `apply_design_option` 已使用同一 Validator 预测并完整复验。若其 commit_ready=false，再按需调用 solve_candidate 或 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
    - 对 `CAMERA_MOTION_NEAR_COLLINEAR`、`PROJECTED_MOTION_UNREADABLE`、`ENTITY_OUT_OF_FRAME` 或 `PROJECTED_SIZE_VIOLATED`，优先调用 `suggest_repairs`。你只需按 Brief 语义与返回的 tradeoffs 选择整体策略，再用 `apply_repair` 原子应用；不要在已有可行建议时继续穷举摄影机坐标或焦距。
    - `suggest_repairs` 是只读搜索，返回的具体数值已经过同一 Validator 预测；`apply_repair` 会检查 base revision、重放 hash 并完整复验。出现可处理 violation 时，状态机会暂时收起冲突的手工 Mutation；建议过期时重新生成，不要手抄旧数值。
+   - 若 `suggest_repairs` 对当前 revision 返回 `no_change`，系统会重新开放受 Schema 和 Validator 约束的手工 Mutation。只能修改 violation 指向的实体、轨道、约束或摄影机字段；修改后必须再次调用 Validator，不得绕过 Commit Gate。
    - inspect_candidate 的 view 只能使用该工具 Schema 返回的枚举值；同一 revision 不得重复读取相同视图。
    - 实体和摄影机的 transform、path_follow、look_at、visibility、focal_length 等各是单一通道；替换通道时在同一次 Patch 中删除旧 Track 并 upsert 新 Track，可以沿用同一 ID。
    - 同一实体的连续多阶段运动应合并进覆盖所需时间域的一条 Track，并用多关键帧表达等待、靠近、停留、离开等阶段；不得为同一通道创建多条 Track。Track 开始前使用实体静态求解状态，开始后持续采用其关键帧状态。

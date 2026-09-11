@@ -39,6 +39,7 @@ from cinescaffold.planning.ir import (
 from cinescaffold.planning.store import canonical_hash
 from cinescaffold.planning.toolkit import (
     CONSTRAINT_CATALOG_VERSION,
+    EXECUTION_SAFETY_CHECKS,
     FULL_VALIDATION_CHECKS,
     TOOLKIT_VERSION,
     ScenePlanningToolkit,
@@ -54,6 +55,7 @@ COMMIT_GATE_VERSION = "0.11"
 @dataclass(frozen=True)
 class CommitGateResult:
     status: str
+    gate_mode: str
     scene_ir: SceneIR | None
     scene_ir_hash: str | None
     constraint_plan: dict[str, Any]
@@ -82,6 +84,7 @@ class SceneIRCommitGate:
         if not report["hard_pass"] or report["soft_score"] < self.toolkit.profile.minimum_soft_score:
             return CommitGateResult(
                 status="rejected",
+                gate_mode="full_fidelity",
                 scene_ir=None,
                 scene_ir_hash=None,
                 constraint_plan=constraint_plan,
@@ -106,11 +109,66 @@ class SceneIRCommitGate:
         self.toolkit.store.commit(request.candidate_revision)
         return CommitGateResult(
             status="success",
+            gate_mode="full_fidelity",
             scene_ir=scene_ir,
             scene_ir_hash=scene_ir_hash,
             constraint_plan=constraint_plan,
             validation=report,
             violations=[],
+        )
+
+    def commit_simplified(
+        self,
+        request: CommitRequest,
+        *,
+        agent_run_id: str,
+        trace_ref: str,
+    ) -> CommitGateResult:
+        """Commit only after execution-safety checks pass; retain fidelity failures."""
+
+        state = self.toolkit.store.get(request.candidate_revision)
+        safety_envelope = self.toolkit.validate_candidate(
+            revision=request.candidate_revision,
+            checks=EXECUTION_SAFETY_CHECKS,
+        )
+        safety_report = safety_envelope["data"]
+        full_envelope = self.toolkit.validate_candidate(
+            revision=request.candidate_revision,
+            checks=FULL_VALIDATION_CHECKS,
+        )
+        full_report = full_envelope["data"]
+        constraint_plan = state.model_dump(mode="json")
+        if not safety_report["hard_pass"]:
+            return CommitGateResult(
+                status="rejected",
+                gate_mode="execution_safety",
+                scene_ir=None,
+                scene_ir_hash=None,
+                constraint_plan=constraint_plan,
+                validation=full_report,
+                violations=safety_envelope["violations"],
+            )
+
+        scene_ir = compile_scene_ir(
+            self.toolkit,
+            state,
+            agent_run_id=agent_run_id,
+            trace_ref=trace_ref,
+            required_validators=EXECUTION_SAFETY_CHECKS,
+        )
+        _validate_compiled_scene_ir(scene_ir)
+        validate_scene_ir_for_execution(scene_ir)
+        _validate_compiled_equivalence(scene_ir, state, self.toolkit.profile)
+        scene_ir_hash = canonical_hash(scene_ir)
+        self.toolkit.store.commit(request.candidate_revision)
+        return CommitGateResult(
+            status="success",
+            gate_mode="execution_safety",
+            scene_ir=scene_ir,
+            scene_ir_hash=scene_ir_hash,
+            constraint_plan=constraint_plan,
+            validation=full_report,
+            violations=full_envelope["violations"],
         )
 
 
@@ -120,6 +178,7 @@ def compile_scene_ir(
     *,
     agent_run_id: str,
     trace_ref: str,
+    required_validators: list[str] | None = None,
 ) -> SceneIR:
     profile = toolkit.profile
     timeline = IRTimeline(
@@ -248,7 +307,7 @@ def compile_scene_ir(
                 item.model_dump(mode="json", exclude_none=True)
                 for item in state.constraints.values()
             ],
-            required_validators=FULL_VALIDATION_CHECKS,
+            required_validators=required_validators or FULL_VALIDATION_CHECKS,
             sampling_profile_id=profile.profile_id,
             minimum_soft_score=profile.minimum_soft_score,
         ),
