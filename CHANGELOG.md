@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.8.3 — 2026-09-11
+
+### Added
+
+- Pipeline 可接收同币种 Provider 金额上限，并以每次响应的实际 token usage 和冻结价格快照累计费用；达到或超过上限后，在下一次 Provider 请求前停止。
+- Semantic 与 Planning 每个已返回 usage 的请求都会发出独立 `provider_cost_incurred` 事件，供宿主应用即时持久化；Semantic 事件在结构化内容校验前发出，避免合法 HTTP 响应因后续解析失败而漏记。
+
+### Verification
+
+- Python 3.12 完整离线回归 254 项通过；新增回归覆盖 Semantic 首次响应越线后不进入 Planning、Semantic 响应结构非法仍先记账、Planning 越线后不再发出下一次模型请求，以及纯 Scene IR 执行不要求无关价格。
+
 ## 0.8.2 — 2026-09-11
 
 ### Fixed

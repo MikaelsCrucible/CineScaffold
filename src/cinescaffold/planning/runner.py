@@ -7,10 +7,11 @@ import os
 import time
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import RunUsage, UsageLimits
 
@@ -36,6 +37,7 @@ from cinescaffold.planning.toolkit import (
 )
 from cinescaffold.planning.trace import (
     CostRates,
+    ProviderCostLimitExceeded,
     StreamTelemetryHandler,
     TraceConfig,
     TraceEventCallback,
@@ -80,6 +82,18 @@ class InterpreterRunConfig(BaseModel):
     full_power_diagnostic: bool = False
     trace_config: TraceConfig = Field(default_factory=TraceConfig)
     cost_rates: CostRates | None = None
+    max_cost: Decimal | None = Field(default=None, gt=0)
+    initial_cost: Decimal = Field(default=Decimal(0), ge=0)
+
+    @model_validator(mode="after")
+    def require_prices_for_cost_limit(self) -> "InterpreterRunConfig":
+        if (
+            self.max_cost is not None
+            and not self.full_power_diagnostic
+            and self.cost_rates is None
+        ):
+            raise ValueError("Provider cost limit requires a price snapshot")
+        return self
 
 
 class InterpreterRunResult(BaseModel):
@@ -230,6 +244,9 @@ class InterpreterRunner:
                 raw_model,
                 trace,
                 record_content=self.config.full_power_diagnostic,
+                cost_rates=self.config.cost_rates,
+                max_cost=(None if self.config.full_power_diagnostic else self.config.max_cost),
+                initial_cost=self.config.initial_cost,
             )
             if self.config.full_power_diagnostic:
                 # None 会触发 PydanticAI 默认 50 请求上限，必须显式关闭。
@@ -379,6 +396,14 @@ class InterpreterRunner:
             error_payload = {
                 "type": type(error).__name__,
                 "limit_type": _usage_limit_type(str(error)),
+                "message": str(error),
+            }
+            trace.record("run_failed", status=status, error=error_payload)
+        except ProviderCostLimitExceeded as error:
+            status = "budget_exhausted"
+            error_payload = {
+                "type": type(error).__name__,
+                "limit_type": "cost_limit",
                 "message": str(error),
             }
             trace.record("run_failed", status=status, error=error_payload)
@@ -605,6 +630,7 @@ def _effective_limits(config: InterpreterRunConfig) -> dict[str, Any]:
             "max_total_tokens": None,
             "max_seconds": None,
             "max_commit_attempts": None,
+            "max_cost": None,
         }
     return {
         "max_requests": config.max_requests,
@@ -615,6 +641,7 @@ def _effective_limits(config: InterpreterRunConfig) -> dict[str, Any]:
         "max_total_tokens": config.max_total_tokens,
         "max_seconds": config.max_seconds,
         "max_commit_attempts": config.max_commit_attempts,
+        "max_cost": str(config.max_cost) if config.max_cost is not None else None,
     }
 
 

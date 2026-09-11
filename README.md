@@ -237,6 +237,8 @@ DeepSeek 在 thinking 与 tools 同时启用时要求后续请求完整回传历
 
 常规规划默认使用面向长思考工具循环的研究预算：48 次模型请求、80 次工具调用、单请求 128K 输入上下文、整轮累计 200K 输出 token、20 分钟墙钟时间和 5 次 Commit Gate 尝试。累计输入和输入输出总量默认不另设上限，但仍受上述单项门禁与供应商限制保护。每项均可通过 `--max-requests`、`--max-tool-calls`、`--max-context-tokens`、`--max-output-tokens`、`--max-seconds` 和 `--max-commit-attempts` 临时覆盖；论文批量实验应显式记录或冻结这些值。
 
+嵌入式宿主可以在 `PipelineRunConfig` 设置 `max_provider_cost`、`provider_cost_currency`，并为 Semantic 与 Planning 提供同币种的冻结 `CostRates`。Core 在每次 Provider 响应返回 usage 后发出 `provider_cost_incurred`，累计达到或超过上限后在下一次请求前停止；所以这是事后门禁，最后一个已经发生的请求可能越线。价格快照、跨任务/跨进程的日额度、预留和未知账单结算由宿主负责，Core 不把估算成本冒充 Provider 账单。
+
 ## 使用
 
 ### 浏览器 UI

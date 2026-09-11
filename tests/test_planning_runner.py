@@ -35,6 +35,7 @@ from cinescaffold.planning.runner import (
 )
 from cinescaffold.planning.trace import (
     CostRates,
+    ProviderCostLimitExceeded,
     StreamTelemetryHandler,
     TraceConfig,
     TraceRecorder,
@@ -66,6 +67,48 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertEqual(result["tokens"]["details"]["reasoning_tokens"], 500)
         self.assertEqual(result["estimated_cost"]["amount"], "0.03680000")
         self.assertEqual(result["pricing_snapshot"]["source"], "openai_terra_test")
+
+    def test_tracing_model_stops_before_request_after_postpaid_cost_limit(self) -> None:
+        calls = 0
+
+        def callback(messages, info) -> ModelResponse:
+            nonlocal calls
+            calls += 1
+            return ModelResponse(
+                parts=[TextPart("done")],
+                usage=RequestUsage(input_tokens=10, output_tokens=3),
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "trace.jsonl"
+            trace = TraceRecorder(trace_path, "cost_limit_test")
+            model = TracingModel(
+                FunctionModel(callback, model_name="probe"),
+                trace,
+                cost_rates=CostRates(
+                    currency="CNY",
+                    input_per_million=Decimal("1"),
+                    output_per_million=Decimal("1"),
+                    source="test",
+                ),
+                max_cost=Decimal("0.00001"),
+            )
+            agent = Agent(model, system_prompt="system")
+            asyncio.run(agent.run("first"))
+            with self.assertRaises(ProviderCostLimitExceeded):
+                asyncio.run(agent.run("second"))
+            rendered = trace_path.read_text(encoding="utf-8")
+
+        self.assertEqual(calls, 1)
+        self.assertIn("provider_cost_incurred", rendered)
+        self.assertIn("provider_cost_limit_exceeded", rendered)
+
+    def test_cost_limit_requires_a_price_snapshot(self) -> None:
+        with self.assertRaisesRegex(ValueError, "price snapshot"):
+            InterpreterRunConfig(
+                run_dir=Path("unused"),
+                max_cost=Decimal("2"),
+            )
 
     def test_real_provider_models_build_without_network_call(self) -> None:
         objective = project_objective_brief(valid_planning_brief()).objective_brief

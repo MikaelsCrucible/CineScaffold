@@ -51,6 +51,19 @@ class CostRates(BaseModel):
     source: str = "user_supplied"
 
 
+class ProviderCostLimitExceeded(RuntimeError):
+    """Raised before a new Provider request once post-paid spend reached its cap."""
+
+    def __init__(self, *, amount: Decimal, limit: Decimal, currency: str) -> None:
+        self.amount = amount
+        self.limit = limit
+        self.currency = currency
+        super().__init__(
+            f"cost_limit reached: {_cost_text(amount)} {currency} >= "
+            f"{_cost_text(limit)} {currency}"
+        )
+
+
 class TraceRecorder:
     def __init__(
         self,
@@ -124,12 +137,18 @@ class TracingModel(WrapperModel):
         trace: TraceRecorder,
         *,
         record_content: bool = False,
+        cost_rates: CostRates | None = None,
+        max_cost: Decimal | None = None,
+        initial_cost: Decimal = Decimal(0),
     ) -> None:
         super().__init__(wrapped)
         self.trace = trace
         # 仅 --full-power-diagnostic 模式记录完整对话与 thinking 原文；
         # 普通运行保持精简元数据日志，不落盘消息内容。
         self.record_content = record_content
+        self.cost_rates = cost_rates
+        self.max_cost = max_cost
+        self.cumulative_cost = initial_cost
         self._request_index = 0
         self.request_metrics: list[dict[str, int]] = []
         self.active_stream_request_index: int | None = None
@@ -141,6 +160,7 @@ class TracingModel(WrapperModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
+        self._raise_if_cost_exhausted()
         self._request_index += 1
         started = time.monotonic()
         self.trace.record(
@@ -187,6 +207,7 @@ class TracingModel(WrapperModel):
     ) -> AsyncGenerator[StreamedResponse, None]:
         """记录流式请求边界；完整对话与流式推理/正文原文只在诊断模式落盘。"""
 
+        self._raise_if_cost_exhausted()
         self._request_index += 1
         request_index = self._request_index
         started = time.monotonic()
@@ -271,6 +292,35 @@ class TracingModel(WrapperModel):
             ),
             provider_response_id=response.provider_response_id,
             finish_reason=response.finish_reason,
+        )
+        if self.cost_rates is not None:
+            amount = estimate_cost_amount(usage_values, self.cost_rates)
+            self.cumulative_cost += amount
+            self.trace.record(
+                "provider_cost_incurred",
+                stage="planning",
+                request_index=request_index,
+                amount=_cost_text(amount),
+                cumulative_amount=_cost_text(self.cumulative_cost),
+                currency=self.cost_rates.currency,
+                pricing_source=self.cost_rates.source,
+            )
+
+    def _raise_if_cost_exhausted(self) -> None:
+        if self.max_cost is None or self.cumulative_cost < self.max_cost:
+            return
+        currency = self.cost_rates.currency if self.cost_rates is not None else "unknown"
+        self.trace.record(
+            "provider_cost_limit_exceeded",
+            stage="planning",
+            amount=_cost_text(self.cumulative_cost),
+            limit=_cost_text(self.max_cost),
+            currency=currency,
+        )
+        raise ProviderCostLimitExceeded(
+            amount=self.cumulative_cost,
+            limit=self.max_cost,
+            currency=currency,
         )
 
 
@@ -441,29 +491,47 @@ def _token_usage_summary(
     }
     if rates is None:
         return result
-    input_tokens = Decimal(values.get("input_tokens", 0))
-    output_tokens = Decimal(values.get("output_tokens", 0))
-    cache_read = Decimal(values.get("cache_read_tokens", 0))
-    cache_write = Decimal(values.get("cache_write_tokens", 0))
-    uncached = max(Decimal(0), input_tokens - cache_read - cache_write)
-    cache_read_rate = rates.cache_read_per_million or rates.input_per_million
-    cache_write_rate = rates.cache_write_per_million or rates.input_per_million
-    total = (
-        uncached * rates.input_per_million
-        + cache_read * cache_read_rate
-        + cache_write * cache_write_rate
-        + output_tokens * rates.output_per_million
-    ) / Decimal(1_000_000)
+    total = estimate_cost_amount(values, rates)
     result["pricing_snapshot"] = {
         **rates.model_dump(mode="json"),
         "captured_at_utc": datetime.now(UTC).isoformat(),
         "formula": "uncached_input + cache_read + cache_write + output",
     }
     result["estimated_cost"] = {
-        "amount": f"{total.quantize(Decimal('0.00000001')):.8f}",
+        "amount": _cost_text(total),
         "currency": rates.currency,
     }
     return result
+
+
+def estimate_cost_amount(usage: dict[str, Any], rates: CostRates) -> Decimal:
+    """Calculate one usage record against a frozen, cache-aware price snapshot."""
+
+    input_tokens = Decimal(usage.get("input_tokens", 0))
+    output_tokens = Decimal(usage.get("output_tokens", 0))
+    cache_read = Decimal(usage.get("cache_read_tokens", 0))
+    cache_write = Decimal(usage.get("cache_write_tokens", 0))
+    uncached = max(Decimal(0), input_tokens - cache_read - cache_write)
+    cache_read_rate = (
+        rates.input_per_million
+        if rates.cache_read_per_million is None
+        else rates.cache_read_per_million
+    )
+    cache_write_rate = (
+        rates.input_per_million
+        if rates.cache_write_per_million is None
+        else rates.cache_write_per_million
+    )
+    return (
+        uncached * rates.input_per_million
+        + cache_read * cache_read_rate
+        + cache_write * cache_write_rate
+        + output_tokens * rates.output_per_million
+    ) / Decimal(1_000_000)
+
+
+def _cost_text(value: Decimal) -> str:
+    return f"{value.quantize(Decimal('0.00000001')):.8f}"
 
 
 def _usage_dict(usage: Any) -> dict[str, Any]:

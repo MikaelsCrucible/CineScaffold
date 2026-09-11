@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 
 from cinescaffold.execution.runner import ExecutionConfig, ExecutionResult
 from cinescaffold.planning.runner import InterpreterRunConfig, InterpreterRunResult
+from cinescaffold.planning.trace import CostRates
+from cinescaffold.providers.base import ProviderResponse
 from cinescaffold.providers import MockProvider
 from cinescaffold.semantic import SemanticParserConfig
 from cinescaffold.workflow import PipelineRunConfig, PipelineSource, WorkflowRunner
@@ -50,6 +53,26 @@ class _ExecutionRunner:
             render={"status": "ok", "artifact": str(video)},
             artifacts={"diagnostic_preview": video.name},
             elapsed_seconds=0.01,
+        )
+
+
+class _UsageProvider:
+    name = "usage-test"
+    model = "usage-test-model"
+
+    def __init__(self, content):
+        self.content = content
+
+    def generate(self, _system_prompt, _user_prompt, _schema):
+        return ProviderResponse(
+            content=self.content,
+            response_id="usage-test-1",
+            raw_metadata={
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 100,
+                }
+            },
         )
 
 
@@ -116,6 +139,25 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("planning", summary["stages"])
             self.assertIn("execution", summary["stages"])
 
+    async def test_scene_ir_does_not_require_unused_provider_prices(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self._config(root)
+            config = PipelineRunConfig(
+                **{
+                    **config.__dict__,
+                    "max_provider_cost": Decimal("2"),
+                    "provider_cost_currency": "CNY",
+                }
+            )
+            summary = await WorkflowRunner(
+                config,
+                planning_runner_type=_PlanningRunner,
+                execution_runner_type=_ExecutionRunner,
+            ).run(PipelineSource(kind="scene_ir", payload={}))
+
+        self.assertEqual(summary["status"], "success")
+
     async def test_semantic_failure_is_recorded_in_summary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -129,6 +171,73 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(summary["status"], "semantic_failed")
             self.assertIn("缺少 Provider", summary["error"])
             self.assertTrue((root / "run/pipeline_summary.json").is_file())
+
+    async def test_semantic_cost_is_emitted_and_stops_before_planning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self._config(root, semantic=True)
+            assert config.semantic_provider is not None
+            rates = CostRates(
+                currency="CNY",
+                input_per_million=Decimal("1"),
+                output_per_million=Decimal("1"),
+                source="test",
+            )
+            config = PipelineRunConfig(
+                **{
+                    **config.__dict__,
+                    "semantic_provider": _UsageProvider(config.semantic_provider.response),
+                    "semantic_cost_rates": rates,
+                    "planning": config.planning.model_copy(update={"cost_rates": rates}),
+                    "max_provider_cost": Decimal("0.0001"),
+                    "provider_cost_currency": "CNY",
+                }
+            )
+            events: list[str] = []
+            summary = await WorkflowRunner(
+                config,
+                progress_callback=lambda name, _payload: events.append(name),
+                planning_runner_type=_PlanningRunner,
+                execution_runner_type=_ExecutionRunner,
+            ).run(PipelineSource(kind="text", text="测试"))
+
+        self.assertEqual(summary["status"], "cost_limit_exceeded")
+        self.assertIn("provider_cost_incurred", events)
+        self.assertIn("provider_cost_limit_exceeded", events)
+        self.assertNotIn("pipeline_planning_started", events)
+
+    async def test_semantic_cost_is_emitted_before_invalid_response_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self._config(root, semantic=True)
+            assert config.semantic_provider is not None
+            rates = CostRates(
+                currency="CNY",
+                input_per_million=Decimal("1"),
+                output_per_million=Decimal("1"),
+                source="test",
+            )
+            config = PipelineRunConfig(
+                **{
+                    **config.__dict__,
+                    "semantic_provider": _UsageProvider({"invalid": True}),
+                    "semantic_cost_rates": rates,
+                    "planning": config.planning.model_copy(update={"cost_rates": rates}),
+                    "max_provider_cost": Decimal("2"),
+                    "provider_cost_currency": "CNY",
+                }
+            )
+            events: list[str] = []
+            summary = await WorkflowRunner(
+                config,
+                progress_callback=lambda name, _payload: events.append(name),
+                planning_runner_type=_PlanningRunner,
+                execution_runner_type=_ExecutionRunner,
+            ).run(PipelineSource(kind="text", text="测试"))
+
+        self.assertEqual(summary["status"], "semantic_failed")
+        self.assertIn("provider_cost_incurred", events)
+        self.assertNotIn("pipeline_planning_started", events)
 
 
 if __name__ == "__main__":
