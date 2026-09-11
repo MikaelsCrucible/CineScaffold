@@ -76,9 +76,17 @@ class InterpreterRunnerTest(unittest.TestCase):
         deepseek_model = create_planning_model(
             "deepseek", "deepseek-chat", objective, api_key="test-key"
         )
+        deepseek_flash_model = create_planning_model(
+            "deepseek", "deepseek-flash", objective, api_key="test-key"
+        )
 
         self.assertEqual(openai_model.provider.name, "openai")
         self.assertEqual(deepseek_model.provider.name, "deepseek")
+        self.assertEqual(deepseek_flash_model.provider.name, "deepseek")
+        self.assertTrue(deepseek_flash_model.profile["supports_thinking"])
+        self.assertFalse(
+            deepseek_flash_model.profile["openai_supports_tool_choice_required"]
+        )
 
     def test_deepseek_settings_use_chat_completion_fields(self) -> None:
         config = InterpreterRunConfig(

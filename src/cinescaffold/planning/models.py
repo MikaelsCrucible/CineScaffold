@@ -14,12 +14,21 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
+from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.deepseek import DeepSeekProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RequestUsage
 
 from cinescaffold.errors import ConfigurationError
 from cinescaffold.planning.objective import ObjectivePlanningBrief
+
+
+# PydanticAI 2.36 predates this official alias, so its bundled DeepSeek profile
+# would otherwise send tool_choice="required", which Flash thinking rejects.
+_DEEPSEEK_FLASH_PROFILE = OpenAIModelProfile(
+    supports_thinking=True,
+    openai_supports_tool_choice_required=False,
+)
 
 
 def create_planning_model(
@@ -65,7 +74,12 @@ def create_planning_model(
             deepseek_provider = DeepSeekProvider(openai_client=client)
         else:
             deepseek_provider = DeepSeekProvider(api_key=api_key)
-        return OpenAIChatModel(model_name, provider=deepseek_provider)
+        profile = _DEEPSEEK_FLASH_PROFILE if model_name == "deepseek-flash" else None
+        return OpenAIChatModel(
+            model_name,
+            provider=deepseek_provider,
+            profile=profile,
+        )
     raise ConfigurationError(f"未知 Agent Provider：{provider}")
 
 

@@ -114,7 +114,7 @@ python -c "import cinescaffold; print(cinescaffold.__version__)"
 生产环境应依赖正式 tag 或完整 commit，而不是 `main`：
 
 ```text
-cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.0
+cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.1
 ```
 
 嵌入式调用只依赖 [`cinescaffold.api`](src/cinescaffold/api.py) 的公共入口；`planning`、`execution` 等子模块属于内部实现：
@@ -232,7 +232,7 @@ planning_reasoning_effort = low
 
 `planning_thinking_mode = low` 是无效配置；thinking 开关只接受 `enabled/disabled`。
 
-DeepSeek 在 thinking 与 tools 同时启用时要求后续请求完整回传历史 `reasoning_content`。CineScaffold 依赖 PydanticAI 的 DeepSeek Profile 完成字段映射，并在这种模式下保留完整工具思考历史，不再应用 13-message 压缩窗口；普通工具前置正文仍会省略。该协议可能明显增加后续请求上下文，正式实验需要把思考模式和上下文预算一起冻结。
+DeepSeek 在 thinking 与 tools 同时启用时要求后续请求完整回传历史 `reasoning_content`。CineScaffold 依赖 PydanticAI 的 DeepSeek Profile 完成字段映射，并在这种模式下保留完整工具思考历史，不再应用 13-message 压缩窗口；普通工具前置正文仍会省略。对于 PydanticAI 2.36 尚未内置识别的官方别名 `deepseek-flash`，CineScaffold 0.8.1 还会显式声明 thinking 支持并禁用强制 `tool_choice=required`，让工具选择按 DeepSeek thinking 协议使用 `auto`。该协议可能明显增加后续请求上下文，正式实验需要把思考模式和上下文预算一起冻结。
 
 常规规划默认使用面向长思考工具循环的研究预算：48 次模型请求、80 次工具调用、单请求 128K 输入上下文、整轮累计 200K 输出 token、20 分钟墙钟时间和 5 次 Commit Gate 尝试。累计输入和输入输出总量默认不另设上限，但仍受上述单项门禁与供应商限制保护。每项均可通过 `--max-requests`、`--max-tool-calls`、`--max-context-tokens`、`--max-output-tokens`、`--max-seconds` 和 `--max-commit-attempts` 临时覆盖；论文批量实验应显式记录或冻结这些值。
 

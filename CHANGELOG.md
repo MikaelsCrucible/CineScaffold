@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.8.1 — 2026-09-11
+
+### Fixed
+
+- 为 DeepSeek 官方 `deepseek-flash` 别名补充 thinking/tool calling 能力覆盖。PydanticAI 2.36 尚未识别该别名，原先会发送 thinking 模式不支持的 `tool_choice=required`；现在保留 DeepSeek reasoning 字段协议，并让框架按 Profile 自动降级为 `tool_choice=auto`。
+
+### Verification
+
+- Python 3.12 完整离线回归 246 项通过；`deepseek-flash` 构造回归确认 thinking 可用且不要求 `tool_choice=required`，sdist 与 wheel 构建通过。
+
+## 0.8.0 — 2026-09-07
+
 ### Added
 
 - 新增稳定的 `cinescaffold.api` 嵌入入口，公开管线运行、Scene IR 执行、配置与公共数据类型，外部应用无需依赖 CLI/UI 或内部模块。
