@@ -11,6 +11,7 @@
 ### Verification
 
 - Python 3.12 完整离线回归 246 项通过；`deepseek-flash` 构造回归确认 thinking 可用且不要求 `tool_choice=required`，sdist 与 wheel 构建通过。
+- Studio 受控真实回归在约 145.3 秒内完成 DeepSeek Semantic/Planning、Blender、Artifact 与数据库终态链路；Planning 的 17 次请求和 14 次工具调用证明 thinking + tools 多轮协议可用。
 
 ## 0.8.0 — 2026-09-07
 
