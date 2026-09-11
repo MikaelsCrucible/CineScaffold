@@ -394,6 +394,8 @@ cinescaffold execute \
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
+Provider HTTP 边界使用无网络模拟回归覆盖认证拒绝（`401`）、限流（`429`）、余额不足（`402`）与超时；这些错误都归一为 `ProviderError`，且底层不会自动重试付费请求。金额越线另由 Workflow 测试确认 Semantic 已产生的费用先记录，随后在 Planning 前停止。
+
 JSON Schema 与 Prompt 位于 [`src/cinescaffold/resources/`](src/cinescaffold/resources/)，核心实现位于 [`src/cinescaffold/`](src/cinescaffold/)。这些资源是源码运行与 wheel 安装共用的唯一权威副本。
 
 ## 项目状态

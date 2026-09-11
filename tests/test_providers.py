@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 import unittest
+from unittest.mock import patch
 from typing import Any
+from urllib.error import HTTPError
 
 from cinescaffold.errors import ProviderError
 from cinescaffold.providers.deepseek import DeepSeekProvider
+from cinescaffold.providers.http import post_json
 from cinescaffold.providers.openai import OpenAIProvider
 from cinescaffold.schema import load_schema
 from tests.helpers import ROOT, valid_model_output
@@ -158,6 +162,53 @@ class ProviderTest(unittest.TestCase):
         provider = OpenAIProvider("secret", "test-model", transport=transport)
         with self.assertRaisesRegex(ProviderError, "未完成"):
             provider.generate("系统", "用户", self.schema)
+
+    def test_http_provider_rejections_are_reported_without_retrying(self) -> None:
+        cases = (
+            (401, "invalid authentication"),
+            (429, "rate limit exceeded"),
+            (402, "insufficient balance"),
+        )
+        for status_code, detail in cases:
+            with self.subTest(status_code=status_code):
+                error = HTTPError(
+                    "https://provider.invalid/v1/test",
+                    status_code,
+                    "provider rejected request",
+                    hdrs=None,
+                    fp=BytesIO(detail.encode("utf-8")),
+                )
+                with patch(
+                    "cinescaffold.providers.http.urlopen",
+                    side_effect=error,
+                ) as mocked_urlopen:
+                    with self.assertRaisesRegex(
+                        ProviderError,
+                        rf"HTTP {status_code}.*{detail}",
+                    ):
+                        post_json(
+                            "https://provider.invalid/v1/test",
+                            {"Authorization": "Bearer test-secret"},
+                            {"model": "test-model"},
+                            1.0,
+                        )
+
+                mocked_urlopen.assert_called_once()
+
+    def test_http_provider_timeout_is_normalized(self) -> None:
+        with patch(
+            "cinescaffold.providers.http.urlopen",
+            side_effect=TimeoutError("simulated timeout"),
+        ) as mocked_urlopen:
+            with self.assertRaisesRegex(ProviderError, "API 请求超时"):
+                post_json(
+                    "https://provider.invalid/v1/test",
+                    {"Authorization": "Bearer test-secret"},
+                    {"model": "test-model"},
+                    0.1,
+                )
+
+        mocked_urlopen.assert_called_once()
 
 
 if __name__ == "__main__":
