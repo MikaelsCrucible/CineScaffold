@@ -213,6 +213,59 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertIsInstance(compacted[-1], ModelRequest)
         self.assertIn("model_history_compacted", trace)
 
+    def test_tool_result_coalesces_adjacent_frame_violations_for_agent_only(self) -> None:
+        sampled = [
+            _sampled_ground_violation("frame_0", 0.0, 0.5),
+            _sampled_ground_violation("frame_1", 1 / 24, 2.0),
+            _sampled_ground_violation("frame_2", 2 / 24, 1.0),
+            _sampled_ground_violation("frame_12", 12 / 24, 0.75),
+        ]
+        envelope = {
+            "status": "ok",
+            "revision_after": 0,
+            "data": {"violations": sampled},
+            "violations": sampled,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), _toolkit())
+            _read_capabilities(deps)
+            result = deps.call_tool(
+                "validate_candidate",
+                {"checks": ["transforms"]},
+                lambda: envelope,
+            )
+            events = [
+                json.loads(line)
+                for line in (Path(directory) / "trace.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+
+        agent_violations = result["violations"]
+        self.assertEqual(len(agent_violations), 2)
+        self.assertEqual(agent_violations[0]["id"], "frame_1")
+        self.assertEqual(agent_violations[0]["time_range_seconds"], [0.0, 2 / 24])
+        self.assertEqual(agent_violations[0]["actual"]["sample_count"], 3)
+        self.assertEqual(
+            agent_violations[0]["actual"]["worst_sample"]["actual"]["penetration_m"],
+            2.0,
+        )
+        self.assertNotIn("violations", result["data"])
+        self.assertEqual(result["data"]["violation_count"], 2)
+        self.assertEqual(
+            result["data"]["violations_location"],
+            "top_level_violations",
+        )
+        completed = next(
+            event
+            for event in events
+            if event["event_type"] == "tool_call_completed"
+            and event["payload"].get("tool_name") == "validate_candidate"
+        )
+        self.assertEqual(len(completed["payload"]["result"]["violations"]), 4)
+        self.assertEqual(len(envelope["violations"]), 4)
+
     def test_scene_skeleton_must_precede_candidate_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             deps = _deps(Path(directory), _toolkit())
@@ -426,6 +479,31 @@ def _read_capabilities(deps: PlanningDeps) -> None:
 def _checkpoint(revision: int, checkpoints: list[int]) -> Path:
     checkpoints.append(revision)
     return Path(f"revision_{revision:04d}.json")
+
+
+def _sampled_ground_violation(
+    violation_id: str,
+    time_seconds: float,
+    penetration_m: float,
+) -> dict:
+    return {
+        "id": violation_id,
+        "code": "ENTITY_INTERSECTS_GROUND",
+        "severity": "hard",
+        "constraint_id": None,
+        "entity_ids": ["person", "ground"],
+        "time_range_seconds": [time_seconds, time_seconds],
+        "expected": {"maximum_penetration_m": 0.01},
+        "actual": {
+            "penetration_m": penetration_m,
+            "clearance_m": -penetration_m,
+            "ground_z": 0.0,
+            "ground_entity_id": "ground",
+            "mode": "must_be_above",
+        },
+        "adjustable_variables": ["entity transforms", "ground_interaction"],
+        "message": "Entity 地面交互不符合 must_be_above：person",
+    }
 
 
 if __name__ == "__main__":

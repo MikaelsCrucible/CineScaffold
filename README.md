@@ -50,6 +50,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 用户明确要求“可见”时，白模阶段以 hard `keep_in_frame` 证明代理几何至少部分进入画面；这不等价于已验证真实遮挡、材质透明或最终生成视频的可见性。
 - Validator 发现共线机位、屏幕运动不可读、主体出画或投影尺寸不合格时，Toolkit 会确定性搜索少量经复验的摄影机策略；Agent 选择整体方案，不再逐项猜坐标和焦距。
 - 默认规划会把失败类型、当前/最佳 revision、完整 violation、能力缺口和剩余尝试数组成 `Recovery Context` 回灌给 Agent；`infeasible` / `unsupported` 声明不再立即终止。确定性修复搜索返回 `no_change` 后，只重新开放受 Schema 和 Validator 限制的手工 Mutation。
+- 逐帧 Validator 仍在 Candidate、checkpoint 和诊断产物中保留完整证据；发给 Agent 的工具返回与 Recovery Context 会按错误签名和相邻帧合并为连续时间段，只携带首个、最严重和最后样本，且去除 Envelope 中重复的 validation 列表，避免同一连续错误耗尽上下文。
 - 完整修复用尽后，规划器优先保留并提交 Agent 已建立的最佳可执行 Candidate；若还没有可执行 Candidate，则从已类型 Objective Brief 确定性生成简化方案，不再请求 Provider。简化交付必须通过独立 Execution Safety Gate，同时保留未满足的语义 fidelity violations，不伪装成完整通过。
 - 支持世界、局部、目标相对和摄影机相对参考系。
 - 支持直线、圆、椭圆、平滑样条和 8 字等代理运动轨迹。
@@ -333,7 +334,7 @@ cinescaffold plan \
 
 正常规划的前三个工具阶段固定为：提交无数值 Scene Skeleton、请求经 Validator 预测的 Design Options、按 `option_id` 原子应用一个候选。只有候选仍有结构化 violation 或 capability gap 时，低层 Patch、Solver 与修复建议工具才会按状态开放；从 checkpoint 恢复时则直接从已有 Candidate 继续。
 
-`planning_summary.json` 用 `delivery_tier=standard|recovered|simplified` 区分首次完整通过、外层恢复后完整通过和安全简化交付。`Recovery Context` 和简化交付遗留的 fidelity violations 保存在 Summary/Trace 中。研究用 `--full-power-diagnostic` 保留原始严格观测语义，不自动转为简化交付。墙钟、Token 或 Provider 金额预算耗尽也不会绕过对应门禁。
+`planning_summary.json` 用 `delivery_tier=standard|recovered|simplified` 区分首次完整通过、外层恢复后完整通过和安全简化交付。`Recovery Context` 和简化交付遗留的 fidelity violations 保存在 Summary/Trace 中。研究用 `--full-power-diagnostic` 保留原始严格观测语义，不自动转为简化交付。常规产品运行若达到请求、工具调用、输入、上下文或输出 Token 上限，会停止继续调用 Provider，并尝试用已有 Candidate 或 Objective Brief 的确定性方案通过 Execution Safety Gate；成功时仍交付 `simplified`，不会把它伪装成完整语义通过。墙钟超时和 Provider 金额上限保持失败关闭，不在预算事件后扩大运行范围。
 
 定位供应商长推理或流式停顿时，可以显式开启一次性诊断特例：
 

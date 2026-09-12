@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -156,6 +157,204 @@ MAX_AGENT_HISTORY_MESSAGES = 13
 NON_TOOL_TEXT_MARKER = "[已省略不符合协议的无工具正文；请按重试指令调用工具。]"
 
 
+def compact_agent_payload(
+    value: Any,
+    *,
+    frame_interval_seconds: float,
+) -> Any:
+    """Project verbose sampled violations into a bounded Agent-facing view.
+
+    The authoritative Candidate validation is intentionally left untouched. This
+    projection is used only for model tool returns and recovery prompts, while
+    checkpoints and validation artifacts retain every sampled violation.
+    """
+
+    if isinstance(value, dict):
+        compacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if (
+                (key == "violations" or key.endswith("_violations"))
+                and isinstance(item, list)
+            ):
+                compacted[key] = _compact_sampled_violations(
+                    item,
+                    frame_interval_seconds=frame_interval_seconds,
+                )
+            else:
+                compacted[key] = compact_agent_payload(
+                    item,
+                    frame_interval_seconds=frame_interval_seconds,
+                )
+        data = compacted.get("data")
+        top_level_violations = compacted.get("violations")
+        if (
+            isinstance(data, dict)
+            and isinstance(top_level_violations, list)
+            and data.get("violations") == top_level_violations
+        ):
+            data.pop("violations")
+            data["violation_count"] = len(top_level_violations)
+            data["violations_location"] = "top_level_violations"
+        return compacted
+    if isinstance(value, list):
+        return [
+            compact_agent_payload(
+                item,
+                frame_interval_seconds=frame_interval_seconds,
+            )
+            for item in value
+        ]
+    return deepcopy(value)
+
+
+def _compact_sampled_violations(
+    violations: list[Any],
+    *,
+    frame_interval_seconds: float,
+) -> list[Any]:
+    groups: dict[str, list[tuple[int, float, dict[str, Any]]]] = {}
+    output: list[tuple[int, Any]] = []
+    for index, raw in enumerate(violations):
+        if not isinstance(raw, dict):
+            output.append((index, deepcopy(raw)))
+            continue
+        point = _point_violation_time(raw)
+        if point is None:
+            output.append((index, deepcopy(raw)))
+            continue
+        groups.setdefault(_sampled_violation_signature(raw), []).append(
+            (index, point, raw)
+        )
+
+    maximum_gap = frame_interval_seconds * 1.5 + 1e-9
+    for records in groups.values():
+        records.sort(key=lambda item: (item[1], item[0]))
+        segment: list[tuple[int, float, dict[str, Any]]] = []
+        for record in records:
+            if segment and record[1] - segment[-1][1] > maximum_gap:
+                output.extend(_summarize_sampled_segment(segment))
+                segment = []
+            segment.append(record)
+        output.extend(_summarize_sampled_segment(segment))
+
+    return [item for _, item in sorted(output, key=lambda pair: pair[0])]
+
+
+def _point_violation_time(violation: dict[str, Any]) -> float | None:
+    value = violation.get("time_range_seconds")
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 2
+        or isinstance(value[0], bool)
+        or isinstance(value[1], bool)
+        or not isinstance(value[0], (int, float))
+        or not isinstance(value[1], (int, float))
+        or abs(float(value[0]) - float(value[1])) > 1e-9
+    ):
+        return None
+    return float(value[0])
+
+
+def _sampled_violation_signature(violation: dict[str, Any]) -> str:
+    stable = {
+        key: value
+        for key, value in violation.items()
+        if key not in {"id", "time_range_seconds", "actual"}
+    }
+    stable["actual_shape"] = _categorical_shape(violation.get("actual"))
+    return json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _categorical_shape(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _categorical_shape(item) for key, item in sorted(value.items())}
+    if isinstance(value, list):
+        return [_categorical_shape(item) for item in value]
+    if isinstance(value, tuple):
+        return [_categorical_shape(item) for item in value]
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)):
+        return "<number>"
+    return f"<{type(value).__name__}>"
+
+
+def _summarize_sampled_segment(
+    segment: list[tuple[int, float, dict[str, Any]]],
+) -> list[tuple[int, dict[str, Any]]]:
+    if len(segment) < 2:
+        index, _, violation = segment[0]
+        return [(index, deepcopy(violation))]
+
+    first = segment[0]
+    last = segment[-1]
+    worst = max(segment, key=lambda item: _violation_evidence_score(item[2]))
+    summary = deepcopy(worst[2])
+    summary["time_range_seconds"] = [first[1], last[1]]
+    summary["actual"] = {
+        "summary_kind": "sampled_time_range",
+        "sample_count": len(segment),
+        "first_sample": {
+            "time_seconds": first[1],
+            "actual": deepcopy(first[2].get("actual")),
+        },
+        "worst_sample": {
+            "time_seconds": worst[1],
+            "actual": deepcopy(worst[2].get("actual")),
+        },
+        "last_sample": {
+            "time_seconds": last[1],
+            "actual": deepcopy(last[2].get("actual")),
+        },
+    }
+    return [(min(item[0] for item in segment), summary)]
+
+
+def _violation_evidence_score(violation: dict[str, Any]) -> tuple[float, float]:
+    actual = violation.get("actual")
+    if not isinstance(actual, dict):
+        return (0.0, 0.0)
+    priority_values: list[float] = []
+    fallback_values: list[float] = []
+    for key, raw in actual.items():
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            continue
+        value = abs(float(raw))
+        fallback_values.append(value)
+        if any(
+            marker in key
+            for marker in (
+                "penetration",
+                "clearance",
+                "error",
+                "deviation",
+                "delta",
+                "violation",
+            )
+        ):
+            priority_values.append(value)
+    return (
+        max(priority_values, default=0.0),
+        max(fallback_values, default=0.0),
+    )
+
+
+def _count_violation_items(value: Any) -> int:
+    if isinstance(value, dict):
+        return sum(
+            (
+                len(item)
+                if (key == "violations" or key.endswith("_violations"))
+                and isinstance(item, list)
+                else _count_violation_items(item)
+            )
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return sum(_count_violation_items(item) for item in value)
+    return 0
+
+
 def _compact_tool_call_history(
     ctx: RunContext[PlanningDeps],
     messages: list[ModelMessage],
@@ -282,7 +481,24 @@ class PlanningDeps:
                 revision=current_revision_after,
                 checkpoint=checkpoint_path.name,
             )
-        return result
+        timeline = self.toolkit.store.get().timeline
+        agent_result = compact_agent_payload(
+            result,
+            frame_interval_seconds=(
+                timeline.fps_denominator / timeline.fps_numerator
+            ),
+        )
+        full_violation_count = _count_violation_items(result)
+        agent_violation_count = _count_violation_items(agent_result)
+        if agent_violation_count < full_violation_count:
+            self.trace.record(
+                "agent_violation_payload_compacted",
+                tool_name=name,
+                full_violation_count=full_violation_count,
+                agent_violation_count=agent_violation_count,
+                authoritative_revision=current_revision_after,
+            )
+        return agent_result
 
     def _protocol_rejection(
         self,

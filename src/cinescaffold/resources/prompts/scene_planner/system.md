@@ -41,6 +41,7 @@
    - `ground_interaction` 只在场景存在环境地面平面时生效；太空、空中等无地面场景保持缺省 `must_be_above` 即可，不要为了“无地面”伪造 explicit 来源或使用 `unconstrained`。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 且来源路径与约束类型兼容的要求可以成为 hard constraint；环境实体来源不能被拿来制造空间硬约束。Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
 5. `apply_design_option` 已使用同一 Validator 预测并完整复验。若其 commit_ready=false，再按需调用 solve_candidate 或 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
+   - 连续逐帧错误会以 `actual.summary_kind=sampled_time_range` 合并为时间段；结合 `sample_count`、`first_sample`、`worst_sample` 和 `last_sample` 判断根因，不要把区间摘要误解为单帧错误。完整逐帧证据由系统留存在诊断产物中。
    - 对 `CAMERA_MOTION_NEAR_COLLINEAR`、`PROJECTED_MOTION_UNREADABLE`、`ENTITY_OUT_OF_FRAME` 或 `PROJECTED_SIZE_VIOLATED`，优先调用 `suggest_repairs`。你只需按 Brief 语义与返回的 tradeoffs 选择整体策略，再用 `apply_repair` 原子应用；不要在已有可行建议时继续穷举摄影机坐标或焦距。
    - `suggest_repairs` 是只读搜索，返回的具体数值已经过同一 Validator 预测；`apply_repair` 会检查 base revision、重放 hash 并完整复验。出现可处理 violation 时，状态机会暂时收起冲突的手工 Mutation；建议过期时重新生成，不要手抄旧数值。
    - 若 `suggest_repairs` 对当前 revision 返回 `no_change`，系统会重新开放受 Schema 和 Validator 约束的手工 Mutation。只能修改 violation 指向的实体、轨道、约束或摄影机字段；修改后必须再次调用 Validator，不得绕过 Commit Gate。

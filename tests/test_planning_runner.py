@@ -48,6 +48,62 @@ from tests.helpers import ROOT, valid_planning_brief
 
 
 class InterpreterRunnerTest(unittest.TestCase):
+    def test_context_limit_falls_back_without_another_model_request(self) -> None:
+        calls = 0
+
+        def callback(messages, info) -> ModelResponse:
+            del messages
+            nonlocal calls
+            calls += 1
+            output_tool = next(
+                item for item in info.output_tools if item.name.endswith("InfeasibleResult")
+            )
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        output_tool.name,
+                        {
+                            "type": "infeasible",
+                            "conflicting_constraint_ids": ["unprocessed"],
+                            "evidence": ["the response crossed the context limit"],
+                            "attempted_revisions": [0],
+                        },
+                        tool_call_id="over_context_terminal",
+                    )
+                ],
+                usage=RequestUsage(input_tokens=200, output_tokens=10),
+                finish_reason="stop",
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            model = FunctionModel(callback, model_name="context-limit-test")
+            config = InterpreterRunConfig(
+                provider="mock",
+                run_dir=run_dir,
+                run_id="context_limit_fallback_test",
+                max_context_tokens=100,
+            )
+            with patch(
+                "cinescaffold.planning.runner.create_planning_model",
+                return_value=model,
+            ):
+                result = asyncio.run(InterpreterRunner(config).run(valid_planning_brief()))
+            trace = (run_dir / "planning_agent_tool_trace.jsonl").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.delivery_tier, "simplified")
+        self.assertEqual(result.terminal_type, "simplified_delivery")
+        self.assertEqual(
+            result.recovery_context["failure_class"],
+            "usage_limit:per_request_input_tokens_limit",
+        )
+        self.assertIn("planning_usage_limit_reached", trace)
+        self.assertIn("simplified_delivery_committed", trace)
+
     def test_infeasible_terminal_falls_back_to_executable_scene_ir(self) -> None:
         def callback(messages, info) -> ModelResponse:
             del messages
@@ -436,7 +492,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "tool_call_completed" for item in trace))
         self.assertTrue(any(item["event_type"] == "commit_gate_completed" for item in trace))
         run_started = next(item for item in trace if item["event_type"] == "run_started")
-        self.assertEqual(run_started["payload"]["toolkit_version"], "0.23")
+        self.assertEqual(run_started["payload"]["toolkit_version"], "0.24")
         self.assertNotIn("孤独", "\n".join(trace_lines))
         # 普通运行保持精简日志：不记录对话内容，response 只记类型与规模。
         request_started = next(

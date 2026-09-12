@@ -15,7 +15,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai.exceptions import AgentRunError, UsageLimitExceeded
 from pydantic_ai.usage import RunUsage, UsageLimits
 
-from cinescaffold.planning.agent import PlanningDeps, create_planning_agent
+from cinescaffold.planning.agent import (
+    PlanningDeps,
+    compact_agent_payload,
+    create_planning_agent,
+)
 from cinescaffold.planning.checkpoint import (
     load_candidate_checkpoint,
     write_candidate_checkpoint,
@@ -147,6 +151,7 @@ class InterpreterRunner:
         terminal_type: str | None = None
         delivery_tier: Literal["standard", "recovered", "simplified"] | None = None
         recovery_context: dict[str, Any] | None = None
+        profile: PlanningProfile | None = None
         status = "failed"
         error_payload: dict[str, str] | None = None
         model_label = self.config.model or "mock-scene-planner-v0.1"
@@ -443,29 +448,19 @@ class InterpreterRunner:
                     prompt = _recovery_prompt(recovery_context)
 
                 if status != "success" and not self.config.full_power_diagnostic:
-                    toolkit, commit_result, recovery_context = _commit_simplified_delivery(
-                        toolkit,
-                        projection,
-                        profile,
-                        run_id=run_id,
-                        trace_path=trace_path,
-                        trace=trace,
-                        failure_class=status,
-                        previous_context=recovery_context,
-                    )
-                    if recovery_context["source"] == "deterministic_brief_fallback":
-                        write_candidate_checkpoint(
-                            run_dir / "fallback_checkpoints",
+                    toolkit, commit_result, recovery_context = (
+                        _commit_simplified_delivery_with_checkpoint(
+                            toolkit,
+                            projection,
+                            profile,
+                            run_dir=run_dir,
                             run_id=run_id,
-                            toolkit_version=TOOLKIT_VERSION,
-                            source_brief_sha256=(
-                                projection.objective_brief.source_brief_sha256
-                            ),
-                            profile_id=profile.profile_id,
-                            candidate=toolkit.store.get(),
+                            trace_path=trace_path,
+                            trace=trace,
+                            failure_class=status,
+                            previous_context=recovery_context,
                         )
-                    else:
-                        checkpoint_writer(toolkit.store.get())
+                    )
                     status = "success"
                     terminal_type = "simplified_delivery"
                     delivery_tier = "simplified"
@@ -476,12 +471,54 @@ class InterpreterRunner:
             trace.record("run_failed", status=status, error=error_payload)
         except UsageLimitExceeded as error:
             status = "budget_exhausted"
+            limit_type = _usage_limit_type(str(error))
             error_payload = {
                 "type": type(error).__name__,
-                "limit_type": _usage_limit_type(str(error)),
+                "limit_type": limit_type,
                 "message": str(error),
             }
-            trace.record("run_failed", status=status, error=error_payload)
+            trace.record("planning_usage_limit_reached", error=error_payload)
+            if (
+                not self.config.full_power_diagnostic
+                and toolkit is not None
+                and projection is not None
+                and profile is not None
+            ):
+                try:
+                    toolkit, commit_result, recovery_context = (
+                        _commit_simplified_delivery_with_checkpoint(
+                            toolkit,
+                            projection,
+                            profile,
+                            run_dir=run_dir,
+                            run_id=run_id,
+                            trace_path=trace_path,
+                            trace=trace,
+                            failure_class=f"usage_limit:{limit_type}",
+                            previous_context={
+                                "stage": "agent_usage_limit",
+                                "failure_class": "budget_exhausted",
+                                "limit_type": limit_type,
+                            },
+                        )
+                    )
+                except Exception as fallback_error:
+                    trace.record(
+                        "run_failed",
+                        status=status,
+                        error=error_payload,
+                        simplified_delivery_error={
+                            "type": type(fallback_error).__name__,
+                            "message": str(fallback_error),
+                        },
+                    )
+                else:
+                    status = "success"
+                    terminal_type = "simplified_delivery"
+                    delivery_tier = "simplified"
+                    error_payload = None
+            else:
+                trace.record("run_failed", status=status, error=error_payload)
         except ProviderCostLimitExceeded as error:
             status = "budget_exhausted"
             error_payload = {
@@ -593,7 +630,10 @@ def _resume_summary(toolkit: ScenePlanningToolkit) -> dict[str, Any]:
                     validation.hard_pass
                     and validation.soft_score >= toolkit.profile.minimum_soft_score
                 ),
-                "violation_codes": [item.code for item in validation.violations],
+                "violation_codes": sorted(
+                    {item.code for item in validation.violations}
+                ),
+                "violation_count": len(validation.violations),
             }
             if validation is not None
             else None
@@ -641,7 +681,7 @@ def _recovery_context(
     )
     best_revision = _best_executable_revision(toolkit)
     effective_violations = violations or validation["violations"]
-    return {
+    context = {
         "stage": stage,
         "failure_class": failure_class,
         "current_revision": current.revision,
@@ -661,6 +701,12 @@ def _recovery_context(
             "allow_deterministic_simplified_delivery",
         ],
     }
+    return compact_agent_payload(
+        context,
+        frame_interval_seconds=(
+            current.timeline.fps_denominator / current.timeline.fps_numerator
+        ),
+    )
 
 
 def _recovery_prompt(feedback: dict[str, Any]) -> str:
@@ -774,6 +820,44 @@ def _commit_simplified_delivery(
         scene_ir_hash=result.scene_ir_hash,
         fidelity_validation=result.validation,
         fidelity_violations=result.violations,
+    )
+    return toolkit, result, context
+
+
+def _commit_simplified_delivery_with_checkpoint(
+    toolkit: ScenePlanningToolkit,
+    projection: ObjectiveProjection,
+    profile: PlanningProfile,
+    *,
+    run_dir: Path,
+    run_id: str,
+    trace_path: Path,
+    trace: TraceRecorder,
+    failure_class: str,
+    previous_context: dict[str, Any] | None,
+) -> tuple[ScenePlanningToolkit, CommitGateResult, dict[str, Any]]:
+    toolkit, result, context = _commit_simplified_delivery(
+        toolkit,
+        projection,
+        profile,
+        run_id=run_id,
+        trace_path=trace_path,
+        trace=trace,
+        failure_class=failure_class,
+        previous_context=previous_context,
+    )
+    checkpoint_directory = (
+        run_dir / "fallback_checkpoints"
+        if context["source"] == "deterministic_brief_fallback"
+        else run_dir / "checkpoints"
+    )
+    write_candidate_checkpoint(
+        checkpoint_directory,
+        run_id=run_id,
+        toolkit_version=TOOLKIT_VERSION,
+        source_brief_sha256=projection.objective_brief.source_brief_sha256,
+        profile_id=profile.profile_id,
+        candidate=toolkit.store.get(),
     )
     return toolkit, result, context
 
