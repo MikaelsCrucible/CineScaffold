@@ -183,6 +183,10 @@ class SemanticRulesTest(unittest.TestCase):
                 path_type="linear",
             )
         ]
+        content["subject_motion"][0]["direction"] = self._annotated(
+            "朝向飞船",
+            "走向飞船",
+        )
 
         _, parameters = apply_translation_rules(content, self.rules)
 
@@ -193,6 +197,46 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertIsNone(motion["direction_vector_world"])
         self.assertEqual(parameters["subjects"][1]["minimum_footprint_m"], [10.0, 10.0])
         self.assertEqual(parameters["subjects"][1]["default_scene_depth_ratio"], 0.5)
+
+    def test_inferred_narrative_verbs_do_not_create_motion_targets(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": "passenger",
+                "category": self._annotated("乘客", "一名乘客"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+            {
+                "id": "carrier",
+                "category": self._annotated("载具", "一辆载具"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+        ]
+        content["subject_motion"] = [
+            self._motion(
+                "carrier",
+                "接载后离开",
+                action_kind="depart",
+                motion_type="moving",
+                motion_mode="self_propelled",
+                direction_mode="away_from_target",
+                target_id="passenger",
+                path_type="linear",
+            )
+        ]
+
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        semantics = normalized["subject_motion"][0]["motion_semantics"]
+        self.assertEqual(semantics["action_kind"], "locomotion")
+        self.assertEqual(semantics["direction_mode"], "none")
+        self.assertIsNone(semantics["target_id"])
+        self.assertEqual(parameters["motions"][0]["action_kind"], "locomotion")
+        self.assertEqual(parameters["motions"][0]["direction_mode"], "none")
 
     def test_dynamic_entity_timelines_preserve_independent_ranges(self) -> None:
         content = valid_model_output()
@@ -226,7 +270,7 @@ class SemanticRulesTest(unittest.TestCase):
             self._motion(
                 "car",
                 "驶来并接走",
-                action_kind="approach",
+                action_kind="locomotion",
                 motion_type="moving",
                 motion_mode="self_propelled",
                 direction_mode="toward_target",
@@ -464,6 +508,9 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(motion["motion_type"], "carried")
         self.assertEqual(motion["motion_mode"], "carried")
         self.assertEqual(motion["carrier_id"], "car")
+        self.assertEqual(motion["action_kind"], "locomotion")
+        self.assertEqual(motion["direction_mode"], "none")
+        self.assertIsNone(motion["target_id"])
         self.assertEqual(motion["speed_range_mps"], [0.0, 0.0])
         self.assertEqual(motion["postconditions"]["external_visibility"], "hidden")
 

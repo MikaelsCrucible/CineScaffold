@@ -58,15 +58,10 @@
 
 每条 `subject_motion` 都必须包含 `motion_semantics`。`action.value` 保留便于人类阅读和审计的动作描述；下列类型字段才是后续确定性量化和 Planning Agent 的机器依据。不得因为某个汉字碰巧出现在复合词或实体名中就分类，必须结合整句的施事者、受事者、目标、载体和事件阶段理解。
 
-- `action_kind` 表示这一阶段的事件作用：
-  - 保持状态用 `hold`；普通自主位移用 `locomotion`。
-  - 接近、到达、停止、离开分别用 `approach`、`arrive`、`stop`、`depart`。
-  - 上车/进入载体用 `board`；进入其他容器/区域用 `enter`；下车与离开容器分别用 `disembark`、`exit`。
-  - 被载体携带移动用 `transport`；绕目标运动用 `orbit`；跳跃和局部互动分别用 `jump`、`interact`。
-  - 只有以上均不适合时才可使用 `other`，并在 `uncertainties` 说明。
+- `action_kind` 只保留粗粒度事件类别：静止=`hold`，自主运动或随载体运动=`locomotion`，局部状态变化=`interact`，确实无法归类时=`other`。不要把普通运动继续细分为 approach/arrive/depart/transport 等动词类别；原始叙事保留在 `action.value/source_text`，不能由这些文字直接生成几何约束。
 - `motion_type` 是量化速度档位，不得从 `action.value` 的子串推导：静止=`static`，局部互动=`interactive`，步行/爬行=`walking`，跑动=`running`，飞行/游动=`flying`，跳跃=`jumping`，其他自主位移=`moving`，被其他主体携带=`carried`。
 - `motion_mode` 表示位移由谁驱动：无整体位移=`stationary`，主体自主运动=`self_propelled`，跟随载体=`carried`，仅局部动作=`local_interaction`。
-- `direction_mode` 只能是 `none`、`world_forward`、`toward_target`、`away_from_target` 或 `relative_to_target`。后三者必须填写 `target_id`；目标 ID 必须来自 `subjects`。
+- `direction_mode` 只能是 `none`、`world_forward`、`toward_target`、`away_from_target` 或 `relative_to_target`。后三者必须填写 `target_id`；目标 ID 必须来自 `subjects`。只有用户明确说出方向或几何目标时才能填写非 `none`；“驶来、开走、接走、到达、离开”等普通动作只证明发生运动，不证明朝向或远离某个主体。事件参与者不是运动目标。
 - `carrier_id` 只在 `motion_mode=carried` 时填写，并必须引用另一个主体；其他模式填 `null`。
 - `path_type` 使用 `stationary`、`linear`、`circular`、`elliptical`、`s_curve`、`figure_eight`、`parabolic` 或 `unspecified`。静止必须使用 `stationary`；已经明确路径时不得使用 `unspecified`。
 - `timeline_event_id` 必须引用承载这一动作阶段的 `timeline.events[].id`；确实没有事件记录时才为 `null`。
@@ -77,11 +72,11 @@
 一致性要求：
 
 - `motion_mode=stationary` 必须配 `motion_type=static`；`local_interaction` 必须配 `interactive`；`carried` 必须配 `motion_type=carried` 和非空 `carrier_id`。
-- `action_kind=board|enter` 应以所进入的载体或容器为 `target_id`，并在阶段结束后设置 `contained_by_id`；代理白模不能表现进入内部时，通常将 `external_visibility` 设为 `hidden`。
-- `action_kind=transport` 表示主体被 `carrier_id` 携带，不是主体步行。其空间运动应继承载体，而不是重新沿世界前方生成一条独立路径。
-- `action_kind=orbit` 必须设置被环绕主体为 `target_id`，使用 `relative_to_target`，并选择圆形或椭圆等路径类型。
+- 进入载体或容器通过 `postconditions.contained_by_id` 表达；只有用户明确描述“朝向/走向该目标”时才同时设置方向 `target_id`。代理白模不能表现进入内部时，通常将 `external_visibility` 设为 `hidden`。
+- 被载体携带通过 `motion_mode=carried + carrier_id` 表达，不再另造 transport 动作。其空间运动继承载体，`direction_mode=none`、`path_type=stationary`，不能重复生成世界轨迹。
+- 绕行通过 `relative_to_target + target_id + circular/elliptical` 表达，不依赖 orbit 动词类别。
 
-通用示例：“载体来接主体”至少拆为载体接近/到达、主体进入、载体离开和主体容纳状态四个相关阶段；“接走”不得因为包含“走”而分类为被接主体步行。这里的实体类别可以是汽车与人、飞船与货物、电梯与乘客等，不得写死具体故事模板。
+通用原则：“载体来接主体”只需分别记录各主体何时运动、静止、隐藏或被载体携带。载体驶来和接载后继续运动都只是 `locomotion`；接载点用事件末端关系表达，不能把被接主体当成载体必须撞向或远离的几何目标。这里的实体类别可以是汽车与人、飞船与货物、电梯与乘客等，不得写死具体故事模板。
 
 ### 感觉
 

@@ -124,10 +124,7 @@
       "properties": {
         "action_kind": {
           "type": "string",
-          "enum": [
-            "hold", "locomotion", "approach", "arrive", "stop", "depart",
-            "board", "disembark", "enter", "exit", "transport", "orbit", "jump", "interact", "other"
-          ]
+          "enum": ["hold", "locomotion", "interact", "other"]
         },
         "motion_type": {
           "type": "string",

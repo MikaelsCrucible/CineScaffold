@@ -554,8 +554,8 @@ class PlanningDesignTest(unittest.TestCase):
                 "action_kind": "depart",
                 "motion_type": "moving",
                 "motion_mode": "self_propelled",
-                "direction_mode": "world_forward",
-                "target_id": None,
+                "direction_mode": "away_from_target",
+                "target_id": "man",
                 "carrier_id": None,
                 "path_type": "linear",
                 "timeline_event_id": "departure",
@@ -602,12 +602,61 @@ class PlanningDesignTest(unittest.TestCase):
             abs(approach_start[0] - man_position[0]),
             abs(approach_end[0] - man_position[0]),
         )
-        self.assertLess(departure_end[1], departure_start[1])
+        self.assertGreater(
+            abs(departure_end[0] - departure_start[0])
+            + abs(departure_end[1] - departure_start[1]),
+            0.5,
+        )
         self.assertNotIn("design_carried_man_man_carried", state.motion_tracks)
         codes = {item["code"] for item in toolkit.validate_candidate()["violations"]}
         self.assertNotIn("MOTION_DIRECTION_SEMANTICS_UNMET", codes)
         self.assertNotIn("MOTION_POSTCONDITION_CONTAINMENT_UNMET", codes)
         self.assertNotIn("CARRIED_SUBJECT_UNBOUND", codes)
+
+    def test_direction_unspecified_pickup_uses_one_route_across_stop(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+        events = toolkit.objective_brief.timeline["events"]
+        events[0].update(start_time_seconds=0.0, end_time_seconds=4.0)
+        events[1].update(start_time_seconds=4.0, end_time_seconds=7.0)
+        events[2].update(start_time_seconds=7.0, end_time_seconds=12.0)
+        for index in (1, 4):
+            toolkit.objective_brief.subject_motion[index]["motion_semantics"] = {
+                "action_kind": "locomotion",
+                "motion_type": "moving",
+                "motion_mode": "self_propelled",
+                "direction_mode": "none",
+                "target_id": None,
+                "carrier_id": None,
+                "path_type": "linear",
+                "timeline_event_id": "wait_and_arrive" if index == 1 else "departure",
+                "postconditions": {
+                    "contained_by_id": None,
+                    "external_visibility": "unchanged",
+                },
+                "source_status": "inferred",
+            }
+
+        skeleton = _pickup_skeleton()
+        skeleton["motion_phases"][1].update(direction_mode="none", target_id=None)
+        skeleton["motion_phases"][5].update(direction_mode="none", target_id=None)
+        # 推断的进入用显隐和后续载运表达，不虚构朝载体移动。
+        del skeleton["motion_phases"][2]
+        toolkit.submit_scene_skeleton(skeleton)
+
+        options = toolkit.request_design_options(max_options=1)
+        self.assertEqual(len(options["data"]["options"]), 1, options)
+        toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
+        state = toolkit.store.get()
+        car_track = state.motion_tracks["design_motion_car"]
+        points = [item.value.translation_m for item in car_track.keyframes]
+        approach = (points[1][0] - points[0][0], points[1][1] - points[0][1])
+        departure = (points[3][0] - points[2][0], points[3][1] - points[2][1])
+        self.assertGreater(approach[0] * departure[0] + approach[1] * departure[1], 0.0)
+        man = state.entities["man"].solved_transform.translation_m
+        self.assertLessEqual(
+            ((points[1][0] - man[0]) ** 2 + (points[1][1] - man[1]) ** 2) ** 0.5,
+            3.0,
+        )
 
     def test_scene_skeleton_rejects_special_board_motion_kind(self) -> None:
         value = _pickup_skeleton()
@@ -616,7 +665,7 @@ class PlanningDesignTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             SceneSkeleton.model_validate(value)
 
-    def test_mock_decomposes_board_semantics_without_extra_entity(self) -> None:
+    def test_mock_decomposes_board_state_without_collision_path(self) -> None:
         toolkit = _example_toolkit("roadside_pickup_12s.json")
         objective = toolkit.objective_brief.model_copy(deep=True)
         objective.subject_motion[2]["motion_semantics"] = {
@@ -645,9 +694,9 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertTrue(
             any(
                 item["subject_id"] == "man"
-                and item["kind"] == "linear_move"
+                and item["kind"] == "hold"
                 and item["timeline_event_id"] == "boarding"
-                and item["target_id"] == "car"
+                and item["target_id"] is None
                 for item in phases
             )
         )

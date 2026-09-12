@@ -552,11 +552,54 @@ def _normalize_motion_metadata(content: dict[str, Any]) -> None:
         semantics = motion.get("motion_semantics")
         if not isinstance(semantics, dict):
             continue
+        _normalize_motion_primitives(motion, semantics)
         if "narrative_required" not in semantics:
             action = motion.get("action")
             semantics["narrative_required"] = bool(
                 isinstance(action, dict) and action.get("source_status") == "explicit"
             )
+
+
+def _normalize_motion_primitives(
+    motion: dict[str, Any],
+    semantics: dict[str, Any],
+) -> None:
+    """把叙事动词收敛为 Planning 实际使用的运动事实。
+
+    arrive/depart/transport 等词不能证明几何方向或目标；只有明确来源的
+    方向才能进入相对几何，容纳和载运继续作为独立状态关系。
+    """
+
+    motion_mode = semantics.get("motion_mode")
+    semantics["action_kind"] = {
+        "stationary": "hold",
+        "local_interaction": "interact",
+        "self_propelled": "locomotion",
+        "carried": "locomotion",
+    }.get(motion_mode, "other")
+
+    direction = motion.get("direction")
+    direction_is_explicit = (
+        isinstance(direction, dict)
+        and direction.get("source_status") == "explicit"
+        and direction.get("value") not in {None, ""}
+    )
+    if motion_mode == "carried":
+        semantics["direction_mode"] = "none"
+        semantics["target_id"] = None
+        # 被运载主体在载体坐标系内静止，世界轨迹只继承 carrier_id。
+        semantics["path_type"] = "stationary"
+        return
+
+    if not direction_is_explicit and semantics.get("direction_mode") in {
+        "world_forward",
+        "toward_target",
+        "away_from_target",
+        "relative_to_target",
+    }:
+        semantics["direction_mode"] = "none"
+        # 容纳已有独立后置状态；几何 target_id 不得重复事件参与者或容器。
+        semantics["target_id"] = None
 
 
 def _apply_scene_dynamics(content: dict[str, Any]) -> None:
@@ -832,27 +875,22 @@ def _validated_motion_semantics(
         contained_by_id not in subject_ids or contained_by_id == subject_id
     ):
         raise ValueError(f"subject_motion[{index}] 的 contained_by_id 无效")
-    if semantics.get("action_kind") in {"board", "enter"}:
-        if target_id is None or contained_by_id != target_id:
-            raise ValueError(
-                f"subject_motion[{index}] 的进入阶段必须把 target_id 写入 contained_by_id"
-            )
-    if semantics.get("action_kind") == "transport" and motion_mode != "carried":
-        raise ValueError(f"subject_motion[{index}] 的 transport 阶段必须使用 carried 模式")
-    if semantics.get("action_kind") == "orbit":
-        if direction_mode != "relative_to_target" or semantics.get("path_type") not in {
-            "circular",
-            "elliptical",
-        }:
-            raise ValueError(
-                f"subject_motion[{index}] 的 orbit 阶段必须声明相对目标和圆/椭圆路径"
-            )
+    if contained_by_id is not None and target_id is not None and target_id != contained_by_id:
+        raise ValueError(
+            f"subject_motion[{index}] 的几何目标与 contained_by_id 冲突"
+        )
 
     path_type = semantics.get("path_type")
     if motion_mode == "stationary" and path_type != "stationary":
         raise ValueError(f"subject_motion[{index}] 的静止阶段必须使用 stationary 路径")
     if motion_mode == "self_propelled" and path_type == "stationary":
         raise ValueError(f"subject_motion[{index}] 的自主运动不能使用 stationary 路径")
+    if path_type in {"circular", "elliptical"} and (
+        direction_mode != "relative_to_target" or target_id is None
+    ):
+        raise ValueError(
+            f"subject_motion[{index}] 的相对闭合路径缺少有效几何目标"
+        )
 
     timeline_event_id = semantics.get("timeline_event_id")
     if timeline_event_id is not None and timeline_event_id not in event_ids:

@@ -3325,18 +3325,14 @@ def _typed_motion_semantic_violations(
         baseline = positions[0]
         movement_extent = max(length(subtract(item, baseline)) for item in positions)
         motion_mode = semantics.get("motion_mode")
-        action_kind = semantics.get("action_kind")
         stationary_tolerance = 1e-4
-        displacement_action = action_kind in {"board", "disembark", "enter", "exit"}
         minimum_displacement = _minimum_semantic_displacement(
             objective_brief,
             motion_index,
             start,
             end,
         )
-        if motion_mode == "stationary" or (
-            motion_mode == "local_interaction" and not displacement_action
-        ):
+        if motion_mode in {"stationary", "local_interaction"}:
             if movement_extent > stationary_tolerance:
                 violations.append(
                     _violation(
@@ -3349,7 +3345,7 @@ def _typed_motion_semantic_violations(
                         adjustable_variables=[f"motion_tracks.{subject_id}"],
                     )
                 )
-        elif motion_mode == "self_propelled" or displacement_action:
+        elif motion_mode == "self_propelled":
             if movement_extent + profile.numeric_tolerance < minimum_displacement:
                 violations.append(
                     _violation(
@@ -3365,7 +3361,17 @@ def _typed_motion_semantic_violations(
             violations.extend(
                 _typed_direction_violations(
                     state,
-                    semantics,
+                    (
+                        semantics
+                        if not _relative_target_is_carried_by_actor(
+                            objective_brief,
+                            subject_id,
+                            semantics,
+                            start,
+                            end,
+                        )
+                        else semantics | {"direction_mode": "none", "target_id": None}
+                    ),
                     subject_id,
                     positions,
                     sample_times,
@@ -3442,12 +3448,25 @@ def _typed_motion_semantic_violations(
             endpoint_distance = length(
                 subtract(subject_position, container_position.translation_m)
             )
-            if not center_is_contained and not _has_carrier_binding(
-                state,
-                subject_id,
-                contained_by_id,
-                start,
-                end,
+            represented_by_hidden_carriage = (
+                visibility_after == "hidden"
+                and _has_semantic_carrier_successor(
+                    objective_brief,
+                    subject_id,
+                    contained_by_id,
+                    end,
+                )
+            )
+            if (
+                not center_is_contained
+                and not represented_by_hidden_carriage
+                and not _has_carrier_binding(
+                    state,
+                    subject_id,
+                    contained_by_id,
+                    start,
+                    end,
+                )
             ):
                 violations.append(
                     _violation(
@@ -3501,6 +3520,70 @@ def _typed_motion_semantic_violations(
                 )
             )
     return violations
+
+
+def _relative_target_is_carried_by_actor(
+    objective_brief: ObjectivePlanningBrief,
+    actor_id: str,
+    semantics: dict[str, Any],
+    start: float,
+    end: float,
+) -> bool:
+    """识别旧 Brief 中载体相对自身乘员运动的矛盾方向。"""
+
+    if semantics.get("direction_mode") not in {"toward_target", "away_from_target"}:
+        return False
+    target_id = semantics.get("target_id")
+    if not isinstance(target_id, str):
+        return False
+    tolerance = 1e-6
+    for motion in objective_brief.subject_motion:
+        if not isinstance(motion, dict) or motion.get("subject_id") != target_id:
+            continue
+        target_semantics = motion.get("motion_semantics")
+        if not isinstance(target_semantics, dict) or (
+            target_semantics.get("motion_mode") != "carried"
+            or target_semantics.get("carrier_id") != actor_id
+        ):
+            continue
+        target_start = motion.get("start_time_seconds")
+        target_end = motion.get("end_time_seconds")
+        if not isinstance(target_start, (int, float)) or not isinstance(
+            target_end, (int, float)
+        ):
+            continue
+        if float(target_start) < end - tolerance and float(target_end) > start + tolerance:
+            return True
+    return False
+
+
+def _has_semantic_carrier_successor(
+    objective_brief: ObjectivePlanningBrief,
+    subject_id: str,
+    carrier_id: str,
+    transition_time: float,
+) -> bool:
+    """接受隐藏代理加紧接的载运关系表达进入状态。"""
+
+    tolerance = 1e-6
+    for motion in objective_brief.subject_motion:
+        if not isinstance(motion, dict) or motion.get("subject_id") != subject_id:
+            continue
+        semantics = motion.get("motion_semantics")
+        if not isinstance(semantics, dict):
+            continue
+        if (
+            semantics.get("motion_mode") != "carried"
+            or semantics.get("carrier_id") != carrier_id
+        ):
+            continue
+        start = motion.get("start_time_seconds")
+        end = motion.get("end_time_seconds")
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            continue
+        if float(start) <= transition_time + tolerance and float(end) >= transition_time:
+            return True
+    return False
 
 
 def _point_within_proxy_bounds(
@@ -3845,7 +3928,8 @@ def _projected_motion_readability_violations(
             if positive_sizes
             else math.inf
         )
-        action_kind = str(motion.get("action_kind") or "locomotion")
+        motion_mode = str(motion.get("motion_mode") or "self_propelled")
+        direction_mode = str(motion.get("direction_mode") or "none")
         visibility_sample = min(max(end, 0.0), last_frame_time)
         hidden_at_end = not _entity_visibility_at(
             state,
@@ -3856,22 +3940,21 @@ def _projected_motion_readability_violations(
             0.0 <= centers[-1][0] <= 1.0 and 0.0 <= centers[-1][1] <= 1.0
         )
         directional_scale_ratio = scale_ratio
-        if positive_sizes and action_kind in {"approach", "arrive", "board", "enter"}:
+        if positive_sizes and direction_mode == "toward_target":
             directional_scale_ratio = sizes[-1] / max(sizes[0], profile.numeric_tolerance)
-        elif positive_sizes and action_kind in {"depart", "disembark", "exit"}:
+        elif positive_sizes and direction_mode == "away_from_target":
             directional_scale_ratio = sizes[0] / max(sizes[-1], profile.numeric_tolerance)
         if (
             projected_extent + profile.numeric_tolerance
             >= profile.minimum_projected_motion_extent
             or directional_scale_ratio + profile.numeric_tolerance
             >= profile.minimum_projected_motion_scale_ratio
-            or action_kind in {"board", "enter"} and hidden_at_end
-            or action_kind == "depart" and end_outside_frame
+            or hidden_at_end
         ):
             continue
 
         message = (
-            f"主体 {subject_id} 的 {action_kind} 动作在屏幕投影中近似静止；"
+            f"主体 {subject_id} 的 {motion_mode} 运动在屏幕投影中近似静止；"
             "请调整运动方向、摄影机距离或摄影机方位，使白模能够辨识该动作"
         )
         if explicit_camera:
@@ -3889,11 +3972,12 @@ def _projected_motion_readability_violations(
                     profile.minimum_projected_motion_scale_ratio
                 ),
                 "acceptance": "满足任意一项",
-                "action_kind": action_kind,
+                "motion_mode": motion_mode,
+                "direction_mode": direction_mode,
                 "result_signals": [
                     "centroid_displacement",
                     "directional_scale_change",
-                    "enter_hidden_or_depart_out_of_frame",
+                    "hidden_state_transition",
                 ],
                 "purpose": "让控制白模中的主体运动保持可辨识",
             },
@@ -4206,7 +4290,10 @@ def _objective_orbit_pairs(
         if not isinstance(motion, dict):
             continue
         semantics = motion.get("motion_semantics")
-        if not isinstance(semantics, dict) or semantics.get("action_kind") != "orbit":
+        if not isinstance(semantics, dict) or not (
+            semantics.get("direction_mode") == "relative_to_target"
+            and semantics.get("path_type") in {"circular", "elliptical"}
+        ):
             continue
         subject_id = motion.get("subject_id")
         target_id = semantics.get("target_id")
@@ -4797,7 +4884,6 @@ def _equivalent_motion_source_refs(
             continue
         subject_id = motion.get("subject_id")
         target_id = semantics.get("target_id")
-        action_kind = semantics.get("action_kind")
         refs = {
             ref
             for ref in (
@@ -4815,7 +4901,12 @@ def _equivalent_motion_source_refs(
                     ref = f"content.timeline.events[{event_index}]"
                     if ref in explicit_refs:
                         refs.add(ref)
-        if action_kind == "orbit" and isinstance(subject_id, str) and isinstance(target_id, str):
+        if (
+            semantics.get("direction_mode") == "relative_to_target"
+            and semantics.get("path_type") in {"circular", "elliptical"}
+            and isinstance(subject_id, str)
+            and isinstance(target_id, str)
+        ):
             for relation_index, relationship in enumerate(relationships):
                 if not isinstance(relationship, dict):
                     continue

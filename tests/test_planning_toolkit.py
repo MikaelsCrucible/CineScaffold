@@ -1293,7 +1293,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                         "action": _annotated("围绕飞船公转", "男人围绕飞船公转"),
                         "direction": _annotated("环绕飞船", "围绕飞船公转"),
                         "motion_semantics": {
-                            "action_kind": "orbit",
+                            "action_kind": "locomotion",
+                            "direction_mode": "relative_to_target",
+                            "path_type": "circular",
                             "target_id": "ship_01",
                             "timeline_event_id": "event_orbit",
                         },

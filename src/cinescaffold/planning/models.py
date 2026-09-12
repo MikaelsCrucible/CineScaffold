@@ -236,7 +236,6 @@ def build_deterministic_scene_skeleton(
 
     relations: list[dict[str, Any]] = []
     orbit_targets: dict[str, str] = {}
-    proximity_targets: dict[str, str] = {}
     board_targets: dict[str, str] = {}
     if ground_id:
         for entity_id, category in categories.items():
@@ -288,7 +287,6 @@ def build_deterministic_scene_skeleton(
             relation_payload.update(
                 {"timeline_event_id": "wait_and_arrive", "temporal_mode": "at_end"}
             )
-            proximity_targets[str(subject_id)] = str(reference_id)
         elif relation_type == "board_into":
             relation_payload.update(
                 {"timeline_event_id": "boarding", "temporal_mode": "at_end"}
@@ -325,7 +323,6 @@ def build_deterministic_scene_skeleton(
             continue
         semantics = motion.get("motion_semantics") if isinstance(motion.get("motion_semantics"), dict) else {}
         motion_type = semantics.get("motion_type")
-        action_kind = semantics.get("action_kind")
         path_type = semantics.get("path_type")
         event_id = semantics.get("timeline_event_id") or _mock_motion_event_id(
             objective,
@@ -336,8 +333,7 @@ def build_deterministic_scene_skeleton(
             motion_type,
         )
         if (
-            path_type == "orbit_around"
-            or action_kind == "orbit"
+            path_type in {"circular", "elliptical", "orbit_around"}
             or subject_id in orbit_targets
         ):
             kind = "orbit"
@@ -355,33 +351,22 @@ def build_deterministic_scene_skeleton(
             target_id = None
             carrier_id = semantics.get("carrier_id") or board_targets.get(subject_id)
         elif (
-            action_kind in {"board", "enter"}
-            or (subject_id in board_targets and event_id == "boarding")
-        ):
-            kind = "linear_move"
-            path_family = "linear"
-            direction_mode = "toward_target"
-            target_id = semantics.get("target_id") or board_targets.get(subject_id)
-            carrier_id = None
-        elif (
             motion_type in {"static", "interactive"}
             or speed_intent == "stationary"
             or (subject_id in board_targets and event_id == "wait_and_arrive")
+            # 进入关系是状态转换，不是把乘员代理驶入载体中心的指令。
+            or (subject_id in board_targets and event_id == "boarding")
         ):
             kind = "hold"
             path_family = "stationary"
             direction_mode = "none"
-            target_id = semantics.get("target_id")
+            target_id = None
             carrier_id = semantics.get("carrier_id")
         else:
             kind = "linear_move"
             path_family = "linear"
-            target_id = semantics.get("target_id") or proximity_targets.get(subject_id)
-            direction_mode = semantics.get("direction_mode") or (
-                "away_from_target"
-                if event_id == "departure" and target_id
-                else "toward_target" if target_id else "screen_left_to_right"
-            )
+            target_id = semantics.get("target_id")
+            direction_mode = semantics.get("direction_mode") or "none"
             carrier_id = semantics.get("carrier_id")
         phases.append(
             {

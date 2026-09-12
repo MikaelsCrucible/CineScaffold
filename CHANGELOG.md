@@ -17,6 +17,8 @@
 
 ### Changed
 
+- Semantic 输出的 `action_kind` 收敛为 hold/locomotion/interact/other；Planning 只依据明确方向、路径、载体和后置状态建立几何，不再把 arrive/depart/transport 等叙事标签二次加工为目标或方向。
+- Scene Planner 必须先联合检查每个实体的完整阶段时间线；未明确转向或反转的线性运动跨静止阶段继承同一路线方向，事件末端会合关系不再把另一个参与者变成运动目标。
 - Design Option 只向 Agent 暴露完整 hard-pass 候选，并在应用时再次完整复验。
 - 外层恢复轮次改用不含上一轮 thinking 的新 `RepairPacket`；确定性工具不支持的首个 hard error 会立即开放受限原子 Candidate Patch。
 - 动作方向验证改为检查施事主体自身的定向位移，目标移动不再能替代“靠近/离开”；等待和停留会写入保持关键点，已隐藏主体不再生成冗余 carried 轨道。
@@ -24,6 +26,8 @@
 
 ### Fixed
 
+- 修复接载叙事中车辆被错误要求朝乘客移动、随后又远离同一乘客的问题；乘员进入可由隐藏后置状态和紧接的 carried 关系满足，不再强制人物代理移动到载体中心。
+- 确定性后备规划器不再根据 boarding/departure 等事件名制造方向；旧版接车 Brief 仍可在无专用动作种类的情况下生成 hard-pass Design Option。
 - Semantic 时间关系允许独立主体动作以“开始先后但区间重叠”的方式表达；无明确数值间隔时，会把与事件区间冲突的关系标签确定性规范化为 `starts_before/starts_after/starts_with/ends_with/during/overlaps`，不再因可修复的标签歧义让整个 Pipeline 在 Planning 前失败。明确的最小/最大时间间隔仍失败关闭。
 
 - Entity 更新改为真正的 merge-patch：省略字段保持现有值，显式空值才执行字段契约中的清除语义。
@@ -32,7 +36,8 @@
 
 ### Verification
 
-- Python 3.12 完整离线回归 286 项通过。
+- Python 3.12 完整离线回归 289 项通过；旧版道路接车 Brief 的 Mock 端到端规划和已取消真实失败结构的离线 Design 重放均成功。
+- `uv build` 成功生成 Core 0.8.9 的 sdist 与 wheel。
 - Blender 5.2.1 LTS 真实后台验证静态主体/推镜和人物/车辆运动两类 Scene IR；GLB 约 122 KB，单次导出约 0.03 秒，稳定节点映射、摄影机、TRS 动画与 Scene IR 显隐补偿均通过结构检查。
 
 ## 0.8.3 — 2026-09-11

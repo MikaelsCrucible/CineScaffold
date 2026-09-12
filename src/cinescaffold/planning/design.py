@@ -987,6 +987,41 @@ def _build_motion(
                 or (0.0, 0.0, _proxy_half_height(candidate.entities[subject_id]))
             )
             first = moving[0]
+            route_direction = _selected_route_direction(moving)
+            rendezvous_id = _rendezvous_reference_id(skeleton, first)
+            if first.direction_mode in {
+                "none",
+                "screen_left_to_right",
+                "screen_right_to_left",
+            } and rendezvous_id is not None:
+                target = candidate.entities[rendezvous_id]
+                target_position = target.solved_transform.translation_m or (
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+                travel_x, travel_y = route_direction
+                clearance = min(
+                    2.5,
+                    max(
+                        0.75,
+                        _proxy_lateral_radius(
+                            candidate.entities[subject_id],
+                            route_direction,
+                        )
+                        + _proxy_lateral_radius(target, route_direction)
+                        + 0.25,
+                    ),
+                )
+                pickup = (
+                    target_position[0] - travel_y * clearance,
+                    target_position[1] + travel_x * clearance,
+                )
+                position[0] = pickup[0] - travel_x * 8.0
+                position[1] = pickup[1] - travel_y * 8.0
+                candidate.entities[subject_id].solved_transform = candidate.entities[
+                    subject_id
+                ].solved_transform.model_copy(update={"translation_m": tuple(position)})
             if first.direction_mode == "toward_target" and first.target_id:
                 # 让“接近”阶段拥有可见的初始距离，避免代理一开始已经贴着目标。
                 target = candidate.entities[first.target_id]
@@ -1012,6 +1047,7 @@ def _build_motion(
                     subject_id
                 ].solved_transform.model_copy(update={"translation_m": tuple(position)})
             keyframes: list[TrackKeyframe] = []
+            previous_direction = route_direction
             positional_phases = [
                 item for item in phases if item.kind in {"hold", "linear_move"}
             ]
@@ -1050,6 +1086,7 @@ def _build_motion(
                     and item.transition_at == "at_end"
                     for item in phases
                 )
+                previous_position = tuple(position)
                 position = _linear_phase_endpoint(
                     candidate,
                     phase,
@@ -1061,7 +1098,13 @@ def _build_motion(
                         phase,
                     ),
                     hidden_at_end=hidden_at_end,
+                    fallback_direction=previous_direction,
                 )
+                delta_x = position[0] - previous_position[0]
+                delta_y = position[1] - previous_position[1]
+                delta_length = math.hypot(delta_x, delta_y)
+                if delta_length > 1e-9:
+                    previous_direction = (delta_x / delta_length, delta_y / delta_length)
                 keyframes.append(
                     TrackKeyframe(
                         time_seconds=_track_end_time(candidate, end),
@@ -1333,15 +1376,27 @@ def _add_speed_constraints(
 
     duration = candidate.timeline.duration_seconds
     for phase in skeleton.motion_phases:
-        if phase.speed_intent == "unspecified":
+        generic_explicit_motion = (
+            phase.kind == "linear_move"
+            and phase.speed_intent == "unspecified"
+            and phase.source_status == "explicit"
+        )
+        if phase.speed_intent == "unspecified" and not generic_explicit_motion:
             continue
-        minimum, maximum = _speed_range(phase.speed_intent, profile)
+        minimum, maximum = (
+            (0.01, profile.fast_speed_range_mps[1])
+            if generic_explicit_motion
+            else _speed_range(phase.speed_intent, profile)
+        )
         constraint = ConstraintSpec.model_validate(
             {
                 "constraint_id": f"skeleton_speed_{phase.phase_id}",
                 "type": "speed_range",
                 "strength": (
-                    "hard" if phase.speed_source_status == "explicit" else "soft"
+                    "hard"
+                    if generic_explicit_motion
+                    or phase.speed_source_status == "explicit"
+                    else "soft"
                 ),
                 "subjects": [phase.subject_id],
                 "time_range_seconds": _phase_range(objective, phase, duration),
@@ -1351,8 +1406,16 @@ def _add_speed_constraints(
                     "maximum_mps": maximum,
                     "space": "world",
                 },
-                "source_status": phase.speed_source_status or phase.source_status,
-                "source_ref": phase.speed_source_ref or phase.source_ref,
+                "source_status": (
+                    phase.source_status
+                    if generic_explicit_motion
+                    else phase.speed_source_status or phase.source_status
+                ),
+                "source_ref": (
+                    phase.source_ref
+                    if generic_explicit_motion
+                    else phase.speed_source_ref or phase.source_ref
+                ),
             }
         )
         candidate.constraints[constraint.constraint_id] = constraint
@@ -1665,6 +1728,7 @@ def _linear_phase_endpoint(
     *,
     semantic_direction_mode: str | None,
     hidden_at_end: bool,
+    fallback_direction: tuple[float, float],
 ) -> list[float]:
     endpoint = list(position)
     if semantic_direction_mode == "world_forward":
@@ -1692,9 +1756,49 @@ def _linear_phase_endpoint(
         endpoint[0] += 8.0
     elif phase.direction_mode == "screen_right_to_left":
         endpoint[0] -= 8.0
+    elif phase.direction_mode == "none":
+        endpoint[0] += fallback_direction[0] * 8.0
+        endpoint[1] += fallback_direction[1] * 8.0
     else:
         endpoint[0] += 8.0
     return endpoint
+
+
+def _selected_route_direction(
+    phases: list[SkeletonMotionPhase],
+) -> tuple[float, float]:
+    """为同一主体全部未指定方向的阶段选择一条路线朝向。"""
+
+    selected = {
+        phase.direction_mode
+        for phase in phases
+        if phase.direction_mode in {"screen_left_to_right", "screen_right_to_left"}
+    }
+    if len(selected) > 1:
+        raise ValueError("同一主体的未指定方向运动不能选择相反的局部路线")
+    if selected == {"screen_right_to_left"}:
+        return (-1.0, 0.0)
+    return (1.0, 0.0)
+
+
+def _rendezvous_reference_id(
+    skeleton: SceneSkeleton,
+    phase: SkeletonMotionPhase,
+) -> str | None:
+    """查找事件末端会合对象，但不把它升级为运动目标。"""
+
+    for relation in skeleton.relations:
+        if (
+            relation.kind != "proximity"
+            or relation.timeline_event_id != phase.timeline_event_id
+            or relation.temporal_mode != "at_end"
+        ):
+            continue
+        if relation.subject_id == phase.subject_id:
+            return relation.reference_id
+        if relation.reference_id == phase.subject_id:
+            return relation.subject_id
+    return None
 
 
 def _objective_motion_direction(
@@ -1721,6 +1825,27 @@ def _proxy_horizontal_radius(entity: EntitySpec) -> float:
     proxy = entity.proxy
     if proxy.type == "box":
         return max(proxy.size_xyz_m[0], proxy.size_xyz_m[1]) / 2.0
+    if proxy.type in {"sphere", "capsule", "cylinder"}:
+        return proxy.radius_m
+    if proxy.type == "cone":
+        return max(proxy.radius_bottom_m, proxy.radius_top_m)
+    return max(proxy.size_xy_m) / 2.0
+
+
+def _proxy_lateral_radius(
+    entity: EntitySpec,
+    route_direction: tuple[float, float],
+) -> float:
+    """返回代理在水平路线垂直方向上的支撑半径。"""
+
+    proxy = entity.proxy
+    if proxy.type == "box":
+        lateral_x = -route_direction[1]
+        lateral_y = route_direction[0]
+        return (
+            abs(lateral_x) * proxy.size_xyz_m[0] / 2.0
+            + abs(lateral_y) * proxy.size_xyz_m[1] / 2.0
+        )
     if proxy.type in {"sphere", "capsule", "cylinder"}:
         return proxy.radius_m
     if proxy.type == "cone":
