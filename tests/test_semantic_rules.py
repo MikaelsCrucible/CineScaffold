@@ -358,24 +358,24 @@ class SemanticRulesTest(unittest.TestCase):
                 "duration_source_status": "explicit",
                 "events": [
                     {
-                        **self._event("first", "先等待", "person", 4.0),
+                        **self._event("waiting", "人物在路边等待", "person", 7.0),
                         "start_time_seconds": 0.0,
                     },
                     {
-                        **self._event("second", "然后离开", "person", 10.0),
-                        "start_time_seconds": 3.0,
+                        **self._event("approach", "车辆开过来", "car", 6.0),
+                        "start_time_seconds": 2.0,
                     },
                 ],
                 "relations": [
                     {
-                        "relation_id": "bad_order",
-                        "source_event_id": "first",
-                        "target_event_id": "second",
+                        "relation_id": "rel_wait_before_approach",
+                        "source_event_id": "waiting",
+                        "target_event_id": "approach",
                         "relation": "before",
                         "minimum_gap_seconds": 0.0,
                         "maximum_gap_seconds": None,
                         "source_status": "inferred",
-                        "source_text": "然后",
+                        "source_text": "人在路边等待，一辆车开过来",
                     }
                 ],
             }
@@ -384,7 +384,7 @@ class SemanticRulesTest(unittest.TestCase):
         normalized, parameters = apply_translation_rules(
             content,
             self.rules,
-            "先等待，然后离开",
+            "一个人在路边等待，一辆车开过来接走他，10 秒。",
         )
 
         self.assertEqual(normalized["timeline"]["relations"][0]["relation"], "starts_before")
