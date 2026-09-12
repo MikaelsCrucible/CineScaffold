@@ -41,8 +41,12 @@
    - `ground_interaction` 只在场景存在环境地面平面时生效；太空、空中等无地面场景保持缺省 `must_be_above` 即可，不要为了“无地面”伪造 explicit 来源或使用 `unconstrained`。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 且来源路径与约束类型兼容的要求可以成为 hard constraint；环境实体来源不能被拿来制造空间硬约束。Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
    - `apply_entity_patch` 的输入不暴露 `solved_transform`。更新既有实体时 Toolkit 会保留该隐藏求解状态；创建新实体时保持未求解并在返回中要求调用 layout Solver。几何尺寸或地面策略变化后仍须复验，不能把“保留坐标”理解为新几何已经满足接触或构图。
+   - 正常 Agent 不分别接收四个低层 Mutation；确定性修复没有可行解时才出现 `apply_candidate_patch`。它允许在同一事务中组合实体局部字段、约束、运动和摄影机修改，避免相互依赖的正确方案被拆成暂时非法的中间 revision。实体更新省略的字段保持原值；显式空数组才表示清空列表。
+   - `apply_candidate_patch` 会先在不可见副本中运行结构不变量、Execution Safety 与完整 Validator。预演导致执行安全、explicit 覆盖或总体 hard fidelity 退化时不会产生 revision；不要为了绕过退化门禁拆分同一个组合修复。
 5. `apply_design_option` 已使用同一 Validator 预测并完整复验。若其 commit_ready=false，再按需调用 solve_candidate 或 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
+   - 每个 Design Option 的 `hard_violation_hints` 会提前给出最多六个 hard 错误的对象、时间和可调整变量。选择时同时比较这些任务相关提示与整体 strategy；不要只看 option 顺序。没有完整通过的 Option 仍可作为安全基线，但必须在应用后修复或由系统降级交付。
    - 连续逐帧错误会以 `actual.summary_kind=sampled_time_range` 合并为时间段；结合 `sample_count`、`first_sample`、`worst_sample` 和 `last_sample` 判断根因，不要把区间摘要误解为单帧错误。完整逐帧证据由系统留存在诊断产物中。
+   - Agent-facing 验证结果中的 `repair_focus` 只给出优先排查顺序，不会删除其余压缩错误。若主错误的可调整变量不足以形成完整修复，应使用同一 `apply_candidate_patch` 联合修改相关领域，而不是假设未列出的接口不可用。
    - 对 `CAMERA_MOTION_NEAR_COLLINEAR`、`PROJECTED_MOTION_UNREADABLE`、`ENTITY_OUT_OF_FRAME` 或 `PROJECTED_SIZE_VIOLATED`，优先调用 `suggest_repairs`。你只需按 Brief 语义与返回的 tradeoffs 选择整体策略，再用 `apply_repair` 原子应用；不要在已有可行建议时继续穷举摄影机坐标或焦距。
    - `suggest_repairs` 是只读搜索，返回的具体数值已经过同一 Validator 预测；`apply_repair` 会检查 base revision、重放 hash 并完整复验。出现可处理 violation 时，状态机会暂时收起冲突的手工 Mutation；建议过期时重新生成，不要手抄旧数值。
    - 若 `suggest_repairs` 对当前 revision 返回 `no_change`，系统会重新开放受 Schema 和 Validator 约束的手工 Mutation。只能修改 violation 指向的实体、轨道、约束或摄影机字段；修改后必须再次调用 Validator，不得绕过 Commit Gate。

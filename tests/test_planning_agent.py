@@ -17,6 +17,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models import ModelRequestParameters
+from pydantic_ai.tools import ToolDefinition
 
 from cinescaffold.planning.agent import (
     ConstraintPatchInput,
@@ -25,7 +26,9 @@ from cinescaffold.planning.agent import (
     PlanningDeps,
     TrackPatchInput,
     _compact_tool_call_history,
+    _prepare_candidate_patch_tool,
     _prepare_candidate_tool,
+    _prepare_escalated_candidate_tool,
     _prepare_design_apply_tool,
     _prepare_design_options_tool,
     _prepare_manual_mutation_tool,
@@ -257,6 +260,21 @@ class PlanningProtocolTest(unittest.TestCase):
             result["data"]["violations_location"],
             "top_level_violations",
         )
+        self.assertEqual(
+            result["data"]["repair_focus"]["primary_codes"],
+            ["ENTITY_INTERSECTS_GROUND"],
+        )
+        self.assertEqual(
+            result["data"]["repair_focus"]["secondary_violation_count"],
+            1,
+        )
+        self.assertEqual(
+            result["data"]["repair_focus"]["distinct_secondary_cause_count"],
+            0,
+        )
+        self.assertTrue(
+            result["data"]["repair_focus"]["all_compacted_violations_retained"]
+        )
         completed = next(
             event
             for event in events
@@ -441,9 +459,25 @@ class PlanningProtocolTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             context = _context(_deps(Path(directory), toolkit))
 
-            prepared = asyncio.run(_prepare_manual_mutation_tool(context, sentinel))
+            legacy_prepared = asyncio.run(
+                _prepare_manual_mutation_tool(context, sentinel)
+            )
+            prepared = asyncio.run(
+                _prepare_escalated_candidate_tool(context, sentinel)
+            )
+            repair_tool = ToolDefinition(
+                name="apply_candidate_patch",
+                description="组合修复。",
+            )
+            candidate_patch = asyncio.run(
+                _prepare_candidate_patch_tool(context, repair_tool)
+            )
 
+        self.assertIsNone(legacy_prepared)
         self.assertIs(prepared, sentinel)
+        self.assertIsNotNone(candidate_patch)
+        assert candidate_patch is not None
+        self.assertIn("这些是建议而非硬隐藏", candidate_patch.description or "")
 
 
 def _deps(

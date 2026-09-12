@@ -39,13 +39,34 @@ from cinescaffold.planning.trace import TraceRecorder
 
 class EntityPatchInput(StrictModel):
     entity_id: str
-    label: str | None = None
-    role: str
-    proxy: ProxyGeometry
-    parent_id: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    source_refs: list[str] = Field(default_factory=list)
-    ground_interaction: GroundInteractionSpec = Field(default_factory=GroundInteractionSpec)
+    label: str | None = Field(
+        default=None,
+        description="更新时省略表示保持原值；显式 null 表示清除标签",
+    )
+    role: str | None = Field(
+        default=None,
+        description="新实体必填；更新时省略表示保持原值",
+    )
+    proxy: ProxyGeometry | None = Field(
+        default=None,
+        description="新实体必填；更新时省略表示保持现有代理几何",
+    )
+    parent_id: str | None = Field(
+        default=None,
+        description="更新时省略表示保持原值；显式 null 表示移除父级",
+    )
+    tags: list[str] | None = Field(
+        default=None,
+        description="更新时省略表示保持原值；空数组表示清空",
+    )
+    source_refs: list[str] | None = Field(
+        default=None,
+        description="更新时省略表示保持原值；空数组表示清空",
+    )
+    ground_interaction: GroundInteractionSpec | None = Field(
+        default=None,
+        description="更新时省略表示保持现有地面策略",
+    )
 
 
 class ConstraintPatchInput(StrictModel):
@@ -151,6 +172,27 @@ class TrackPatchInput(StrictModel):
         return self.model_dump(mode="json", exclude_none=True)
 
 
+class CameraPatchInput(StrictModel):
+    """Camera portion of an escalated, atomic Candidate repair."""
+
+    camera_id: str
+    projection: Literal["perspective"] = "perspective"
+    active: bool = True
+    static: CameraStatic
+    tracks: list[TrackPatchInput] = Field(default_factory=list)
+    remove_track_ids: list[str] = Field(default_factory=list)
+
+    def to_tool_payload(self) -> dict[str, Any]:
+        return {
+            "camera_id": self.camera_id,
+            "projection": self.projection,
+            "active": self.active,
+            "static": self.static.model_dump(mode="json"),
+            "tracks": [item.to_domain_payload() for item in self.tracks],
+            "remove_track_ids": self.remove_track_ids,
+        }
+
+
 MAX_AGENT_HISTORY_MESSAGES = 13
 NON_TOOL_TEXT_MARKER = "[已省略不符合协议的无工具正文；请按重试指令调用工具。]"
 
@@ -193,6 +235,8 @@ def compact_agent_payload(
             data.pop("violations")
             data["violation_count"] = len(top_level_violations)
             data["violations_location"] = "top_level_violations"
+        if isinstance(data, dict) and isinstance(top_level_violations, list):
+            data["repair_focus"] = _repair_focus(top_level_violations)
         return compacted
     if isinstance(value, list):
         return [
@@ -203,6 +247,77 @@ def compact_agent_payload(
             for item in value
         ]
     return deepcopy(value)
+
+
+def _repair_focus(violations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Rank likely root causes while retaining every compacted violation."""
+
+    def priority(item: dict[str, Any]) -> tuple[int, int, str]:
+        severity = {"hard": 0, "soft": 1, "warning": 2}.get(
+            str(item.get("severity")),
+            3,
+        )
+        code = str(item.get("code", ""))
+        structural_markers = (
+            "UNRESOLVED",
+            "MISSING",
+            "UNKNOWN",
+            "REFERENCE",
+            "TIMELINE",
+            "HIERARCHY",
+            "TRANSFORM",
+            "GROUND",
+        )
+        if any(marker in code for marker in structural_markers):
+            cause = 0
+        elif "EXPLICIT_REQUIREMENT" in code or code == "UNMAPPED_EXPLICIT_REQUIREMENT":
+            cause = 1
+        elif "MOTION" in code or "HOLD" in code or "SPEED" in code:
+            cause = 2
+        else:
+            cause = 3
+        return severity, cause, code
+
+    ranked = sorted(
+        (item for item in violations if isinstance(item, dict)),
+        key=priority,
+    )
+    distinct: list[dict[str, Any]] = []
+    seen_groups: set[tuple[Any, ...]] = set()
+    for item in ranked:
+        group_key = (
+            str(item.get("code", "")),
+            str(item.get("constraint_id", "")),
+            tuple(str(value) for value in item.get("entity_ids", [])),
+            tuple(str(value) for value in item.get("adjustable_variables", [])),
+        )
+        if group_key in seen_groups:
+            continue
+        seen_groups.add(group_key)
+        distinct.append(item)
+    primary = distinct[:3]
+    domains: set[str] = set()
+    for item in primary:
+        for variable in item.get("adjustable_variables", []):
+            lowered = str(variable).lower()
+            if "camera" in lowered:
+                domains.add("camera")
+            if "motion" in lowered or "track" in lowered:
+                domains.add("motion_tracks")
+            if "constraint" in lowered:
+                domains.add("constraints")
+            if "entity" in lowered or "ground" in lowered:
+                domains.add("entities")
+            if "transform" in lowered or "translation" in lowered:
+                domains.add("layout_solver")
+    return {
+        "primary_violation_ids": [str(item.get("id", "")) for item in primary],
+        "primary_codes": [str(item.get("code", "")) for item in primary],
+        "recommended_domains": sorted(domains),
+        "secondary_violation_count": max(0, len(ranked) - len(primary)),
+        "distinct_secondary_cause_count": max(0, len(distinct) - len(primary)),
+        "all_compacted_violations_retained": True,
+    }
 
 
 def _compact_sampled_violations(
@@ -644,6 +759,17 @@ async def _prepare_manual_mutation_tool(
     ctx: RunContext[PlanningDeps],
     tool_definition: ToolDefinition,
 ) -> ToolDefinition | None:
+    # Component mutations remain registered for compatibility and direct
+    # diagnostics. The normal Agent receives one atomic Candidate repair tool so
+    # coupled fixes do not require unsafe intermediate revisions.
+    del ctx, tool_definition
+    return None
+
+
+async def _prepare_escalated_candidate_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
     prepared = await _prepare_candidate_tool(ctx, tool_definition)
     if prepared is None:
         return None
@@ -653,6 +779,24 @@ async def _prepare_manual_mutation_tool(
     if toolkit.has_repairable_violations and not toolkit.has_exhausted_repair_search:
         return None
     return prepared
+
+
+async def _prepare_candidate_patch_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    prepared = await _prepare_escalated_candidate_tool(ctx, tool_definition)
+    if prepared is None:
+        return None
+    return replace(
+        prepared,
+        description=(
+            (prepared.description or "")
+            + " 当前 Validator 建议优先关注："
+            + ", ".join(ctx.deps.toolkit.recommended_manual_repair_domains)
+            + "。这些是建议而非硬隐藏；必要时可在同一事务中组合多个领域修改。"
+        ),
+    )
 
 
 async def _prepare_repair_suggestion_tool(
@@ -818,7 +962,9 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         # The Agent is intentionally not allowed to author solved coordinates.
         # Omitting this hidden field lets Toolkit preserve it for existing entities
         # while keeping it unresolved for genuinely new entities.
-        payload = [item.model_dump(mode="json") for item in upserts]
+        payload = [
+            item.model_dump(mode="json", exclude_unset=True) for item in upserts
+        ]
         arguments = {"upserts": payload, "remove_ids": remove_ids}
         return ctx.deps.call_tool(
             "apply_entity_patch",
@@ -885,7 +1031,46 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             lambda: ctx.deps.toolkit.apply_camera_patch(**arguments),
         )
 
-    @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
+    @agent.tool(sequential=True, prepare=_prepare_candidate_patch_tool)
+    async def apply_candidate_patch(
+        ctx: RunContext[PlanningDeps],
+        base_revision: int,
+        entity_upserts: list[EntityPatchInput] | None = None,
+        entity_remove_ids: list[str] | None = None,
+        constraint_upserts: list[ConstraintPatchInput] | None = None,
+        constraint_remove_ids: list[str] | None = None,
+        motion_upserts: list[TrackPatchInput] | None = None,
+        motion_remove_ids: list[str] | None = None,
+        camera_patch: CameraPatchInput | None = None,
+    ) -> dict[str, Any]:
+        """必要时在一个预演事务中组合实体、约束、运动和摄影机修复。"""
+
+        arguments = {
+            "base_revision": base_revision,
+            "entity_upserts": [
+                item.model_dump(mode="json", exclude_unset=True)
+                for item in (entity_upserts or [])
+            ],
+            "entity_remove_ids": entity_remove_ids or [],
+            "constraint_upserts": [
+                item.model_dump(mode="json") for item in (constraint_upserts or [])
+            ],
+            "constraint_remove_ids": constraint_remove_ids or [],
+            "motion_upserts": [
+                item.to_domain_payload() for item in (motion_upserts or [])
+            ],
+            "motion_remove_ids": motion_remove_ids or [],
+            "camera_patch": (
+                camera_patch.to_tool_payload() if camera_patch is not None else None
+            ),
+        }
+        return ctx.deps.call_tool(
+            "apply_candidate_patch",
+            arguments,
+            lambda: ctx.deps.toolkit.apply_candidate_patch(**arguments),
+        )
+
+    @agent.tool(sequential=True, prepare=_prepare_escalated_candidate_tool)
     async def solve_candidate(
         ctx: RunContext[PlanningDeps],
         scope: Literal["layout", "camera", "all"] = "all",

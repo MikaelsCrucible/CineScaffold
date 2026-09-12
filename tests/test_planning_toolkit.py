@@ -575,6 +575,122 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         )
         self.assertEqual(result["data"]["preserved_solved_transform_ids"], ["man_01"])
 
+    def test_entity_patch_omitted_fields_preserve_complete_existing_entity(self) -> None:
+        toolkit = _solved_toolkit()
+        toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
+        before = toolkit.store.get().entities["man_01"]
+
+        result = toolkit.apply_entity_patch(
+            [{"entity_id": "man_01", "label": "只修改名称"}],
+            [],
+        )
+
+        self.assertEqual(result["status"], "ok", result)
+        after = toolkit.store.get().entities["man_01"]
+        self.assertEqual(after.label, "只修改名称")
+        self.assertEqual(after.role, before.role)
+        self.assertEqual(after.proxy, before.proxy)
+        self.assertEqual(after.tags, before.tags)
+        self.assertEqual(after.source_refs, before.source_refs)
+        self.assertEqual(after.ground_interaction, before.ground_interaction)
+        self.assertEqual(after.solved_transform, before.solved_transform)
+
+    def test_manual_patch_regression_is_discarded_before_revision_is_created(self) -> None:
+        toolkit = _solved_toolkit()
+        baseline = toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
+        self.assertTrue(baseline["data"]["hard_pass"], baseline["violations"])
+        revision = toolkit.store.current_revision
+        camera = toolkit.store.get().camera
+        assert camera is not None
+
+        result = toolkit.apply_camera_patch(
+            camera_id=camera.camera_id,
+            projection="perspective",
+            active=True,
+            static=camera.static.model_dump(mode="json"),
+            tracks=[
+                {
+                    "track_id": "camera_move_01",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [0.0, -12.0, 2.0]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [0.0, -17.0, 2.0]},
+                        },
+                    ],
+                }
+            ],
+            remove_track_ids=["camera_move_01"],
+        )
+
+        self.assertEqual(result["status"], "rejected", result)
+        self.assertTrue(result["data"]["preview_validated"])
+        self.assertEqual(toolkit.store.current_revision, revision)
+        self.assertNotIn(revision + 1, toolkit.store.revisions)
+
+    def test_candidate_patch_applies_coupled_repair_in_one_revision(self) -> None:
+        toolkit = _solved_toolkit()
+        baseline = toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
+        self.assertTrue(baseline["data"]["hard_pass"], baseline["violations"])
+        revision = toolkit.store.current_revision
+        camera = toolkit.store.get().camera
+        assert camera is not None
+
+        result = toolkit.apply_candidate_patch(
+            base_revision=revision,
+            constraint_upserts=[
+                {
+                    "constraint_id": "camera_push_in",
+                    "type": "camera_motion_direction",
+                    "strength": "hard",
+                    "weight": 1.0,
+                    "subjects": [],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "direction": "pull_out",
+                        "minimum_displacement_m": 3.0,
+                    },
+                    "source_status": "explicit",
+                    "source_ref": "content.camera.movement.type",
+                }
+            ],
+            camera_patch={
+                "camera_id": camera.camera_id,
+                "projection": "perspective",
+                "active": True,
+                "static": camera.static.model_dump(mode="json"),
+                "tracks": [
+                    {
+                        "track_id": "camera_move_01",
+                        "type": "transform",
+                        "time_range_seconds": [0.0, 6.0],
+                        "keyframes": [
+                            {
+                                "time_seconds": 0.0,
+                                "value": {"translation_m": [0.0, -12.0, 2.0]},
+                            },
+                            {
+                                "time_seconds": 143 / 24,
+                                "value": {"translation_m": [0.0, -17.0, 2.0]},
+                            },
+                        ],
+                    }
+                ],
+                "remove_track_ids": ["camera_move_01"],
+            },
+        )
+
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["revision_after"], revision + 1)
+        self.assertEqual(result["data"]["repair_domains_used"], ["constraints", "camera"])
+        self.assertTrue(result["data"]["after_quality"]["execution_safe"])
+        self.assertEqual(result["data"]["after_quality"]["full_fidelity_hard_count"], 0)
+
     def test_duplicate_upsert_ids_are_rejected_atomically(self) -> None:
         toolkit = _toolkit()
         result = toolkit.apply_entity_patch(

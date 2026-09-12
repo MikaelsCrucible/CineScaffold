@@ -21,6 +21,19 @@ class MutationResult:
     warnings: list[str]
 
 
+@dataclass(frozen=True)
+class MutationPreview:
+    """A proposed revision that is not visible in history until committed."""
+
+    status: str
+    revision_before: int
+    revision_after: int
+    changes: list[dict[str, Any]]
+    warnings: list[str]
+    candidate: CandidateState
+    base_hash: str
+
+
 class CandidateStore:
     """保存不可变 revision，调用方只能获得深拷贝。"""
 
@@ -51,21 +64,69 @@ class CandidateStore:
             raise ValueError(f"Candidate revision 不存在：{selected}")
         return self._history[selected].model_copy(deep=True)
 
-    def apply(self, mutator: Mutator) -> MutationResult:
+    def preview(self, mutator: Mutator) -> MutationPreview:
         if self._committed_revision is not None:
             raise ValueError("已提交的 Candidate Store 不允许继续修改")
         before = self.get()
         after = before.model_copy(deep=True)
         changes, warnings = mutator(after)
         if _state_hash(before) == _state_hash(after):
-            return MutationResult("no_change", before.revision, before.revision, [], warnings)
+            return MutationPreview(
+                "no_change",
+                before.revision,
+                before.revision,
+                [],
+                warnings,
+                before,
+                _state_hash(before),
+            )
 
         next_revision = max(self._history) + 1
         after.revision = next_revision
         after.validation = None
-        self._history[next_revision] = after.model_copy(deep=True)
-        self._current_revision = next_revision
-        return MutationResult("ok", before.revision, next_revision, changes, warnings)
+        return MutationPreview(
+            "ok",
+            before.revision,
+            next_revision,
+            changes,
+            warnings,
+            after,
+            _state_hash(before),
+        )
+
+    def commit_preview(self, preview: MutationPreview) -> MutationResult:
+        if self._committed_revision is not None:
+            raise ValueError("已提交的 Candidate Store 不允许继续修改")
+        current = self.get()
+        if (
+            preview.revision_before != self._current_revision
+            or preview.base_hash != _state_hash(current)
+        ):
+            raise ValueError("Candidate 在预演后已经变化；请重新生成修改提案")
+        if preview.status == "no_change":
+            return MutationResult(
+                "no_change",
+                preview.revision_before,
+                preview.revision_before,
+                [],
+                preview.warnings,
+            )
+        if preview.revision_after in self._history:
+            raise ValueError(f"Candidate revision 已存在：{preview.revision_after}")
+        candidate = preview.candidate.model_copy(deep=True)
+        candidate.revision = preview.revision_after
+        self._history[preview.revision_after] = candidate
+        self._current_revision = preview.revision_after
+        return MutationResult(
+            "ok",
+            preview.revision_before,
+            preview.revision_after,
+            preview.changes,
+            preview.warnings,
+        )
+
+    def apply(self, mutator: Mutator) -> MutationResult:
+        return self.commit_preview(self.preview(mutator))
 
     def restore(self, source_revision: int) -> MutationResult:
         source = self.get(source_revision)

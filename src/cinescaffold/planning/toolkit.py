@@ -55,7 +55,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.25"
+TOOLKIT_VERSION = "0.26"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -280,6 +280,150 @@ class ScenePlanningToolkit:
     @property
     def has_exhausted_repair_search(self) -> bool:
         return self._repair_search_exhausted_revision == self.store.current_revision
+
+    @property
+    def recommended_manual_repair_domains(self) -> list[str]:
+        """Return conservative guidance without making other repair paths unreachable."""
+
+        state = self.store.get()
+        report = state.validation or self._validate(state, FULL_VALIDATION_CHECKS)
+        domains: set[str] = set()
+        for violation in report.violations:
+            if violation.severity == "warning":
+                continue
+            for variable in violation.adjustable_variables:
+                lowered = variable.lower()
+                if "camera" in lowered:
+                    domains.add("camera")
+                if "motion" in lowered or "track" in lowered:
+                    domains.add("motion_tracks")
+                if "constraint" in lowered:
+                    domains.add("constraints")
+                if "entity" in lowered or "ground" in lowered:
+                    domains.add("entities")
+                if "transform" in lowered or "translation" in lowered:
+                    domains.add("layout_solver")
+        if not domains:
+            domains.update({"entities", "motion_tracks", "constraints", "camera"})
+        order = ["entities", "motion_tracks", "constraints", "camera", "layout_solver"]
+        return [item for item in order if item in domains]
+
+    def _apply_guarded_manual_mutation(
+        self,
+        mutator,
+        *,
+        operation_name: str,
+        data: dict[str, Any] | None = None,
+        allowed_hard_constraint_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """Preview a manual edit and reject quality regressions before history changes."""
+
+        before = self.store.get()
+        preview = self.store.preview(mutator)
+        if preview.status == "no_change":
+            return _mutation_envelope(
+                self.store.commit_preview(preview),
+                data=data,
+            )
+
+        # Low-level callers may still construct a Candidate from revision zero.
+        # Regression protection starts only after a full validation checkpoint
+        # exists (normally immediately after applying a Design Option).
+        if before.validation is None:
+            mutation = self.store.commit_preview(preview)
+            return _mutation_envelope(
+                mutation,
+                data={
+                    **(data or {}),
+                    "operation": operation_name,
+                    "preview_validated": False,
+                },
+                next_actions=["调用 validate_candidate 建立质量基线"],
+            )
+
+        after = preview.candidate
+        before_safety = self._validate(before, EXECUTION_SAFETY_CHECKS)
+        after_safety = self._validate(after, EXECUTION_SAFETY_CHECKS)
+        before_full = self._validate(before, FULL_VALIDATION_CHECKS)
+        after_full = self._validate(after, FULL_VALIDATION_CHECKS)
+        ignored_ids = allowed_hard_constraint_ids or set()
+        before_quality = _mutation_quality(
+            before_safety,
+            before_full,
+            ignored_constraint_ids=ignored_ids,
+        )
+        after_quality = _mutation_quality(
+            after_safety,
+            after_full,
+            ignored_constraint_ids=ignored_ids,
+        )
+
+        # A validated Candidate is an established checkpoint. Manual repair may
+        # trade one fidelity symptom for another, but it must not make execution,
+        # explicit requirements, or the total hard-failure count worse.
+        regression = any(
+            proposed > established
+            for proposed, established in zip(after_quality, before_quality)
+        )
+        if regression:
+            return _envelope(
+                before.revision,
+                before.revision,
+                status="rejected",
+                data={
+                    **(data or {}),
+                    "operation": operation_name,
+                    "preview_validated": True,
+                    "before_quality": _mutation_quality_payload(
+                        before_safety,
+                        before_full,
+                    ),
+                    "proposed_quality": _mutation_quality_payload(
+                        after_safety,
+                        after_full,
+                    ),
+                },
+                violations=[
+                    item.model_dump(mode="json")
+                    for item in after_full.violations
+                    if item.severity == "hard"
+                ],
+                warnings=[
+                    "修改提案会降低已验证 Candidate 的质量，已在预演阶段丢弃；"
+                    "请把相互依赖的修改合并为一个事务，或选择其他修复策略"
+                ],
+                capability_gaps=after_full.capability_gaps,
+                next_actions=["检查 proposed_quality 与 hard violations 后重新提案"],
+            )
+
+        mutation = self.store.commit_preview(preview)
+        self.store.save_validation(after_full)
+        return _mutation_envelope(
+            mutation,
+            data={
+                **(data or {}),
+                "operation": operation_name,
+                "preview_validated": True,
+                "before_quality": _mutation_quality_payload(
+                    before_safety,
+                    before_full,
+                ),
+                "after_quality": _mutation_quality_payload(
+                    after_safety,
+                    after_full,
+                ),
+                "commit_ready": _commit_ready(after_full, self.profile),
+            },
+            violations=[
+                item.model_dump(mode="json") for item in after_full.violations
+            ],
+            capability_gaps=after_full.capability_gaps,
+            next_actions=(
+                ["立即返回 CommitRequest"]
+                if _commit_ready(after_full, self.profile)
+                else ["根据剩余主错误继续修复"]
+            ),
+        )
 
     def get_capabilities(self, sections: list[str] | None = None) -> dict[str, Any]:
         state = self.store.get()
@@ -936,13 +1080,20 @@ class ScenePlanningToolkit:
             normalized_upserts: list[dict[str, Any]] = []
             preserved_transform_ids: list[str] = []
             for item in upserts:
-                normalized = dict(item)
-                entity_id = normalized.get("entity_id")
+                patch = dict(item)
+                entity_id = patch.get("entity_id")
                 existing = current_entities.get(entity_id) if isinstance(entity_id, str) else None
-                if existing is not None and "solved_transform" not in normalized:
-                    normalized["solved_transform"] = existing.solved_transform.model_dump(
-                        mode="json"
-                    )
+                replacing = existing is not None and entity_id in remove_ids
+                if existing is not None and not replacing:
+                    # Existing entities use merge-patch semantics. Agent-facing
+                    # schemas omit fields that are not being changed, so a local
+                    # source/tag edit cannot reset geometry or solved state.
+                    normalized = existing.model_dump(mode="json")
+                    normalized.update(patch)
+                else:
+                    normalized = patch
+                if existing is not None and "solved_transform" not in patch:
+                    normalized["solved_transform"] = existing.solved_transform.model_dump(mode="json")
                     preserved_transform_ids.append(entity_id)
                 normalized_upserts.append(normalized)
             parsed = [EntitySpec.model_validate(item) for item in normalized_upserts]
@@ -983,25 +1134,29 @@ class ScenePlanningToolkit:
                 )
                 return changes, warnings
 
-            mutation = self.store.apply(mutate)
+            result = self._apply_guarded_manual_mutation(
+                mutate,
+                operation_name="entity_patch",
+                data={"preserved_solved_transform_ids": sorted(preserved_transform_ids)},
+            )
+            if result["status"] != "ok":
+                return result
             state = self.store.get()
             unresolved = sorted(
                 entity.entity_id
                 for entity in state.entities.values()
                 if _transform_is_unresolved(entity.solved_transform)
             )
-            return _mutation_envelope(
-                mutation,
-                data={"preserved_solved_transform_ids": sorted(preserved_transform_ids)},
-                next_actions=(
-                    [
-                        "调用 solve_candidate(scope='layout') 求解未定实体 Transform："
-                        + ", ".join(unresolved)
-                    ]
-                    if unresolved
-                    else ["调用 validate_candidate 复验本次修改"]
-                ),
+            result["data"]["unresolved_entity_ids"] = unresolved
+            result["next_actions"] = (
+                [
+                    "调用 solve_candidate(scope='layout') 求解未定实体 Transform："
+                    + ", ".join(unresolved)
+                ]
+                if unresolved
+                else result["next_actions"]
             )
+            return result
         except (ValidationError, ValueError) as error:
             return _rejected(self.store.current_revision, _error_message(error))
 
@@ -1086,7 +1241,15 @@ class ScenePlanningToolkit:
                 )
                 return changes, []
 
-            return _mutation_envelope(self.store.apply(mutate))
+            return self._apply_guarded_manual_mutation(
+                mutate,
+                operation_name="constraint_patch",
+                allowed_hard_constraint_ids={
+                    item.constraint_id
+                    for item in parsed
+                    if item.strength == "hard"
+                },
+            )
         except (ValidationError, ValueError) as error:
             return _rejected(self.store.current_revision, _error_message(error))
 
@@ -1137,7 +1300,10 @@ class ScenePlanningToolkit:
                 )
                 return changes, []
 
-            return _mutation_envelope(self.store.apply(mutate))
+            return self._apply_guarded_manual_mutation(
+                mutate,
+                operation_name="motion_patch",
+            )
         except (ValidationError, ValueError) as error:
             return _rejected(self.store.current_revision, _error_message(error))
 
@@ -1200,8 +1366,299 @@ class ScenePlanningToolkit:
                 )
                 return ([{"operation": "replace" if previous else "add", "path": "camera"}], [])
 
-            return _mutation_envelope(self.store.apply(mutate))
+            return self._apply_guarded_manual_mutation(
+                mutate,
+                operation_name="camera_patch",
+            )
         except (ValidationError, ValueError) as error:
+            return _rejected(self.store.current_revision, _error_message(error))
+
+    def apply_candidate_patch(
+        self,
+        *,
+        base_revision: int,
+        entity_upserts: list[dict[str, Any]] | None = None,
+        entity_remove_ids: list[str] | None = None,
+        constraint_upserts: list[dict[str, Any]] | None = None,
+        constraint_remove_ids: list[str] | None = None,
+        motion_upserts: list[dict[str, Any]] | None = None,
+        motion_remove_ids: list[str] | None = None,
+        camera_patch: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Apply a coupled repair as one previewed and validated transaction."""
+
+        current = self.store.get()
+        if base_revision != current.revision:
+            return _rejected(
+                current.revision,
+                f"Candidate Patch 基于 revision {base_revision}，当前为 {current.revision}",
+            )
+        entity_upserts = entity_upserts or []
+        entity_remove_ids = entity_remove_ids or []
+        constraint_upserts = constraint_upserts or []
+        constraint_remove_ids = constraint_remove_ids or []
+        motion_upserts = motion_upserts or []
+        motion_remove_ids = motion_remove_ids or []
+        if not any(
+            (
+                entity_upserts,
+                entity_remove_ids,
+                constraint_upserts,
+                constraint_remove_ids,
+                motion_upserts,
+                motion_remove_ids,
+                camera_patch,
+            )
+        ):
+            return _rejected(current.revision, "Candidate Patch 至少要包含一项修改")
+
+        try:
+            normalized_entities: list[dict[str, Any]] = []
+            preserved_transform_ids: list[str] = []
+            for item in entity_upserts:
+                patch = dict(item)
+                entity_id = patch.get("entity_id")
+                existing = (
+                    current.entities.get(entity_id) if isinstance(entity_id, str) else None
+                )
+                replacing = existing is not None and entity_id in entity_remove_ids
+                if existing is not None and not replacing:
+                    normalized = existing.model_dump(mode="json")
+                    normalized.update(patch)
+                else:
+                    normalized = patch
+                if existing is not None and "solved_transform" not in patch:
+                    normalized["solved_transform"] = existing.solved_transform.model_dump(
+                        mode="json"
+                    )
+                    preserved_transform_ids.append(entity_id)
+                normalized_entities.append(normalized)
+            parsed_entities = [
+                EntitySpec.model_validate(item) for item in normalized_entities
+            ]
+            _validate_unique_ids(
+                [item.entity_id for item in parsed_entities],
+                "Entity upserts",
+            )
+            parsed_constraints = [
+                ConstraintSpec.model_validate(item) for item in constraint_upserts
+            ]
+            _validate_unique_ids(
+                [item.constraint_id for item in parsed_constraints],
+                "Constraint upserts",
+            )
+            parsed_tracks = [TrackSpec.model_validate(item) for item in motion_upserts]
+            _validate_unique_ids(
+                [item.track_id for item in parsed_tracks],
+                "Motion Track upserts",
+            )
+
+            invalid_hard = sorted(
+                item.constraint_id
+                for item in parsed_constraints
+                if item.strength == "hard" and item.source_status != "explicit"
+            )
+            if invalid_hard:
+                raise ValueError(
+                    "只有 explicit requirement 可成为 hard constraint："
+                    + ", ".join(invalid_hard)
+                )
+            unsupported_constraints = sorted(
+                {item.type for item in parsed_constraints} - SUPPORTED_CONSTRAINTS
+            )
+            if unsupported_constraints:
+                raise ValueError(
+                    "不支持的 Constraint：" + ", ".join(unsupported_constraints)
+                )
+            incompatible_hard = sorted(
+                item.constraint_id
+                for item in parsed_constraints
+                if item.strength == "hard"
+                and (
+                    item.source_ref not in current.required_source_refs
+                    or not _source_mapping_is_compatible(
+                        item.source_ref,
+                        {f"constraint:{item.type}"},
+                    )
+                )
+            )
+            if incompatible_hard:
+                raise ValueError(
+                    "hard constraint 来源不兼容：" + ", ".join(incompatible_hard)
+                )
+            unsupported_tracks = sorted(
+                item.track_id
+                for item in parsed_tracks
+                if item.type not in ENTITY_SINGLETON_TRACK_TYPES
+            )
+            if unsupported_tracks:
+                raise ValueError(
+                    "Entity Track 类型不受支持：" + ", ".join(unsupported_tracks)
+                )
+
+            parsed_camera_static: CameraStatic | None = None
+            parsed_camera_tracks: list[TrackSpec] = []
+            if camera_patch is not None:
+                if camera_patch.get("projection") != "perspective":
+                    raise ValueError("当前只支持 perspective Camera Patch")
+                parsed_camera_static = CameraStatic.model_validate(camera_patch.get("static"))
+                parsed_camera_tracks = [
+                    TrackSpec.model_validate(item)
+                    for item in camera_patch.get("tracks", [])
+                ]
+                _validate_unique_ids(
+                    [item.track_id for item in parsed_camera_tracks],
+                    "Camera Track upserts",
+                )
+                unsupported_camera_tracks = sorted(
+                    item.track_id
+                    for item in parsed_camera_tracks
+                    if item.type not in CAMERA_SINGLETON_TRACK_TYPES
+                )
+                if unsupported_camera_tracks:
+                    raise ValueError(
+                        "Camera Track 类型不受支持："
+                        + ", ".join(unsupported_camera_tracks)
+                    )
+
+            def mutate(state: CandidateState):
+                changes: list[dict[str, Any]] = []
+                entity_upsert_ids = {item.entity_id for item in parsed_entities}
+                for entity_id in set(entity_remove_ids) - entity_upsert_ids:
+                    if state.entities.pop(entity_id, None) is not None:
+                        changes.append({"operation": "remove", "path": f"entities.{entity_id}"})
+                for entity in parsed_entities:
+                    existing = state.entities.get(entity.entity_id)
+                    if existing and _proxy_topology(existing.proxy) != _proxy_topology(entity.proxy):
+                        raise ValueError(
+                            f"Entity 建立后不得更换代理拓扑：{entity.entity_id}"
+                        )
+                    state.entities[entity.entity_id] = entity
+                    changes.append(
+                        {
+                            "operation": "replace" if existing else "add",
+                            "path": f"entities.{entity.entity_id}",
+                        }
+                    )
+
+                constraint_upsert_ids = {
+                    item.constraint_id for item in parsed_constraints
+                }
+                for constraint_id in set(constraint_remove_ids) - constraint_upsert_ids:
+                    existing = state.constraints.get(constraint_id)
+                    if (
+                        existing
+                        and existing.strength == "hard"
+                        and existing.source_status == "explicit"
+                    ):
+                        raise ValueError("不得删除 explicit hard constraint")
+                    if state.constraints.pop(constraint_id, None) is not None:
+                        changes.append(
+                            {"operation": "remove", "path": f"constraints.{constraint_id}"}
+                        )
+                for constraint in parsed_constraints:
+                    existing = state.constraints.get(constraint.constraint_id)
+                    if (
+                        existing
+                        and existing.strength == "hard"
+                        and existing.source_status == "explicit"
+                        and (
+                            constraint.strength != "hard"
+                            or constraint.source_ref != existing.source_ref
+                        )
+                    ):
+                        raise ValueError("不得降级或改写 explicit hard constraint 来源")
+                    _validate_constraint_time(
+                        constraint,
+                        state.timeline.duration_seconds,
+                    )
+                    state.constraints[constraint.constraint_id] = constraint
+                    changes.append(
+                        {
+                            "operation": "replace" if existing else "add",
+                            "path": f"constraints.{constraint.constraint_id}",
+                        }
+                    )
+
+                motion_upsert_ids = {item.track_id for item in parsed_tracks}
+                for track_id in set(motion_remove_ids) - motion_upsert_ids:
+                    if state.motion_tracks.pop(track_id, None) is not None:
+                        changes.append(
+                            {"operation": "remove", "path": f"motion_tracks.{track_id}"}
+                        )
+                for track in parsed_tracks:
+                    if not track.target_entity_id or track.target_entity_id not in state.entities:
+                        raise ValueError(f"Track 目标 Entity 不存在：{track.target_entity_id}")
+                    _validate_track_time(track, state.timeline.duration_seconds)
+                    existing = track.track_id in state.motion_tracks
+                    state.motion_tracks[track.track_id] = track
+                    changes.append(
+                        {
+                            "operation": "replace" if existing else "add",
+                            "path": f"motion_tracks.{track.track_id}",
+                        }
+                    )
+
+                if camera_patch is not None and parsed_camera_static is not None:
+                    current_tracks = deepcopy(state.camera.tracks) if state.camera else {}
+                    for track_id in camera_patch.get("remove_track_ids", []):
+                        current_tracks.pop(track_id, None)
+                    for track in parsed_camera_tracks:
+                        if track.target_entity_id is not None:
+                            raise ValueError("Camera Track 不应填写 target_entity_id")
+                        _validate_track_time(track, state.timeline.duration_seconds)
+                        current_tracks[track.track_id] = track
+                    previous = state.camera
+                    state.camera = CameraCandidate(
+                        camera_id=str(camera_patch["camera_id"]),
+                        projection="perspective",
+                        active=bool(camera_patch.get("active", True)),
+                        static=parsed_camera_static,
+                        tracks=current_tracks,
+                        solved_transform=(
+                            previous.solved_transform if previous else TransformValue()
+                        ),
+                    )
+                    changes.append(
+                        {
+                            "operation": "replace" if previous else "add",
+                            "path": "camera",
+                        }
+                    )
+
+                _validate_candidate_invariants(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
+                return changes, []
+
+            domains = []
+            if entity_upserts or entity_remove_ids:
+                domains.append("entities")
+            if constraint_upserts or constraint_remove_ids:
+                domains.append("constraints")
+            if motion_upserts or motion_remove_ids:
+                domains.append("motion_tracks")
+            if camera_patch is not None:
+                domains.append("camera")
+            return self._apply_guarded_manual_mutation(
+                mutate,
+                operation_name="candidate_patch",
+                data={
+                    "repair_domains_used": domains,
+                    "recommended_domains": self.recommended_manual_repair_domains,
+                    "preserved_solved_transform_ids": sorted(
+                        preserved_transform_ids
+                    ),
+                },
+                allowed_hard_constraint_ids={
+                    item.constraint_id
+                    for item in parsed_constraints
+                    if item.strength == "hard"
+                },
+            )
+        except (ValidationError, ValueError, KeyError) as error:
             return _rejected(self.store.current_revision, _error_message(error))
 
     def solve_candidate(
@@ -2153,6 +2610,57 @@ def _explicit_hard_signatures(report: ValidationReport) -> set[tuple[str, str | 
     }
 
 
+def _protected_hard_count(report: ValidationReport) -> int:
+    return sum(
+        item.severity == "hard"
+        and (
+            "EXPLICIT_REQUIREMENT" in item.code
+            or item.code == "UNMAPPED_EXPLICIT_REQUIREMENT"
+        )
+        for item in report.violations
+    )
+
+
+def _mutation_quality(
+    safety: ValidationReport,
+    full: ValidationReport,
+    *,
+    ignored_constraint_ids: set[str] | None = None,
+) -> tuple[int, int, int, int]:
+    """Lower is better; soft preferences intentionally do not block repairs."""
+
+    ignored = ignored_constraint_ids or set()
+    return (
+        0 if safety.hard_pass else 1,
+        sum(item.severity == "hard" for item in safety.violations)
+        + len(safety.capability_gaps),
+        _protected_hard_count(full),
+        sum(
+            item.severity == "hard" and item.constraint_id not in ignored
+            for item in full.violations
+        )
+        + len(full.capability_gaps),
+    )
+
+
+def _mutation_quality_payload(
+    safety: ValidationReport,
+    full: ValidationReport,
+) -> dict[str, Any]:
+    return {
+        "execution_safe": safety.hard_pass,
+        "execution_safety_hard_count": sum(
+            item.severity == "hard" for item in safety.violations
+        ),
+        "protected_explicit_hard_count": _protected_hard_count(full),
+        "full_fidelity_hard_count": sum(
+            item.severity == "hard" for item in full.violations
+        ),
+        "soft_score": round(full.soft_score, 6),
+        "capability_gaps": full.capability_gaps,
+    }
+
+
 def _repair_report_summary(
     report: ValidationReport,
     target_codes: tuple[str, ...],
@@ -2248,6 +2756,20 @@ def _design_report_summary(
     report: ValidationReport,
     profile: PlanningProfile,
 ) -> dict[str, Any]:
+    hard_items = [item for item in report.violations if item.severity == "hard"]
+    distinct_hard_items = []
+    seen_groups: set[tuple[Any, ...]] = set()
+    for item in hard_items:
+        group_key = (
+            item.code,
+            item.constraint_id,
+            tuple(item.entity_ids),
+            tuple(item.adjustable_variables),
+        )
+        if group_key in seen_groups:
+            continue
+        seen_groups.add(group_key)
+        distinct_hard_items.append(item)
     return {
         "hard_pass": report.hard_pass,
         "soft_score": round(report.soft_score, 6),
@@ -2258,6 +2780,25 @@ def _design_report_summary(
             item.severity == "soft" for item in report.violations
         ),
         "violation_codes": sorted({item.code for item in report.violations}),
+        "hard_violation_hints": [
+            {
+                "id": item.id,
+                "code": item.code,
+                "constraint_id": item.constraint_id,
+                "entity_ids": item.entity_ids,
+                "time_range_seconds": (
+                    list(item.time_range_seconds)
+                    if item.time_range_seconds is not None
+                    else None
+                ),
+                "adjustable_variables": item.adjustable_variables,
+            }
+            for item in distinct_hard_items[:6]
+        ],
+        "omitted_hard_violation_hint_count": max(
+            0,
+            len(distinct_hard_items) - 6,
+        ),
         "commit_ready": _commit_ready(report, profile),
         "capability_gaps": report.capability_gaps,
     }

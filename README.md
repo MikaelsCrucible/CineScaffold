@@ -51,6 +51,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - Validator 发现共线机位、屏幕运动不可读、主体出画或投影尺寸不合格时，Toolkit 会确定性搜索少量经复验的摄影机策略；Agent 选择整体方案，不再逐项猜坐标和焦距。
 - 默认规划会把失败类型、当前/最佳 revision、完整 violation、能力缺口和剩余尝试数组成 `Recovery Context` 回灌给 Agent；`infeasible` / `unsupported` 声明不再立即终止。确定性修复搜索返回 `no_change` 后，只重新开放受 Schema 和 Validator 限制的手工 Mutation。
 - 逐帧 Validator 仍在 Candidate、checkpoint 和诊断产物中保留完整证据；发给 Agent 的工具返回与 Recovery Context 会按错误签名和相邻帧合并为连续时间段，只携带首个、最严重和最后样本，且去除 Envelope 中重复的 validation 列表，避免同一连续错误耗尽上下文。
+- Toolkit 采用渐进披露而不是删掉解题信息：Design Option 在选择前给出任务相关能力和按根因去重的有限 hard hints；确定性修复无解后，Agent 获得一个可跨实体、约束、运动和摄影机联合修改的原子 Candidate Patch。建议修复领域只负责排序注意力，不限制可用字段；完整压缩错误仍保留，提案还会先在不可见副本中验证，退化时不写入 revision。
 - Agent 的 Entity Patch 不再清空其 Schema 中不可见的已求解 Transform；Design 生成的 `ground_plane` 自动携带语言无关的环境地面身份。Design Option、全部 Mutation、历史恢复和 Validator 现在共用同一组引用、地面、时间、轨道唯一性与参考系不变量，避免一个入口生成、另一个入口拒绝同一状态。
 - 工具参数不再“接受后忽略”：`inspect_candidate` 会实际执行适用的实体、摄影机、约束和时间过滤，并拒绝与视图不相容的过滤器；Agent 只看到当前真正实现的 layout/camera 启发式 Solver 选项。轨道会拒绝执行器不用的变体字段、重复关键帧时间和落在自身时间段外的关键帧。
 - 完整修复用尽后，规划器优先保留并提交 Agent 已建立的最佳可执行 Candidate；若还没有可执行 Candidate，则从已类型 Objective Brief 确定性生成简化方案，不再请求 Provider。简化交付必须通过独立 Execution Safety Gate，同时保留未满足的语义 fidelity violations，不伪装成完整通过。
@@ -121,7 +122,7 @@ python -c "import cinescaffold; print(cinescaffold.__version__)"
 生产环境应依赖正式 tag 或完整 commit，而不是 `main`：
 
 ```text
-cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.5
+cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.6
 ```
 
 嵌入式调用只依赖 [`cinescaffold.api`](src/cinescaffold/api.py) 的公共入口；`planning`、`execution` 等子模块属于内部实现：
