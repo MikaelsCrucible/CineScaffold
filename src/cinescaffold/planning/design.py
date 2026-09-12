@@ -229,11 +229,32 @@ class SceneSkeleton(StrictModel):
         if len(entity_ids) != len(set(entity_ids)):
             raise ValueError("Scene Skeleton Entity ID 不得重复")
         known = set(entity_ids)
+        relation_ids = [item.relation_id for item in self.relations]
+        if len(relation_ids) != len(set(relation_ids)):
+            raise ValueError("Scene Skeleton Relation ID 不得重复")
+        phase_ids = [item.phase_id for item in self.motion_phases]
+        if len(phase_ids) != len(set(phase_ids)):
+            raise ValueError("Scene Skeleton Motion Phase ID 不得重复")
         if self.camera_intent.focus_target_id not in known:
             raise ValueError("摄影机观察目标不在 Scene Skeleton 中")
+        proxy_families = {item.entity_id: item.proxy_family for item in self.entities}
+        ground_subjects: dict[str, str] = {}
         for relation in self.relations:
             if relation.subject_id not in known or relation.reference_id not in known:
                 raise ValueError(f"Relation 引用了未知 Entity：{relation.relation_id}")
+            if relation.subject_id == relation.reference_id:
+                raise ValueError(f"Relation 不得自引用：{relation.relation_id}")
+            if relation.kind == "ground_support":
+                if proxy_families[relation.reference_id] != "ground_plane":
+                    raise ValueError(
+                        f"ground_support 必须指向 ground_plane：{relation.relation_id}"
+                    )
+                previous_ground = ground_subjects.get(relation.subject_id)
+                if previous_ground is not None and previous_ground != relation.reference_id:
+                    raise ValueError(
+                        f"同一实体的 ground_support 不得指向多个地面：{relation.subject_id}"
+                    )
+                ground_subjects[relation.subject_id] = relation.reference_id
         for phase in self.motion_phases:
             references = [phase.subject_id, phase.target_id, phase.carrier_id]
             if any(item is not None and item not in known for item in references):
@@ -476,6 +497,13 @@ def _build_entities(
             source_status=(ground.source_status if ground else "default"),
             source_ref=(ground.source_ref if ground and ground.source_status == "explicit" else None),
         )
+        tags = [item.semantic_type, item.scale_intent]
+        if item.proxy_family == "ground_plane":
+            # Downstream mutation and validation gates use this language-neutral
+            # marker to distinguish an environment ground from an arbitrary plane.
+            # Skeleton roles and semantic labels are user/model-authored and may be
+            # in any language, so they cannot be the sole identity contract.
+            tags.extend(["environment", "ground"])
         entities[item.entity_id] = EntitySpec(
             entity_id=item.entity_id,
             label=item.semantic_type,
@@ -487,7 +515,7 @@ def _build_entities(
                 strategy,
                 size_requests.get(item.entity_id),
             ),
-            tags=[item.semantic_type, item.scale_intent],
+            tags=list(dict.fromkeys(tags)),
             source_refs=sorted(source_refs),
             ground_interaction=ground_interaction,
         )

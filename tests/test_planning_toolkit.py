@@ -553,6 +553,50 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(track_result["status"], "ok")
         self.assertEqual(len(toolkit.store.get().motion_tracks["man_move"].keyframes), 1)
 
+    def test_entity_patch_without_hidden_transform_preserves_solved_state(self) -> None:
+        toolkit = _toolkit()
+        solved = _man_entity() | {
+            "solved_transform": {
+                "translation_m": [2.0, 3.0, 0.9],
+                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "scale": [1.0, 1.0, 1.0],
+            }
+        }
+        toolkit.apply_entity_patch([solved], [])
+        update = _man_entity() | {"label": "只更新可见字段"}
+        update.pop("solved_transform")
+
+        result = toolkit.apply_entity_patch([update], [])
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            toolkit.store.get().entities["man_01"].solved_transform.translation_m,
+            (2.0, 3.0, 0.9),
+        )
+        self.assertEqual(result["data"]["preserved_solved_transform_ids"], ["man_01"])
+
+    def test_duplicate_upsert_ids_are_rejected_atomically(self) -> None:
+        toolkit = _toolkit()
+        result = toolkit.apply_entity_patch(
+            [_man_entity(), _man_entity() | {"label": "ambiguous"}],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(toolkit.store.get().entities, {})
+        self.assertIn("重复 ID", result["warnings"][0])
+
+    def test_removing_parent_and_child_together_is_atomic(self) -> None:
+        toolkit = _toolkit()
+        parent = _sphere_entity("parent")
+        child = _sphere_entity("child", parent_id="parent")
+        toolkit.apply_entity_patch([parent, child], [])
+
+        result = toolkit.apply_entity_patch([], ["parent", "child"])
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(toolkit.store.get().entities, {})
+
     def test_entity_replacement_cannot_change_proxy_topology(self) -> None:
         toolkit = _toolkit()
         toolkit.apply_entity_patch([_ship_entity()], [])
@@ -1312,6 +1356,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
     def test_speed_requirement_rejects_unrelated_camera_distance_mapping(self) -> None:
         toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
 
         def add_speed_requirement(state):
             state.required_source_refs.append("content.camera.movement.speed")
@@ -1348,6 +1393,115 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 for item in validation["violations"]
             )
         )
+
+    def test_execution_safety_does_not_evaluate_fidelity_constraints(self) -> None:
+        toolkit = _solved_toolkit()
+        constraint = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "camera_push_in",
+                    "type": "camera_motion_direction",
+                    "strength": "hard",
+                    "weight": 1.0,
+                    "subjects": [],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "direction": "pull_out",
+                        "minimum_displacement_m": 3.0,
+                    },
+                    "source_status": "explicit",
+                    "source_ref": "content.camera.movement.type",
+                }
+            ],
+            [],
+        )
+        self.assertEqual(constraint["status"], "ok", constraint)
+        full = toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
+        safety = toolkit.validate_candidate(checks=EXECUTION_SAFETY_CHECKS)
+
+        self.assertFalse(full["data"]["hard_pass"], full["violations"])
+        self.assertTrue(safety["data"]["hard_pass"], safety["violations"])
+        self.assertNotIn(
+            "CAMERA_MOTION_DIRECTION_VIOLATED",
+            {item["code"] for item in safety["violations"]},
+        )
+
+    def test_inspect_filters_are_applied_instead_of_ignored(self) -> None:
+        toolkit = _solved_toolkit()
+        toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
+        state = toolkit.store.get()
+        camera_track_id = next(iter(state.camera.tracks))
+
+        camera = toolkit.inspect_candidate(
+            view="camera",
+            camera_ids=["camera_main"],
+            time_range_seconds=(0.0, 1.0),
+        )
+        invalid = toolkit.inspect_candidate(
+            view="summary",
+            time_range_seconds=(0.0, 1.0),
+        )
+
+        self.assertIn(camera_track_id, camera["data"]["tracks"])
+        self.assertEqual(invalid["status"], "rejected")
+        self.assertIn("不支持过滤参数", invalid["warnings"][0])
+
+    def test_solver_rejects_options_it_does_not_implement(self) -> None:
+        toolkit = _toolkit()
+
+        variables = toolkit.solve_candidate(allowed_variables=["man_01.translation"])
+        numeric = toolkit.solve_candidate(strategy="numeric")
+        sampling = toolkit.validate_candidate(sampling_profile="draft")
+        locked_entity = toolkit.apply_entity_patch(
+            [_man_entity() | {"locked_fields": ["translation"]}],
+            [],
+        )
+
+        self.assertEqual(variables["status"], "unsupported")
+        self.assertIn("solver:allowed_variables", variables["capability_gaps"])
+        self.assertEqual(numeric["status"], "unsupported")
+        self.assertEqual(sampling["status"], "unsupported")
+        self.assertEqual(locked_entity["status"], "rejected")
+
+    def test_track_rejects_fields_that_execution_would_ignore(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
+
+        wrong_path = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "ambiguous_transform",
+                    "target_entity_id": "man_01",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [],
+                    "path": {
+                        "representation": "polyline",
+                        "control_points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    },
+                }
+            ],
+            [],
+        )
+        duplicate_time = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "duplicate_time",
+                    "target_entity_id": "man_01",
+                    "type": "visibility",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {"time_seconds": 1.0, "value": True},
+                        {"time_seconds": 1.0, "value": False},
+                    ],
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(wrong_path["status"], "rejected")
+        self.assertEqual(duplicate_time["status"], "rejected")
+        self.assertEqual(toolkit.store.get().motion_tracks, {})
 
     def test_nested_target_relative_orbits_compile_to_parent_local_ir(self) -> None:
         toolkit = _relative_motion_toolkit()

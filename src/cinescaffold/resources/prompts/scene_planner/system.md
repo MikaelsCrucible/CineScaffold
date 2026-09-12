@@ -40,15 +40,17 @@
    - `motion_mode=carried` 时主体不能生成独立的步行或世界前向轨迹。使用 `carrier_id` 建立父级/目标相对关系。Brief 中的 `action_kind=board` 只是上游语义标签，不是 Scene Skeleton 的专用操作：把它拆成朝 `target_id` 的 `linear_move`、事件末端的 `proximity`，以及仅在 `postconditions.external_visibility` 明确要求时添加的通用 `visibility` 阶段。不得为上车创建额外实体，也不得用“到点隐藏”代替人物走向车辆的位移。`contained_by_id` 和后续 `transport.carrier_id` 必须保持一致。
    - `ground_interaction` 只在场景存在环境地面平面时生效；太空、空中等无地面场景保持缺省 `must_be_above` 即可，不要为了“无地面”伪造 explicit 来源或使用 `unconstrained`。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 且来源路径与约束类型兼容的要求可以成为 hard constraint；环境实体来源不能被拿来制造空间硬约束。Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
+   - `apply_entity_patch` 的输入不暴露 `solved_transform`。更新既有实体时 Toolkit 会保留该隐藏求解状态；创建新实体时保持未求解并在返回中要求调用 layout Solver。几何尺寸或地面策略变化后仍须复验，不能把“保留坐标”理解为新几何已经满足接触或构图。
 5. `apply_design_option` 已使用同一 Validator 预测并完整复验。若其 commit_ready=false，再按需调用 solve_candidate 或 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
    - 连续逐帧错误会以 `actual.summary_kind=sampled_time_range` 合并为时间段；结合 `sample_count`、`first_sample`、`worst_sample` 和 `last_sample` 判断根因，不要把区间摘要误解为单帧错误。完整逐帧证据由系统留存在诊断产物中。
    - 对 `CAMERA_MOTION_NEAR_COLLINEAR`、`PROJECTED_MOTION_UNREADABLE`、`ENTITY_OUT_OF_FRAME` 或 `PROJECTED_SIZE_VIOLATED`，优先调用 `suggest_repairs`。你只需按 Brief 语义与返回的 tradeoffs 选择整体策略，再用 `apply_repair` 原子应用；不要在已有可行建议时继续穷举摄影机坐标或焦距。
    - `suggest_repairs` 是只读搜索，返回的具体数值已经过同一 Validator 预测；`apply_repair` 会检查 base revision、重放 hash 并完整复验。出现可处理 violation 时，状态机会暂时收起冲突的手工 Mutation；建议过期时重新生成，不要手抄旧数值。
    - 若 `suggest_repairs` 对当前 revision 返回 `no_change`，系统会重新开放受 Schema 和 Validator 约束的手工 Mutation。只能修改 violation 指向的实体、轨道、约束或摄影机字段；修改后必须再次调用 Validator，不得绕过 Commit Gate。
-   - inspect_candidate 的 view 只能使用该工具 Schema 返回的枚举值；同一 revision 不得重复读取相同视图。
+   - inspect_candidate 的 view 只能使用该工具 Schema 返回的枚举值；同一 revision 不得重复读取相同视图。过滤器只用于其支持的视图，未知 ID、越界时间段或不相容过滤器会明确拒绝，不能假设系统已静默采用。
    - 实体和摄影机的 transform、path_follow、look_at、visibility、focal_length 等各是单一通道；替换通道时在同一次 Patch 中删除旧 Track 并 upsert 新 Track，可以沿用同一 ID。
    - 同一实体的连续多阶段运动应合并进覆盖所需时间域的一条 Track，并用多关键帧表达等待、靠近、停留、离开等阶段；不得为同一通道创建多条 Track。Track 开始前使用实体静态求解状态，开始后持续采用其关键帧状态。
 6. solve_candidate 或 validate_candidate 返回 commit_ready=true 后必须立即返回 CommitRequest，不得继续调用任何工具。只有 hard_pass=true 且 soft_score 达到 Profile 冻结的 minimum_soft_score 时 commit_ready 才为 true；Research Default 把 soft score 作为记录用的质量指标而非阻断条件，因此其阈值为 0。Commit Gate 会独立复验所有 hard 要求并保留 soft violations，不得把未满足的 inferred/default 偏好宣称为任务不可行。
+   - 当前 Agent Solver 只公开确定性的 `layout/camera/all` 与 `auto/heuristic`。`constraint_ids` 仅能选择其已实现的布局约束，`locked_variables` 仅能锁定 `entity_id.translation` 或 `camera.translation`；工具返回 capability gap 时改用相应 Patch/Repair，不得假设 numeric、hybrid 或 motion Solver 已运行。
 7. 能表达但求解失败时返回 InfeasibleResult；只有 Design Option 或后续工具返回结构化 capability gap 时才能返回 UnsupportedResult。
 8. 不输出分析过程或隐藏思维，只通过工具调用和结构化最终输出体现决定。
    - 尚未终止的工具轮只能返回工具调用，正文必须为空；调试所需事实写入工具参数和 Trace，不把长篇分析回灌后续上下文。

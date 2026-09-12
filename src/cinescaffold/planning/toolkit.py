@@ -55,7 +55,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.24"
+TOOLKIT_VERSION = "0.25"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -671,6 +671,20 @@ class ScenePlanningToolkit:
                     strategy,
                     size_requests,
                 )
+                _validate_candidate_invariants(
+                    candidate,
+                    self.objective_brief,
+                    self.profile,
+                )
+                safety_report = self._validate(candidate, EXECUTION_SAFETY_CHECKS)
+                if not safety_report.hard_pass:
+                    codes = ", ".join(
+                        sorted({item.code for item in safety_report.violations})
+                    )
+                    raise ValueError(
+                        "Design Option 未通过执行安全检查"
+                        + (f"：{codes}" if codes else "")
+                    )
                 report = self._validate(candidate, FULL_VALIDATION_CHECKS)
             except (ValidationError, ValueError) as error:
                 option_errors.append(f"{strategy}: {_error_message(error)}")
@@ -741,12 +755,32 @@ class ScenePlanningToolkit:
             or skeleton_hash(self._scene_skeleton) != option.skeleton_hash
         ):
             return _rejected(revision, "Scene Skeleton 已变化；请重新请求选项")
+        try:
+            _validate_candidate_invariants(
+                option.candidate,
+                self.objective_brief,
+                self.profile,
+            )
+            safety_report = self._validate(
+                option.candidate,
+                EXECUTION_SAFETY_CHECKS,
+            )
+            if not safety_report.hard_pass:
+                raise ValueError("Design Option 已失去执行安全条件；请重新请求选项")
+        except (ValidationError, ValueError) as error:
+            self._design_options.clear()
+            return _rejected(revision, _error_message(error))
 
         def mutate(state: CandidateState):
             state.entities = deepcopy(option.candidate.entities)
             state.motion_tracks = deepcopy(option.candidate.motion_tracks)
             state.constraints = deepcopy(option.candidate.constraints)
             state.camera = deepcopy(option.candidate.camera)
+            _validate_candidate_invariants(
+                state,
+                self.objective_brief,
+                self.profile,
+            )
             return (
                 [
                     {
@@ -796,8 +830,22 @@ class ScenePlanningToolkit:
         time_range_seconds: tuple[float, float] | None = None,
         compare_to_revision: int | None = None,
     ) -> dict[str, Any]:
-        del camera_ids, time_range_seconds
         state = self.store.get(revision)
+        camera_ids = camera_ids or []
+        entity_ids = entity_ids or []
+        constraint_ids = constraint_ids or []
+        try:
+            selected_time = _validate_inspect_filters(
+                state,
+                view=view,
+                entity_ids=entity_ids,
+                camera_ids=camera_ids,
+                constraint_ids=constraint_ids,
+                time_range_seconds=time_range_seconds,
+                compare_to_revision=compare_to_revision,
+            )
+        except ValueError as error:
+            return _rejected(state.revision, str(error))
         if view == "summary":
             data: Any = {
                 "scene_id": state.scene_id,
@@ -817,16 +865,42 @@ class ScenePlanningToolkit:
                 if name in state.entities
             }
         elif view == "camera":
-            data = state.camera.model_dump(mode="json") if state.camera else None
+            if state.camera is None or (
+                camera_ids and state.camera.camera_id not in camera_ids
+            ):
+                data = None
+            else:
+                data = state.camera.model_dump(mode="json")
+                if selected_time is not None:
+                    data["tracks"] = {
+                        track_id: track
+                        for track_id, track in data["tracks"].items()
+                        if _time_ranges_overlap(
+                            tuple(track["time_range_seconds"]), selected_time
+                        )
+                    }
         elif view == "constraints":
             selected = constraint_ids or sorted(state.constraints)
             data = {
                 name: state.constraints[name].model_dump(mode="json")
                 for name in selected
                 if name in state.constraints
+                and (
+                    selected_time is None
+                    or _time_ranges_overlap(
+                        state.constraints[name].time_range_seconds,
+                        selected_time,
+                    )
+                )
             }
         elif view == "violations":
-            data = state.validation.model_dump(mode="json") if state.validation else None
+            data = _filtered_validation_payload(
+                state,
+                entity_ids=entity_ids,
+                camera_ids=camera_ids,
+                constraint_ids=constraint_ids,
+                time_range_seconds=selected_time,
+            )
         elif view == "timeline":
             data = state.timeline.model_dump(mode="json") | {"frame_end": state.timeline.frame_end}
         elif view == "diff":
@@ -840,7 +914,13 @@ class ScenePlanningToolkit:
                 "to_hash": canonical_hash(state),
             }
         elif view == "full_ir":
-            data = state.model_dump(mode="json")
+            data = _filtered_candidate_payload(
+                state,
+                entity_ids=entity_ids,
+                camera_ids=camera_ids,
+                constraint_ids=constraint_ids,
+                time_range_seconds=selected_time,
+            )
         else:
             return _rejected(state.revision, f"未知 inspect view：{view}")
         return _envelope(state.revision, state.revision, data=data)
@@ -852,15 +932,28 @@ class ScenePlanningToolkit:
     ) -> dict[str, Any]:
         remove_ids = remove_ids or []
         try:
-            parsed = [EntitySpec.model_validate(item) for item in upserts]
+            current_entities = self.store.get().entities
+            normalized_upserts: list[dict[str, Any]] = []
+            preserved_transform_ids: list[str] = []
+            for item in upserts:
+                normalized = dict(item)
+                entity_id = normalized.get("entity_id")
+                existing = current_entities.get(entity_id) if isinstance(entity_id, str) else None
+                if existing is not None and "solved_transform" not in normalized:
+                    normalized["solved_transform"] = existing.solved_transform.model_dump(
+                        mode="json"
+                    )
+                    preserved_transform_ids.append(entity_id)
+                normalized_upserts.append(normalized)
+            parsed = [EntitySpec.model_validate(item) for item in normalized_upserts]
+            _validate_unique_ids(
+                [item.entity_id for item in parsed],
+                "Entity upserts",
+            )
             upsert_ids = {item.entity_id for item in parsed}
             remove_only_ids = set(remove_ids) - upsert_ids
 
             def mutate(state: CandidateState):
-                referenced = _referenced_entity_ids(state)
-                blocked = sorted(remove_only_ids & referenced)
-                if blocked:
-                    raise ValueError(f"Entity 仍被引用，不能删除：{', '.join(blocked)}")
                 changes: list[dict[str, Any]] = []
                 for entity_id in remove_only_ids:
                     if state.entities.pop(entity_id, None) is not None:
@@ -875,12 +968,40 @@ class ScenePlanningToolkit:
                     operation = "replace" if entity.entity_id in state.entities else "add"
                     state.entities[entity.entity_id] = entity
                     changes.append({"operation": operation, "path": f"entities.{entity.entity_id}"})
-                _validate_parent_references(state)
-                _validate_ground_interaction_references(state, self.objective_brief)
-                _validate_reference_frame_graph(state, self.profile)
-                return changes, []
+                _validate_candidate_invariants(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
+                warnings = (
+                    [
+                        "语义/几何更新已保留既有 solved_transform："
+                        + ", ".join(sorted(preserved_transform_ids))
+                    ]
+                    if preserved_transform_ids
+                    else []
+                )
+                return changes, warnings
 
-            return _mutation_envelope(self.store.apply(mutate))
+            mutation = self.store.apply(mutate)
+            state = self.store.get()
+            unresolved = sorted(
+                entity.entity_id
+                for entity in state.entities.values()
+                if _transform_is_unresolved(entity.solved_transform)
+            )
+            return _mutation_envelope(
+                mutation,
+                data={"preserved_solved_transform_ids": sorted(preserved_transform_ids)},
+                next_actions=(
+                    [
+                        "调用 solve_candidate(scope='layout') 求解未定实体 Transform："
+                        + ", ".join(unresolved)
+                    ]
+                    if unresolved
+                    else ["调用 validate_candidate 复验本次修改"]
+                ),
+            )
         except (ValidationError, ValueError) as error:
             return _rejected(self.store.current_revision, _error_message(error))
 
@@ -892,6 +1013,10 @@ class ScenePlanningToolkit:
         remove_ids = remove_ids or []
         try:
             parsed = [ConstraintSpec.model_validate(item) for item in upserts]
+            _validate_unique_ids(
+                [item.constraint_id for item in parsed],
+                "Constraint upserts",
+            )
             invalid_hard = sorted(
                 item.constraint_id
                 for item in parsed
@@ -954,6 +1079,11 @@ class ScenePlanningToolkit:
                         "operation": "replace" if existing else "add",
                         "path": f"constraints.{constraint.constraint_id}",
                     })
+                _validate_candidate_invariants(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
                 return changes, []
 
             return _mutation_envelope(self.store.apply(mutate))
@@ -968,6 +1098,10 @@ class ScenePlanningToolkit:
         remove_ids = remove_ids or []
         try:
             parsed = [TrackSpec.model_validate(item) for item in upserts]
+            _validate_unique_ids(
+                [item.track_id for item in parsed],
+                "Motion Track upserts",
+            )
             unsupported = sorted(
                 track.track_id
                 for track in parsed
@@ -996,8 +1130,11 @@ class ScenePlanningToolkit:
                         "operation": "replace" if existing else "add",
                         "path": f"motion_tracks.{track.track_id}",
                     })
-                _validate_singleton_entity_tracks(state.motion_tracks)
-                _validate_reference_frame_graph(state, self.profile)
+                _validate_candidate_invariants(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
                 return changes, []
 
             return _mutation_envelope(self.store.apply(mutate))
@@ -1024,6 +1161,10 @@ class ScenePlanningToolkit:
                 )
             parsed_static = CameraStatic.model_validate(static)
             parsed_tracks = [TrackSpec.model_validate(item) for item in tracks]
+            _validate_unique_ids(
+                [item.track_id for item in parsed_tracks],
+                "Camera Track upserts",
+            )
             unsupported = sorted(
                 track.track_id
                 for track in parsed_tracks
@@ -1041,7 +1182,6 @@ class ScenePlanningToolkit:
                         raise ValueError("Camera Track 不应填写 target_entity_id")
                     _validate_track_time(track, state.timeline.duration_seconds)
                     current_tracks[track.track_id] = track
-                _validate_singleton_camera_tracks(current_tracks)
                 previous = state.camera
                 state.camera = CameraCandidate(
                     camera_id=camera_id,
@@ -1053,7 +1193,11 @@ class ScenePlanningToolkit:
                         previous.solved_transform if previous else TransformValue()
                     ),
                 )
-                _validate_reference_frame_graph(state, self.profile)
+                _validate_candidate_invariants(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
                 return ([{"operation": "replace" if previous else "add", "path": "camera"}], [])
 
             return _mutation_envelope(self.store.apply(mutate))
@@ -1069,17 +1213,93 @@ class ScenePlanningToolkit:
         profile: str = "research_default",
         strategy: str = "auto",
     ) -> dict[str, Any]:
-        del allowed_variables, profile
-        if scope not in {"layout", "camera", "motion", "all"}:
-            return _rejected(self.store.current_revision, f"未知 solve scope：{scope}")
-        if strategy not in {"auto", "heuristic", "numeric", "hybrid"}:
-            return _rejected(self.store.current_revision, f"未知 solve strategy：{strategy}")
+        if profile != "research_default":
+            return _envelope(
+                self.store.current_revision,
+                self.store.current_revision,
+                status="unsupported",
+                capability_gaps=[f"solver_profile:{profile}"],
+                next_actions=["使用冻结的 research_default Profile"],
+            )
+        if allowed_variables:
+            return _envelope(
+                self.store.current_revision,
+                self.store.current_revision,
+                status="unsupported",
+                capability_gaps=["solver:allowed_variables"],
+                next_actions=["改用 constraint_ids 与 locked_variables 限定当前启发式求解器"],
+            )
+        if scope not in {"layout", "camera", "all"}:
+            return _envelope(
+                self.store.current_revision,
+                self.store.current_revision,
+                status="unsupported",
+                capability_gaps=[f"solver_scope:{scope}"],
+                next_actions=["使用 layout、camera 或 all"],
+            )
+        if strategy not in {"auto", "heuristic"}:
+            return _envelope(
+                self.store.current_revision,
+                self.store.current_revision,
+                status="unsupported",
+                capability_gaps=[f"solver_strategy:{strategy}"],
+                next_actions=["使用 auto 或 heuristic"],
+            )
         selected_ids = set(constraint_ids or [])
         locked = set(locked_variables or [])
+        state_before = self.store.get()
+        unknown_constraints = sorted(selected_ids - set(state_before.constraints))
+        if unknown_constraints:
+            return _rejected(
+                self.store.current_revision,
+                "solve_candidate 引用了未知 Constraint："
+                + ", ".join(unknown_constraints),
+            )
+        solvable_constraint_types = {
+            "relative_position",
+            "depth_order",
+            "distance_range",
+        }
+        unsupported_constraints = sorted(
+            constraint.constraint_id
+            for constraint in state_before.constraints.values()
+            if constraint.constraint_id in selected_ids
+            and constraint.type not in solvable_constraint_types
+        )
+        if unsupported_constraints:
+            return _envelope(
+                self.store.current_revision,
+                self.store.current_revision,
+                status="unsupported",
+                capability_gaps=[
+                    f"solver_constraint:{state_before.constraints[item].type}"
+                    for item in unsupported_constraints
+                ],
+                next_actions=[
+                    "这些约束可被 Validator 检查但不能由当前求解器自动修改；"
+                    "使用对应 Patch 或 suggest_repairs："
+                    + ", ".join(unsupported_constraints)
+                ],
+            )
+        supported_locks = {
+            f"{entity_id}.translation" for entity_id in state_before.entities
+        } | {"camera.translation"}
+        unknown_locks = sorted(locked - supported_locks)
+        if unknown_locks:
+            return _envelope(
+                self.store.current_revision,
+                self.store.current_revision,
+                status="unsupported",
+                capability_gaps=["solver:locked_variables"],
+                next_actions=[
+                    "当前只支持 entity_id.translation 与 camera.translation："
+                    + ", ".join(unknown_locks)
+                ],
+            )
 
         def mutate(state: CandidateState):
             changes: list[dict[str, Any]] = []
-            if scope in {"layout", "motion", "all"}:
+            if scope in {"layout", "all"}:
                 for index, entity in enumerate(state.entities.values()):
                     if f"{entity.entity_id}.translation" in locked:
                         continue
@@ -1109,7 +1329,10 @@ class ScenePlanningToolkit:
                     state.camera = CameraCandidate(static=CameraStatic(focus_target_id=focus))
                     changes.append({"operation": "solve", "path": "camera"})
                 camera = state.camera
-                if camera.solved_transform.translation_m is None:
+                if (
+                    camera.solved_transform.translation_m is None
+                    and "camera.translation" not in locked
+                ):
                     camera.solved_transform = TransformValue(
                         translation_m=(0.0, -self.profile.default_camera_distance_m, 2.0),
                         rotation_quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
@@ -1123,6 +1346,11 @@ class ScenePlanningToolkit:
                     camera.static.focal_length_mm = self.profile.default_focal_length_mm
                     changes.append({"operation": "solve", "path": "camera.static.focal_length_mm"})
 
+            _validate_candidate_invariants(
+                state,
+                self.objective_brief,
+                self.profile,
+            )
             return changes, []
 
         try:
@@ -1154,8 +1382,15 @@ class ScenePlanningToolkit:
         checks: list[str] | None = None,
         sampling_profile: str = "research_default",
     ) -> dict[str, Any]:
-        del sampling_profile
         state = self.store.get(revision)
+        if sampling_profile != "research_default":
+            return _envelope(
+                state.revision,
+                state.revision,
+                status="unsupported",
+                capability_gaps=[f"sampling_profile:{sampling_profile}"],
+                next_actions=["使用冻结的 research_default Sampling Profile"],
+            )
         selected = checks or FULL_VALIDATION_CHECKS
         unknown = sorted(set(selected) - set(FULL_VALIDATION_CHECKS))
         if unknown:
@@ -1310,6 +1545,11 @@ class ScenePlanningToolkit:
 
         def mutate(state: CandidateState):
             _apply_camera_repair(state, repair)
+            _validate_candidate_invariants(
+                state,
+                self.objective_brief,
+                self.profile,
+            )
             return (
                 [
                     {
@@ -1434,8 +1674,24 @@ class ScenePlanningToolkit:
         if not reason.strip():
             return _rejected(self.store.current_revision, "restore 必须记录 reason")
         try:
+            source = self.store.get(source_revision)
+            _validate_candidate_invariants(
+                source,
+                self.objective_brief,
+                self.profile,
+            )
             result = self.store.restore(source_revision)
-            return _mutation_envelope(result, data={"reason": reason})
+            report = self._validate(self.store.get(), FULL_VALIDATION_CHECKS)
+            self.store.save_validation(report)
+            return _mutation_envelope(
+                result,
+                data={
+                    "reason": reason,
+                    "commit_ready": _commit_ready(report, self.profile),
+                },
+                violations=[item.model_dump(mode="json") for item in report.violations],
+                capability_gaps=report.capability_gaps,
+            )
         except ValueError as error:
             return _rejected(self.store.current_revision, str(error))
 
@@ -1443,7 +1699,13 @@ class ScenePlanningToolkit:
         violations: list[Violation] = []
         gaps: list[str] = []
         if "references" in checks or "hierarchy" in checks:
-            violations.extend(_reference_violations(state, self.profile))
+            violations.extend(
+                _reference_violations(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
+            )
         if "timeline" in checks:
             violations.extend(_timeline_violations(state))
         if "transforms" in checks or "rebuildability" in checks:
@@ -1499,17 +1761,24 @@ class ScenePlanningToolkit:
 
         soft_total = 0.0
         soft_passed = 0.0
-        for constraint in state.constraints.values():
-            if constraint.type not in SUPPORTED_CONSTRAINTS:
-                gaps.append(f"constraint:{constraint.type}")
-                continue
-            result = _constraint_violation(state, constraint, self.profile)
-            if constraint.strength == "soft":
-                soft_total += constraint.weight
-                if result is None:
-                    soft_passed += constraint.weight
-            if result is not None:
-                violations.append(result)
+        # Execution-safety validation proves that IR can be compiled and run; it
+        # must not accidentally re-apply fidelity constraints. Full and focused
+        # semantic/projection validation still evaluate the constraint catalog.
+        evaluate_constraints = bool(
+            set(checks) - set(EXECUTION_SAFETY_CHECKS)
+        )
+        if evaluate_constraints:
+            for constraint in state.constraints.values():
+                if constraint.type not in SUPPORTED_CONSTRAINTS:
+                    gaps.append(f"constraint:{constraint.type}")
+                    continue
+                result = _constraint_violation(state, constraint, self.profile)
+                if constraint.strength == "soft":
+                    soft_total += constraint.weight
+                    if result is None:
+                        soft_passed += constraint.weight
+                if result is not None:
+                    violations.append(result)
         soft_score = soft_passed / soft_total if soft_total else 1.0
         hard_pass = not any(item.severity == "hard" for item in violations) and not gaps
         return ValidationReport(
@@ -2067,17 +2336,63 @@ def _referenced_entity_ids(state: CandidateState) -> set[str]:
     for track in list(state.motion_tracks.values()) + (
         list(state.camera.tracks.values()) if state.camera else []
     ):
+        if track.target_id:
+            result.add(track.target_id)
         if track.path and track.path.target_id:
             result.add(track.path.target_id)
         for keyframe in track.keyframes:
             if isinstance(keyframe.value, TransformValue) and keyframe.value.target_id:
                 result.add(keyframe.value.target_id)
+    if state.camera and state.camera.static.focus_target_id:
+        result.add(state.camera.static.focus_target_id)
     for constraint in state.constraints.values():
         result.update(constraint.subjects)
         for key, value in _parameters(constraint).items():
             if key.endswith("_id") and isinstance(value, str) and value != "camera_main":
                 result.add(value)
+            if key.endswith("_ids") and isinstance(value, (list, tuple)):
+                result.update(
+                    item
+                    for item in value
+                    if isinstance(item, str) and item != "camera_main"
+                )
     return result
+
+
+def _validate_candidate_invariants(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+    profile: PlanningProfile,
+) -> None:
+    """Apply the same structural contract at every Candidate entry point."""
+
+    _validate_parent_references(state)
+    _validate_ground_interaction_references(state, objective_brief)
+    locked_entity_ids = sorted(
+        entity.entity_id for entity in state.entities.values() if entity.locked_fields
+    )
+    if locked_entity_ids:
+        raise ValueError(
+            "Entity locked_fields 尚未被 Solver 实现："
+            + ", ".join(locked_entity_ids)
+        )
+    _validate_singleton_entity_tracks(state.motion_tracks)
+    if state.camera is not None:
+        _validate_singleton_camera_tracks(state.camera.tracks)
+    for constraint in state.constraints.values():
+        _validate_constraint_time(constraint, state.timeline.duration_seconds)
+    for track in list(state.motion_tracks.values()) + (
+        list(state.camera.tracks.values()) if state.camera else []
+    ):
+        _validate_track_time(track, state.timeline.duration_seconds)
+    allowed_reference_ids = set(state.entities)
+    allowed_reference_ids.add("camera_main")
+    if state.camera is not None:
+        allowed_reference_ids.add(state.camera.camera_id)
+    missing = sorted(_referenced_entity_ids(state) - allowed_reference_ids)
+    if missing:
+        raise ValueError("Candidate 引用了不存在的实体：" + ", ".join(missing))
+    _validate_reference_frame_graph(state, profile)
 
 
 def _validate_parent_references(state: CandidateState) -> None:
@@ -2093,6 +2408,14 @@ def _validate_parent_references(state: CandidateState) -> None:
             seen.add(current)
             parent = state.entities.get(current)
             current = parent.parent_id if parent else None
+
+
+def _validate_unique_ids(values: list[str], label: str) -> None:
+    duplicates = sorted(
+        value for value in set(values) if values.count(value) > 1
+    )
+    if duplicates:
+        raise ValueError(f"{label} 含重复 ID：{', '.join(duplicates)}")
 
 
 def _validate_ground_interaction_references(
@@ -2133,8 +2456,18 @@ def _validate_track_time(track: TrackSpec, duration: float) -> None:
     if track.time_range_seconds[1] > duration + 1e-9:
         raise ValueError(f"Track 超出 timeline：{track.track_id}")
     for keyframe in track.keyframes:
-        if not 0 <= keyframe.time_seconds < duration:
-            raise ValueError(f"Track keyframe 超出半开 timeline：{track.track_id}")
+        if not (
+            track.time_range_seconds[0]
+            <= keyframe.time_seconds
+            < track.time_range_seconds[1]
+        ):
+            raise ValueError(
+                f"Track keyframe 超出自身半开时间段：{track.track_id}"
+            )
+    if track.locked_components:
+        raise ValueError(
+            f"Track locked_components 尚未被执行器实现：{track.track_id}"
+        )
 
 
 def _complete_transform(value: TransformValue) -> TransformValue:
@@ -2233,17 +2566,14 @@ def _apply_layout_constraint(
 
 def _reference_violations(
     state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
     profile: PlanningProfile,
 ) -> list[Violation]:
     violations: list[Violation] = []
     try:
-        _validate_parent_references(state)
+        _validate_candidate_invariants(state, objective_brief, profile)
     except ValueError as error:
-        violations.append(_violation("HIERARCHY_INVALID", str(error)))
-    try:
-        _validate_reference_frame_graph(state, profile)
-    except ValueError as error:
-        violations.append(_violation("REFERENCE_FRAME_INVALID", str(error)))
+        violations.append(_violation("CANDIDATE_INVARIANT_INVALID", str(error)))
     for track in state.motion_tracks.values():
         if track.target_entity_id not in state.entities:
             violations.append(_violation("TRACK_TARGET_MISSING", f"Track 目标不存在：{track.track_id}"))
@@ -4736,6 +5066,191 @@ def _timeline_frame_times(
     ]
 
 
+def _validate_inspect_filters(
+    state: CandidateState,
+    *,
+    view: str,
+    entity_ids: list[str],
+    camera_ids: list[str],
+    constraint_ids: list[str],
+    time_range_seconds: tuple[float, float] | None,
+    compare_to_revision: int | None,
+) -> tuple[float, float] | None:
+    if view not in INSPECT_VIEWS:
+        return time_range_seconds
+    unknown_entities = sorted(set(entity_ids) - set(state.entities))
+    if unknown_entities:
+        raise ValueError("inspect 引用了未知 Entity：" + ", ".join(unknown_entities))
+    known_cameras = {state.camera.camera_id} if state.camera else set()
+    unknown_cameras = sorted(set(camera_ids) - known_cameras)
+    if unknown_cameras:
+        raise ValueError("inspect 引用了未知 Camera：" + ", ".join(unknown_cameras))
+    unknown_constraints = sorted(set(constraint_ids) - set(state.constraints))
+    if unknown_constraints:
+        raise ValueError(
+            "inspect 引用了未知 Constraint：" + ", ".join(unknown_constraints)
+        )
+    selected_time = time_range_seconds
+    if selected_time is not None:
+        start, end = selected_time
+        if (
+            not math.isfinite(start)
+            or not math.isfinite(end)
+            or start < 0
+            or start >= end
+            or end > state.timeline.duration_seconds + 1e-9
+        ):
+            raise ValueError("inspect time_range_seconds 必须位于冻结的半开 timeline 内")
+    allowed_filters = {
+        "summary": set(),
+        "entities": {"entity_ids"},
+        "camera": {"camera_ids", "time_range_seconds"},
+        "constraints": {"constraint_ids", "time_range_seconds"},
+        "violations": {"entity_ids", "constraint_ids", "time_range_seconds"},
+        "timeline": set(),
+        "diff": set(),
+        "full_ir": {
+            "entity_ids",
+            "camera_ids",
+            "constraint_ids",
+            "time_range_seconds",
+        },
+    }[view]
+    supplied = {
+        name
+        for name, value in {
+            "entity_ids": entity_ids,
+            "camera_ids": camera_ids,
+            "constraint_ids": constraint_ids,
+            "time_range_seconds": selected_time,
+        }.items()
+        if value
+    }
+    invalid = sorted(supplied - allowed_filters)
+    if invalid:
+        raise ValueError(
+            f"inspect view={view} 不支持过滤参数：" + ", ".join(invalid)
+        )
+    if view != "diff" and compare_to_revision is not None:
+        raise ValueError("compare_to_revision 仅用于 diff 视图")
+    return selected_time
+
+
+def _time_ranges_overlap(
+    left: tuple[float, float],
+    right: tuple[float, float],
+) -> bool:
+    if abs(left[0] - left[1]) <= 1e-12:
+        return right[0] <= left[0] < right[1]
+    if abs(right[0] - right[1]) <= 1e-12:
+        return left[0] <= right[0] < left[1]
+    return left[0] < right[1] and right[0] < left[1]
+
+
+def _filtered_validation_payload(
+    state: CandidateState,
+    *,
+    entity_ids: list[str],
+    camera_ids: list[str],
+    constraint_ids: list[str],
+    time_range_seconds: tuple[float, float] | None,
+) -> dict[str, Any] | None:
+    if state.validation is None:
+        return None
+    payload = state.validation.model_dump(mode="json")
+    filtered: list[dict[str, Any]] = []
+    for violation in payload["violations"]:
+        if entity_ids and not set(entity_ids).intersection(violation.get("entity_ids", [])):
+            continue
+        if constraint_ids and violation.get("constraint_id") not in constraint_ids:
+            continue
+        if camera_ids and state.camera is None:
+            continue
+        violation_time = violation.get("time_range_seconds")
+        if (
+            time_range_seconds is not None
+            and violation_time is not None
+            and not _time_ranges_overlap(tuple(violation_time), time_range_seconds)
+        ):
+            continue
+        filtered.append(violation)
+    payload["violations"] = filtered
+    payload["filtered_violation_count"] = len(filtered)
+    payload["authoritative_violation_count"] = len(state.validation.violations)
+    return payload
+
+
+def _filtered_candidate_payload(
+    state: CandidateState,
+    *,
+    entity_ids: list[str],
+    camera_ids: list[str],
+    constraint_ids: list[str],
+    time_range_seconds: tuple[float, float] | None,
+) -> dict[str, Any]:
+    payload = state.model_dump(mode="json")
+    if entity_ids:
+        payload["entities"] = {
+            key: value for key, value in payload["entities"].items() if key in entity_ids
+        }
+    payload["motion_tracks"] = {
+        key: value
+        for key, value in payload["motion_tracks"].items()
+        if (not entity_ids or value.get("target_entity_id") in entity_ids)
+        and (
+            time_range_seconds is None
+            or _time_ranges_overlap(
+                tuple(value["time_range_seconds"]), time_range_seconds
+            )
+        )
+    }
+    payload["constraints"] = {
+        key: value
+        for key, value in payload["constraints"].items()
+        if (not constraint_ids or key in constraint_ids)
+        and (
+            time_range_seconds is None
+            or _time_ranges_overlap(
+                tuple(value["time_range_seconds"]), time_range_seconds
+            )
+        )
+    }
+    if state.camera is None or (
+        camera_ids and state.camera.camera_id not in camera_ids
+    ):
+        payload["camera"] = None
+    elif payload["camera"] is not None and time_range_seconds is not None:
+        payload["camera"]["tracks"] = {
+            key: value
+            for key, value in payload["camera"]["tracks"].items()
+            if _time_ranges_overlap(
+                tuple(value["time_range_seconds"]), time_range_seconds
+            )
+        }
+    payload["validation"] = _filtered_validation_payload(
+        state,
+        entity_ids=entity_ids,
+        camera_ids=camera_ids,
+        constraint_ids=constraint_ids,
+        time_range_seconds=time_range_seconds,
+    )
+    payload["inspection_filter"] = {
+        "entity_ids": entity_ids,
+        "camera_ids": camera_ids,
+        "constraint_ids": constraint_ids,
+        "time_range_seconds": time_range_seconds,
+    }
+    return payload
+
+
+def _transform_is_unresolved(value: TransformValue) -> bool:
+    return (
+        value.translation_m is None
+        or value.rotation_quaternion_wxyz is None
+        or value.scale is None
+    )
+
+
 def _is_environment_entity(entity: EntitySpec) -> bool:
     values = {entity.role.lower(), *(item.lower() for item in entity.tags)}
     return bool(values & {"environment", "ground", "terrain", "background_surface"})
@@ -4802,6 +5317,7 @@ def _mutation_envelope(
     data: Any = None,
     violations: list[dict[str, Any]] | None = None,
     capability_gaps: list[str] | None = None,
+    next_actions: list[str] | None = None,
 ) -> dict[str, Any]:
     return _envelope(
         result.revision_before,
@@ -4812,6 +5328,7 @@ def _mutation_envelope(
         violations=violations,
         warnings=result.warnings,
         capability_gaps=capability_gaps,
+        next_actions=next_actions,
     )
 
 

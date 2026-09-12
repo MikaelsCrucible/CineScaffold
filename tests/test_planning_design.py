@@ -36,6 +36,17 @@ class PlanningDesignTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             SceneSkeleton.model_validate(value)
 
+    def test_scene_skeleton_rejects_duplicate_ids_and_non_ground_support(self) -> None:
+        duplicate = _desert_skeleton()
+        duplicate["relations"].append(dict(duplicate["relations"][0]))
+        wrong_ground = _desert_skeleton()
+        wrong_ground["relations"][0]["reference_id"] = "ship_01"
+
+        with self.assertRaisesRegex(ValidationError, "Relation ID"):
+            SceneSkeleton.model_validate(duplicate)
+        with self.assertRaisesRegex(ValidationError, "ground_plane"):
+            SceneSkeleton.model_validate(wrong_ground)
+
     def test_scene_skeleton_must_include_every_brief_subject(self) -> None:
         objective = project_objective_brief(valid_planning_brief()).objective_brief
         skeleton = SceneSkeleton.model_validate(_desert_skeleton())
@@ -121,6 +132,43 @@ class PlanningDesignTest(unittest.TestCase):
             applied["changes"][0]["operation"],
             "materialize_design",
         )
+
+    def test_design_ground_has_canonical_identity_and_survives_semantic_patch(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+        suggested = toolkit.request_design_options(max_options=1)
+        option = suggested["data"]["options"][0]
+        toolkit.apply_design_option(0, option["option_id"])
+        before = toolkit.store.get()
+        man = before.entities["man_01"].model_dump(
+            mode="json",
+            exclude={"solved_transform"},
+        )
+        man["label"] = "更新后的人物"
+
+        result = toolkit.apply_entity_patch([man], [])
+        after = toolkit.store.get()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            set(after.entities["ground"].tags) & {"environment", "ground"},
+            {"environment", "ground"},
+        )
+        self.assertEqual(
+            after.entities["man_01"].solved_transform,
+            before.entities["man_01"].solved_transform,
+        )
+        self.assertIn("man_01", result["data"]["preserved_solved_transform_ids"])
+        safety = toolkit.validate_candidate(checks=[
+            "schema",
+            "references",
+            "timeline",
+            "hierarchy",
+            "transforms",
+            "camera",
+            "rebuildability",
+        ])
+        self.assertTrue(safety["data"]["hard_pass"], safety["violations"])
 
     def test_custom_size_request_is_selected_inside_validated_option(self) -> None:
         toolkit = _desert_toolkit()

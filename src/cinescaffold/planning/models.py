@@ -178,9 +178,7 @@ def _mock_design_actions(
             {
                 "scope": "all",
                 "constraint_ids": [],
-                "allowed_variables": [],
                 "locked_variables": [],
-                "profile": "research_default",
                 "strategy": "auto",
             },
         ),
@@ -574,7 +572,6 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                 "proxy": _proxy_for_category(category),
                 "parent_id": None,
                 "tags": [category],
-                "locked_fields": [],
                 "source_refs": [
                     item.path
                     for item in objective.explicit_requirements
@@ -682,7 +679,6 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                         "path": None,
                         "target_id": None,
                         "interpolation": "smooth",
-                        "locked_components": [],
                         "source_ref": source_ref,
                     }
                 )
@@ -737,7 +733,6 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
                 "path": None,
                 "target_id": None,
                 "interpolation": "smooth",
-                "locked_components": [],
                 "source_ref": movement_ref,
             }
         )
@@ -823,9 +818,7 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
             {
                 "scope": "all",
                 "constraint_ids": [],
-                "allowed_variables": [],
                 "locked_variables": [],
-                "profile": "research_default",
                 "strategy": "auto",
             },
         )

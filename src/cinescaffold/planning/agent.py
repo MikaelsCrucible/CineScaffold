@@ -44,7 +44,6 @@ class EntityPatchInput(StrictModel):
     proxy: ProxyGeometry
     parent_id: str | None = None
     tags: list[str] = Field(default_factory=list)
-    locked_fields: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
     ground_interaction: GroundInteractionSpec = Field(default_factory=GroundInteractionSpec)
 
@@ -145,7 +144,6 @@ class TrackPatchInput(StrictModel):
     path: PathPatchInput | None = None
     target_id: str | None = None
     interpolation: Literal["step", "linear", "smooth"] = "linear"
-    locked_components: list[str] = Field(default_factory=list)
     source_ref: str | None = None
 
     def to_domain_payload(self) -> dict[str, Any]:
@@ -816,11 +814,11 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         upserts: list[EntityPatchInput],
         remove_ids: list[str],
     ) -> dict[str, Any]:
-        """原子创建、更新或删除刚性代理实体和静态层级。"""
-        payload = [
-            item.model_dump(mode="json") | {"solved_transform": {}}
-            for item in upserts
-        ]
+        """原子创建、更新或删除实体；更新时保留 Agent 不可见的已求解 Transform。"""
+        # The Agent is intentionally not allowed to author solved coordinates.
+        # Omitting this hidden field lets Toolkit preserve it for existing entities
+        # while keeping it unresolved for genuinely new entities.
+        payload = [item.model_dump(mode="json") for item in upserts]
         arguments = {"upserts": payload, "remove_ids": remove_ids}
         return ctx.deps.call_tool(
             "apply_entity_patch",
@@ -890,20 +888,16 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
     @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
     async def solve_candidate(
         ctx: RunContext[PlanningDeps],
-        scope: Literal["layout", "camera", "motion", "all"] = "all",
+        scope: Literal["layout", "camera", "all"] = "all",
         constraint_ids: list[str] | None = None,
-        allowed_variables: list[str] | None = None,
         locked_variables: list[str] | None = None,
-        profile: Literal["research_default"] = "research_default",
-        strategy: Literal["auto", "heuristic", "numeric", "hybrid"] = "auto",
+        strategy: Literal["auto", "heuristic"] = "auto",
     ) -> dict[str, Any]:
-        """确定性求解未定布局、摄影机和运动变量。"""
+        """用当前确定性启发式求解器补齐未定布局和摄影机变量。"""
         arguments = {
             "scope": scope,
             "constraint_ids": constraint_ids or [],
-            "allowed_variables": allowed_variables or [],
             "locked_variables": locked_variables or [],
-            "profile": profile,
             "strategy": strategy,
         }
         return ctx.deps.call_tool(

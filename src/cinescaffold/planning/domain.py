@@ -140,6 +140,8 @@ class TransformValue(StrictModel):
     def validate_space_target(self) -> TransformValue:
         if self.space == "target_relative" and not self.target_id:
             raise ValueError("target_relative Transform 必须提供 target_id")
+        if self.space != "target_relative" and self.target_id is not None:
+            raise ValueError(f"{self.space} Transform 不接受 target_id")
         return self
 
 
@@ -294,6 +296,15 @@ class TrackSpec(StrictModel):
             raise ValueError("path_follow Track 必须提供 path")
         if self.type == "look_at" and not self.target_id:
             raise ValueError("look_at Track 必须提供 target_id")
+        if self.type != "path_follow" and self.path is not None:
+            raise ValueError(f"{self.type} Track 不接受 path")
+        if self.type != "look_at" and self.target_id is not None:
+            raise ValueError(f"{self.type} Track 不接受 target_id")
+        if self.type in {"path_follow", "look_at"} and self.keyframes:
+            raise ValueError(f"{self.type} Track 不接受未使用的 keyframes")
+        keyframe_times = [item.time_seconds for item in self.keyframes]
+        if len(keyframe_times) != len(set(keyframe_times)):
+            raise ValueError("Track 不接受时间相同的歧义关键帧")
         if self.type == "transform":
             values = [item.value for item in self.keyframes]
             if any(not isinstance(item, TransformValue) for item in values):
@@ -305,6 +316,15 @@ class TrackSpec(StrictModel):
             }
             if len(frames) > 1:
                 raise ValueError("同一 transform Track 的关键帧必须使用相同参考系")
+        elif self.type == "visibility" and any(
+            not isinstance(item.value, bool) for item in self.keyframes
+        ):
+            raise ValueError("visibility Track 的关键帧值必须为 bool")
+        elif self.type == "focal_length" and any(
+            isinstance(item.value, bool) or not isinstance(item.value, (int, float))
+            for item in self.keyframes
+        ):
+            raise ValueError("focal_length Track 的关键帧值必须为数值")
         return self
 
 
