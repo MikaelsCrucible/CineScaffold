@@ -371,6 +371,7 @@ def _apply_timeline_rules(
         if not timeline.get("relations"):
             raise ValueError("自然语言包含先后关系，但模型没有给出 temporal relation")
 
+    _normalize_temporal_relations(timeline.get("relations", []), events)
     _validate_temporal_relations(timeline.get("relations", []), events)
     _align_full_timeline_motions(content, events, duration)
     _validate_motion_ranges(content.get("subject_motion", []), duration)
@@ -445,6 +446,12 @@ def _validate_temporal_relations(
         elif relation == "during":
             gap = 0.0
             valid = target_start - tolerance <= source_start and source_end <= target_end + tolerance
+        elif relation == "starts_before":
+            gap = target_start - source_start
+            valid = gap >= -tolerance
+        elif relation == "starts_after":
+            gap = source_start - target_start
+            valid = gap >= -tolerance
         elif relation == "starts_with":
             gap = 0.0
             valid = abs(source_start - target_start) <= tolerance
@@ -455,13 +462,83 @@ def _validate_temporal_relations(
             raise ValueError(f"未知 temporal relation：{relation}")
         minimum_gap = item.get("minimum_gap_seconds")
         maximum_gap = item.get("maximum_gap_seconds")
-        if relation in {"before", "after", "meets"}:
+        if relation in {"before", "after", "meets", "starts_before", "starts_after"}:
             if _is_number(minimum_gap):
                 valid = valid and gap + tolerance >= float(minimum_gap)
             if _is_number(maximum_gap):
                 valid = valid and gap - tolerance <= float(maximum_gap)
         if not valid:
             raise ValueError(f"temporal relation 与事件时间不一致：{relation_id}")
+
+
+def _normalize_temporal_relations(
+    relations: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> None:
+    """Repair qualitative relation labels when the numeric ranges are authoritative.
+
+    Semantic models sometimes use ``before`` to mean "starts before" even when
+    two independently timed actions overlap.  Rejecting the whole Brief loses a
+    valid timeline, so relations without an explicit numeric gap are rewritten
+    to the most precise relation supported by their actual intervals.
+    """
+
+    event_map = {str(item["id"]): item for item in events}
+    for item in relations:
+        source = event_map.get(str(item.get("source_event_id")))
+        target = event_map.get(str(item.get("target_event_id")))
+        if source is None or target is None:
+            continue
+        minimum_gap = item.get("minimum_gap_seconds")
+        maximum_gap = item.get("maximum_gap_seconds")
+        if maximum_gap is not None or (
+            minimum_gap is not None and float(minimum_gap) > 0.0
+        ):
+            continue
+        if _relation_matches_ranges(item, source, target):
+            continue
+        item["relation"] = _relation_for_ranges(source, target)
+
+
+def _relation_matches_ranges(
+    item: dict[str, Any],
+    source: dict[str, Any],
+    target: dict[str, Any],
+) -> bool:
+    probe = dict(item)
+    try:
+        _validate_temporal_relations([probe], [source, target])
+    except ValueError:
+        return False
+    return True
+
+
+def _relation_for_ranges(
+    source: dict[str, Any],
+    target: dict[str, Any],
+) -> str:
+    tolerance = 1e-6
+    source_start = float(source["start_time_seconds"])
+    source_end = float(source["end_time_seconds"])
+    target_start = float(target["start_time_seconds"])
+    target_end = float(target["end_time_seconds"])
+    if abs(source_end - target_start) <= tolerance:
+        return "meets"
+    if source_end < target_start:
+        return "before"
+    if target_end < source_start:
+        return "after"
+    if abs(source_start - target_start) <= tolerance:
+        return "starts_with"
+    if abs(source_end - target_end) <= tolerance:
+        return "ends_with"
+    if target_start <= source_start and source_end <= target_end:
+        return "during"
+    if source_start < target_start:
+        return "starts_before"
+    if source_start > target_start:
+        return "starts_after"
+    return "overlaps"
 
 
 def _normalize_motion_metadata(content: dict[str, Any]) -> None:

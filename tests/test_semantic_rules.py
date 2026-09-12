@@ -350,7 +350,7 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
         self.assertEqual(parameters["scene_dynamics"]["mode"], "static")
 
-    def test_invalid_temporal_relation_is_rejected(self) -> None:
+    def test_overlapping_before_relation_is_normalized_to_starts_before(self) -> None:
         content = valid_model_output()
         content["timeline"].update(
             {
@@ -381,8 +381,48 @@ class SemanticRulesTest(unittest.TestCase):
             }
         )
 
+        normalized, parameters = apply_translation_rules(
+            content,
+            self.rules,
+            "先等待，然后离开",
+        )
+
+        self.assertEqual(normalized["timeline"]["relations"][0]["relation"], "starts_before")
+        self.assertEqual(parameters["temporal_relations"][0]["relation"], "starts_before")
+
+    def test_inconsistent_explicit_temporal_gap_is_rejected(self) -> None:
+        content = valid_model_output()
+        content["timeline"].update(
+            {
+                "duration_seconds": 10.0,
+                "duration_source_status": "explicit",
+                "events": [
+                    {
+                        **self._event("first", "先等待", "person", 4.0),
+                        "start_time_seconds": 0.0,
+                    },
+                    {
+                        **self._event("second", "然后离开", "person", 10.0),
+                        "start_time_seconds": 3.0,
+                    },
+                ],
+                "relations": [
+                    {
+                        "relation_id": "bad_explicit_gap",
+                        "source_event_id": "first",
+                        "target_event_id": "second",
+                        "relation": "before",
+                        "minimum_gap_seconds": 1.0,
+                        "maximum_gap_seconds": None,
+                        "source_status": "explicit",
+                        "source_text": "至少间隔一秒",
+                    }
+                ],
+            }
+        )
+
         with self.assertRaisesRegex(ValueError, "时间不一致"):
-            apply_translation_rules(content, self.rules, "先等待，然后离开")
+            apply_translation_rules(content, self.rules, "先等待，至少一秒后再离开")
 
     def test_transport_semantics_are_not_reparsed_as_walking(self) -> None:
         content = valid_model_output()

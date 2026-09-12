@@ -45,7 +45,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 将 Cinematic Brief 中的客观空间、运动、构图和摄影机要求交给规划 Agent。
 - 规划 Agent 先做符号化拆解，包括相对大小和 flat/wide/tall 等形体比例；Toolkit 再联合冻结 Profile 与完整 Validator 给出少量数值候选、可行范围和任务相关接口。内置比例不足时，Agent 可向建议接口提交受约束的三轴尺寸范围，候选仍由 Toolkit 原子物化，避免绕过门禁直接改 IR。
 - Cinematic Brief v0.6 先区分主体静态/动态场景；动态场景按实体记录稀疏、独立的动作区间，并用类型化时间关系表达相接、先后、包含和重叠，不再按全场事件数量机械等分总时长。稳定 `motion_id` 和 `narrative_required` 会贯穿规划与恢复交付。
-- 复合叙事动作不会扩张为场景专用实体或专用执行原语；例如“上车”由通用的目标相对直线移动、事件末端接近约束和明确要求下的可见性转场组合表达，事件名称只负责时间编排。构造器会把等待/停留写入同一实体轨道的保持关键点，避免空档插值导致主体提前移动；已隐藏的被运载代理无需再生成与载体重叠的可见跟随轨道。
+- 复合叙事动作不会扩张为场景专用实体或专用执行原语；例如“上车”由通用的目标相对直线移动、事件末端接近约束和明确要求下的可见性转场组合表达，事件名称只负责时间编排。构造器会把等待/停留写入同一实体轨道的保持关键点，避免空档插值导致主体提前移动；已隐藏的被运载代理无需再生成与载体重叠的可见跟随轨道。独立主体时间段发生重叠时，Semantic 层会把模型误用的 `before/after` 规范化为与数值区间一致的开始顺序或重叠关系；明确的数值间隔仍严格校验。
 - 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
 - Validator 按冻结时间线逐帧复验地面、投影、点式空间约束和类型化运动语义；明确要求的来源不仅要映射到正确字段，还必须绑定 Brief 指定的实体。Commit Gate 会再核对编译后逐帧 Scene IR 与已验证 Candidate 的位置、旋转、尺度、显隐、摄影机和焦距等价。
 - 用户明确要求“可见”时，白模阶段以 hard `keep_in_frame` 证明代理几何至少部分进入画面；这不等价于已验证真实遮挡、材质透明或最终生成视频的可见性。
@@ -123,7 +123,7 @@ python -c "import cinescaffold; print(cinescaffold.__version__)"
 生产环境应依赖正式 tag 或完整 commit，而不是 `main`：
 
 ```text
-cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.7
+cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.8
 ```
 
 嵌入式调用只依赖 [`cinescaffold.api`](src/cinescaffold/api.py) 的公共入口；`planning`、`execution` 等子模块属于内部实现：

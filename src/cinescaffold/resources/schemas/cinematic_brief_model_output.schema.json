@@ -340,7 +340,7 @@
         "target_event_id": {"type": "string"},
         "relation": {
           "type": "string",
-          "enum": ["before", "after", "meets", "overlaps", "during", "starts_with", "ends_with"]
+          "enum": ["before", "after", "meets", "overlaps", "during", "starts_before", "starts_after", "starts_with", "ends_with"]
         },
         "minimum_gap_seconds": {"type": ["number", "null"]},
         "maximum_gap_seconds": {"type": ["number", "null"]},
