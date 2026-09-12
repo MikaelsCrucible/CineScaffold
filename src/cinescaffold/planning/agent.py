@@ -638,12 +638,25 @@ class PlanningDeps:
             if (
                 self.toolkit.has_scene_skeleton
                 and not self.toolkit.has_design_options
-                and name != "request_design_options"
+                and name
+                not in (
+                    {"request_design_options", "submit_scene_skeleton"}
+                    if self.toolkit.design_search_failed
+                    else {"request_design_options"}
+                )
             ):
                 return _protocol_rejected(
                     revision,
-                    "Scene Skeleton 已接受；下一步必须请求数值设计选项",
-                    ["调用 request_design_options"],
+                    (
+                        "当前 Scene Skeleton 未生成合法候选；请修订骨架或调整尺寸请求"
+                        if self.toolkit.design_search_failed
+                        else "Scene Skeleton 已接受；下一步必须请求数值设计选项"
+                    ),
+                    (
+                        ["修订后调用 submit_scene_skeleton，或调整后调用 request_design_options"]
+                        if self.toolkit.design_search_failed
+                        else ["调用 request_design_options"]
+                    ),
                 )
             if self.toolkit.has_design_options and name not in {
                 "request_design_options",
@@ -845,7 +858,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         ctx: RunContext[PlanningDeps],
         skeleton: SceneSkeleton,
     ) -> dict[str, Any]:
-        """提交实体、关系、动作阶段和摄影机意图；不得包含坐标或尺寸。"""
+        """提交实体、关系、动作阶段、符号路径点和摄影机意图；不得包含坐标或尺寸。"""
         arguments = {"skeleton": skeleton.model_dump(mode="json")}
         return ctx.deps.call_tool(
             "submit_scene_skeleton",

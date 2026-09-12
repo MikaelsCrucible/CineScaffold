@@ -20,7 +20,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
   -> 文本六维（人类可读投影）
   -> Cinematic Brief（六维电影语义）
   -> Scene Planning Agent
-  -> Scene Skeleton（无数值符号关系）
+  -> Scene Skeleton（无数值符号关系与稀疏路径点）
   -> Planning Toolkit Design Options
   -> Candidate + Validator + Commit Gate
   -> Constraint Plan + Scene IR
@@ -34,7 +34,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 
 - `Cinematic Brief`：记录用户想表达什么，以及信息来自明确描述、推断还是默认值。
 - `文本六维`：用六个固定中文标题呈现同一电影语义，方便非技术协作者阅读、修改和交流；严格 JSON 仍是机器权威表示。
-- `Scene Skeleton`：记录实体类别、空间关系、动作阶段、摄影机意图以及定性的尺度/三轴比例，不含坐标、距离、速度、米制尺寸或焦距。
+- `Scene Skeleton`：记录实体类别、空间关系、动作阶段、稀疏符号路径点、摄影机意图以及定性的尺度/三轴比例，不含坐标、距离、速度、米制尺寸或焦距。
 - `Constraint Plan`：记录 Agent 选择了哪些可执行空间、运动和摄影机策略。
 - `Scene IR`：精确描述 Blender 应创建和渲染什么，可验证、可重放、可比较。
 
@@ -43,13 +43,13 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 支持 OpenAI、DeepSeek 和离线 Mock Provider。
 - 使用 LLM 提取“谁、在哪、做什么、感觉”，再通过版本化规则表生成可复现的主体、运动、场景、摄影机、构图和光源量化快照。
 - 将 Cinematic Brief 中的客观空间、运动、构图和摄影机要求交给规划 Agent。
-- 规划 Agent 先做符号化拆解，包括相对大小和 flat/wide/tall 等形体比例；Toolkit 再联合冻结 Profile 与完整 Validator 给出少量数值候选、可行范围和任务相关接口。内置比例不足时，Agent 可向建议接口提交受约束的三轴尺寸范围，候选仍由 Toolkit 原子物化，避免绕过门禁直接改 IR。
+- 规划 Agent 先做符号化拆解，包括相对大小、flat/wide/tall 等形体比例，以及必要时跨完整主体时间线选择的最少路径点；路径点只把运动阶段边界绑定到已有空间关系，可选引用场景中已有道路、轨道或平台的主轴，不填写坐标。Toolkit 再联合冻结 Profile 与完整 Validator 求解坐标并给出少量数值候选、可行范围和任务相关接口。内置比例不足时，Agent 可向建议接口提交受约束的三轴尺寸范围，候选仍由 Toolkit 原子物化，避免绕过门禁直接改 IR。
 - Cinematic Brief v0.6 先区分主体静态/动态场景；动态场景按实体记录稀疏、独立的动作区间，并用类型化时间关系表达相接、先后、包含和重叠，不再按全场事件数量机械等分总时长。稳定 `motion_id` 和 `narrative_required` 会贯穿规划与恢复交付。
 - 复合叙事动作不会扩张为场景专用实体、专用执行原语或隐含几何方向。`action_kind` 只保留 hold/locomotion/interact/other；“驶来、离开、接走、上车”等文字本身不会生成朝向人物、远离人物或撞入载体中心的轨迹。接载点由事件末端空间关系表达，上车可由隐藏/容纳/随载体状态表达。规划器先联合读取同一实体的完整时间线，再为未明确转向的连续运动选取一致路线，静止阶段不会清除既有行进方向。等待/停留仍写入保持关键点，已隐藏的被运载代理无需生成重叠的可见跟随轨道。独立主体时间段发生重叠时，Semantic 层会把模型误用的 `before/after/meets` 规范化为与数值区间一致的开始、结束或重叠关系；模型推断的零间隔不会阻止纠正，用户明确给出的数值间隔仍严格校验。
 - 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
 - Validator 按冻结时间线逐帧复验地面、投影、点式空间约束和类型化运动语义；明确要求的来源不仅要映射到正确字段，还必须绑定 Brief 指定的实体。Commit Gate 会再核对编译后逐帧 Scene IR 与已验证 Candidate 的位置、旋转、尺度、显隐、摄影机和焦距等价。
 - 用户明确要求“可见”时，白模阶段以 hard `keep_in_frame` 证明代理几何至少部分进入画面；这不等价于已验证真实遮挡、材质透明或最终生成视频的可见性。
-- Design Option 在交给 Agent 前必须通过完整 Validator 的全部 hard 约束，应用时再次复验；已知错误候选不再作为“安全基线”暴露。
+- Design Option 在交给 Agent 前必须通过完整 Validator 的全部 hard 约束以及 Agent 自己声明的全部符号路径点，应用时再次复验；已知错误候选不再作为“安全基线”暴露。
 - Validator 对靠近、抵达、离开、进入/退出和绕行动作同时记录世界空间结果与屏幕质心、方向性尺度、出入画或显隐结果。动作主体的世界位移和状态改变是 hard，目标自身移动不能替代主体动作；屏幕表现默认作为 warning，不会为了可读性篡改真实动作。
 - 默认规划的外层恢复轮次不再回放上一轮完整 thinking；每轮获得新的紧凑 `RepairPacket`，只含冻结目标时间线、关键动作、当前 Candidate 摘要、压缩 violation、能力缺口和剩余尝试。第一次出现确定性工具不支持的 hard violation 就立即开放受 Schema 和 Validator 限制的原子 Candidate Patch。
 - 逐帧 Validator 仍在 Candidate、checkpoint 和诊断产物中保留完整证据；发给 Agent 的工具返回与 RepairPacket 会按错误签名和相邻帧合并为连续时间段，只携带首个、最严重和最后样本，且去除 Envelope 中重复的 validation 列表，避免同一连续错误耗尽上下文。
@@ -123,7 +123,7 @@ python -c "import cinescaffold; print(cinescaffold.__version__)"
 生产环境应依赖正式 tag 或完整 commit，而不是 `main`：
 
 ```text
-cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.9
+cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.10
 ```
 
 嵌入式调用只依赖 [`cinescaffold.api`](src/cinescaffold/api.py) 的公共入口；`planning`、`execution` 等子模块属于内部实现：

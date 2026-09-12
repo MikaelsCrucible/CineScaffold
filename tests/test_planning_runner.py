@@ -32,6 +32,7 @@ from cinescaffold.planning.runner import (
     InterpreterRunner,
     _effective_limits,
     _planning_model_settings,
+    _route_context_index,
     _requires_complete_thinking_history,
     _usage_limit_type,
 )
@@ -49,6 +50,21 @@ from tests.helpers import ROOT, valid_planning_brief
 
 
 class InterpreterRunnerTest(unittest.TestCase):
+    def test_route_context_indexes_motion_and_shared_events_without_coordinates(self) -> None:
+        brief = json.loads(
+            (ROOT / "examples/cinematic_briefs/roadside_pickup_12s.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        objective = project_objective_brief(brief).objective_brief
+
+        context = _route_context_index(objective)
+
+        self.assertIn("car", context["motion_timelines"])
+        self.assertTrue(context["shared_events"])
+        self.assertTrue(context["spatial_relations"])
+        self.assertNotIn("translation_m", json.dumps(context))
+
     def test_context_limit_falls_back_without_another_model_request(self) -> None:
         calls = 0
 
@@ -492,7 +508,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "tool_call_completed" for item in trace))
         self.assertTrue(any(item["event_type"] == "commit_gate_completed" for item in trace))
         run_started = next(item for item in trace if item["event_type"] == "run_started")
-        self.assertEqual(run_started["payload"]["toolkit_version"], "0.27")
+        self.assertEqual(run_started["payload"]["toolkit_version"], "0.28")
         self.assertNotIn("孤独", "\n".join(trace_lines))
         # 普通运行保持精简日志：不记录对话内容，response 只记类型与规模。
         request_started = next(

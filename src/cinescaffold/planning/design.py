@@ -199,6 +199,38 @@ class SkeletonMotionPhase(StrictModel):
         return self
 
 
+class SkeletonRouteAnchor(StrictModel):
+    anchor_id: str = Field(min_length=1)
+    phase_id: str = Field(
+        min_length=1,
+        description="路径点所属的线性运动阶段",
+    )
+    boundary: Literal["at_start", "at_end"] = Field(
+        description="路径点约束该运动阶段的起点或终点",
+    )
+    relation_id: str = Field(
+        min_length=1,
+        description="该路径点必须满足的既有 proximity 或 relative_position 关系",
+    )
+
+
+class SkeletonRouteIntent(StrictModel):
+    route_id: str = Field(min_length=1)
+    subject_id: str = Field(min_length=1)
+    anchors: list[SkeletonRouteAnchor] = Field(
+        min_length=1,
+        description="按主体时间线排列的稀疏符号路径点，不填写米制坐标",
+    )
+    axis_reference_id: str | None = Field(
+        default=None,
+        description="可选的既有空间参照实体；Toolkit 使用其水平长轴作为路线主轴",
+    )
+    continuity: Literal["preserve_direction", "allow_turns"] = Field(
+        default="preserve_direction",
+        description="跨阶段保持总体前进方向，或允许由多个路径点产生转向",
+    )
+
+
 class SkeletonCameraIntent(StrictModel):
     movement: Literal[
         "static", "push_in", "pull_out", "follow", "orbit", "lateral"
@@ -226,6 +258,10 @@ class SceneSkeleton(StrictModel):
     entities: list[SkeletonEntity] = Field(min_length=1)
     relations: list[SkeletonRelation] = Field(default_factory=list)
     motion_phases: list[SkeletonMotionPhase] = Field(default_factory=list)
+    route_intents: list[SkeletonRouteIntent] = Field(
+        default_factory=list,
+        description="由 Planning Agent 选择的稀疏符号路径；Toolkit 再求解实际坐标",
+    )
     camera_intent: SkeletonCameraIntent
 
     @model_validator(mode="after")
@@ -240,6 +276,12 @@ class SceneSkeleton(StrictModel):
         phase_ids = [item.phase_id for item in self.motion_phases]
         if len(phase_ids) != len(set(phase_ids)):
             raise ValueError("Scene Skeleton Motion Phase ID 不得重复")
+        route_ids = [item.route_id for item in self.route_intents]
+        if len(route_ids) != len(set(route_ids)):
+            raise ValueError("Scene Skeleton Route ID 不得重复")
+        route_subjects = [item.subject_id for item in self.route_intents]
+        if len(route_subjects) != len(set(route_subjects)):
+            raise ValueError("同一主体只能提交一条 Route Intent")
         if self.camera_intent.focus_target_id not in known:
             raise ValueError("摄影机观察目标不在 Scene Skeleton 中")
         proxy_families = {item.entity_id: item.proxy_family for item in self.entities}
@@ -264,6 +306,41 @@ class SceneSkeleton(StrictModel):
             references = [phase.subject_id, phase.target_id, phase.carrier_id]
             if any(item is not None and item not in known for item in references):
                 raise ValueError(f"Motion Phase 引用了未知 Entity：{phase.phase_id}")
+        phases_by_id = {item.phase_id: item for item in self.motion_phases}
+        relations_by_id = {item.relation_id: item for item in self.relations}
+        for route in self.route_intents:
+            if route.subject_id not in known:
+                raise ValueError(f"Route Intent 引用了未知主体：{route.route_id}")
+            if route.axis_reference_id is not None:
+                if route.axis_reference_id not in known:
+                    raise ValueError(f"Route Intent 引用了未知路线参照：{route.route_id}")
+                if route.axis_reference_id == route.subject_id:
+                    raise ValueError(f"Route Intent 不得把运动主体用作路线参照：{route.route_id}")
+            anchor_ids = [item.anchor_id for item in route.anchors]
+            if len(anchor_ids) != len(set(anchor_ids)):
+                raise ValueError(f"Route Anchor ID 不得重复：{route.route_id}")
+            phase_boundaries = [(item.phase_id, item.boundary) for item in route.anchors]
+            if len(phase_boundaries) != len(set(phase_boundaries)):
+                raise ValueError(f"同一运动阶段边界只能有一个 Route Anchor：{route.route_id}")
+            for anchor in route.anchors:
+                phase = phases_by_id.get(anchor.phase_id)
+                if phase is None:
+                    raise ValueError(f"Route Anchor 引用了未知 Motion Phase：{anchor.anchor_id}")
+                if phase.subject_id != route.subject_id or phase.kind != "linear_move":
+                    raise ValueError(
+                        f"Route Anchor 只能绑定同一主体的 linear_move：{anchor.anchor_id}"
+                    )
+                relation = relations_by_id.get(anchor.relation_id)
+                if relation is None:
+                    raise ValueError(f"Route Anchor 引用了未知 Relation：{anchor.anchor_id}")
+                if relation.kind not in {"proximity", "relative_position"}:
+                    raise ValueError(
+                        f"Route Anchor 只支持可落为路径点的空间关系：{anchor.anchor_id}"
+                    )
+                if route.subject_id not in {relation.subject_id, relation.reference_id}:
+                    raise ValueError(
+                        f"Route Anchor 的空间关系不包含运动主体：{anchor.anchor_id}"
+                    )
         return self
 
 
@@ -410,6 +487,14 @@ def task_capability_slice(
         },
         "required_relation_kinds": relation_kinds,
         "required_path_families": path_families,
+        "route_planning": {
+            "decision_owner": "planning_agent",
+            "coordinate_owner": "toolkit",
+            "anchor_relations": ["proximity", "relative_position"],
+            "anchor_boundaries": ["at_start", "at_end"],
+            "continuity_modes": ["preserve_direction", "allow_turns"],
+            "axis_reference": "optional entity horizontal long axis",
+        },
         "speed_ranges_mps": {
             intent: list(_speed_range(intent, profile))
             for intent in sorted(speed_intents)
@@ -918,7 +1003,6 @@ def _build_motion(
     candidate: CandidateState,
     profile: PlanningProfile,
 ) -> dict[str, TrackSpec]:
-    del profile
     tracks: dict[str, TrackSpec] = {}
     duration = candidate.timeline.duration_seconds
     orbit_subjects = {
@@ -982,43 +1066,64 @@ def _build_motion(
 
         moving = [item for item in phases if item.kind == "linear_move"]
         if moving:
+            moving = sorted(
+                moving,
+                key=lambda item: _phase_range(objective, item, duration)[0],
+            )
             position = list(
                 candidate.entities[subject_id].solved_transform.translation_m
                 or (0.0, 0.0, _proxy_half_height(candidate.entities[subject_id]))
             )
             first = moving[0]
+            route = next(
+                (
+                    item
+                    for item in skeleton.route_intents
+                    if item.subject_id == subject_id
+                ),
+                None,
+            )
             route_direction = _selected_route_direction(moving)
-            rendezvous_id = _rendezvous_reference_id(skeleton, first)
+            if (
+                route is not None
+                and route.axis_reference_id is not None
+                and all(item.direction_mode == "none" for item in moving)
+            ):
+                route_direction = _reference_route_direction(
+                    candidate.entities[route.axis_reference_id]
+                )
+            route_anchors = (
+                {(item.phase_id, item.boundary): item for item in route.anchors}
+                if route is not None
+                else {}
+            )
+            first_end_anchor = next(
+                (
+                    (index, route_anchors[(phase.phase_id, "at_end")])
+                    for index, phase in enumerate(moving)
+                    if (phase.phase_id, "at_end") in route_anchors
+                ),
+                None,
+            )
             if first.direction_mode in {
                 "none",
                 "screen_left_to_right",
                 "screen_right_to_left",
-            } and rendezvous_id is not None:
-                target = candidate.entities[rendezvous_id]
-                target_position = target.solved_transform.translation_m or (
-                    0.0,
-                    0.0,
-                    0.0,
+            } and first_end_anchor is not None:
+                anchor_index, anchor = first_end_anchor
+                waypoint = _route_anchor_position(
+                    skeleton,
+                    candidate,
+                    subject_id,
+                    anchor,
+                    route_direction,
+                    profile,
                 )
                 travel_x, travel_y = route_direction
-                clearance = min(
-                    2.5,
-                    max(
-                        0.75,
-                        _proxy_lateral_radius(
-                            candidate.entities[subject_id],
-                            route_direction,
-                        )
-                        + _proxy_lateral_radius(target, route_direction)
-                        + 0.25,
-                    ),
-                )
-                pickup = (
-                    target_position[0] - travel_y * clearance,
-                    target_position[1] + travel_x * clearance,
-                )
-                position[0] = pickup[0] - travel_x * 8.0
-                position[1] = pickup[1] - travel_y * 8.0
+                # Put the subject far enough before its first declared endpoint
+                # that every preceding unanchored phase can advance along one route.
+                position[0] = waypoint[0] - travel_x * 8.0 * (anchor_index + 1)
+                position[1] = waypoint[1] - travel_y * 8.0 * (anchor_index + 1)
                 candidate.entities[subject_id].solved_transform = candidate.entities[
                     subject_id
                 ].solved_transform.model_copy(update={"translation_m": tuple(position)})
@@ -1072,6 +1177,24 @@ def _build_motion(
                         ]
                     )
                     continue
+                start_anchor = route_anchors.get((phase.phase_id, "at_start"))
+                if start_anchor is not None:
+                    position = list(
+                        _route_anchor_position(
+                            skeleton,
+                            candidate,
+                            subject_id,
+                            start_anchor,
+                            previous_direction,
+                            profile,
+                        )
+                    )
+                    if phase is first:
+                        candidate.entities[subject_id].solved_transform = candidate.entities[
+                            subject_id
+                        ].solved_transform.model_copy(
+                            update={"translation_m": tuple(position)}
+                        )
                 keyframes.append(
                     TrackKeyframe(
                         time_seconds=start,
@@ -1087,24 +1210,51 @@ def _build_motion(
                     for item in phases
                 )
                 previous_position = tuple(position)
-                position = _linear_phase_endpoint(
-                    candidate,
-                    phase,
-                    position,
-                    tracks,
-                    _track_end_time(candidate, end),
-                    semantic_direction_mode=_objective_motion_direction(
-                        objective,
+                end_anchor = route_anchors.get((phase.phase_id, "at_end"))
+                if end_anchor is not None:
+                    position = list(
+                        _route_anchor_position(
+                            skeleton,
+                            candidate,
+                            subject_id,
+                            end_anchor,
+                            previous_direction,
+                            profile,
+                        )
+                    )
+                else:
+                    position = _linear_phase_endpoint(
+                        candidate,
                         phase,
-                    ),
-                    hidden_at_end=hidden_at_end,
-                    fallback_direction=previous_direction,
-                )
+                        position,
+                        tracks,
+                        _track_end_time(candidate, end),
+                        semantic_direction_mode=_objective_motion_direction(
+                            objective,
+                            phase,
+                        ),
+                        hidden_at_end=hidden_at_end,
+                        fallback_direction=previous_direction,
+                    )
                 delta_x = position[0] - previous_position[0]
                 delta_y = position[1] - previous_position[1]
                 delta_length = math.hypot(delta_x, delta_y)
                 if delta_length > 1e-9:
-                    previous_direction = (delta_x / delta_length, delta_y / delta_length)
+                    proposed_direction = (
+                        delta_x / delta_length,
+                        delta_y / delta_length,
+                    )
+                    if (
+                        route is not None
+                        and route.continuity == "preserve_direction"
+                        and proposed_direction[0] * previous_direction[0]
+                        + proposed_direction[1] * previous_direction[1]
+                        <= 0.0
+                    ):
+                        raise ValueError(
+                            f"Route Intent {route.route_id} 的路径点导致运动方向反转"
+                        )
+                    previous_direction = proposed_direction
                 keyframes.append(
                     TrackKeyframe(
                         time_seconds=_track_end_time(candidate, end),
@@ -1781,24 +1931,77 @@ def _selected_route_direction(
     return (1.0, 0.0)
 
 
-def _rendezvous_reference_id(
-    skeleton: SceneSkeleton,
-    phase: SkeletonMotionPhase,
-) -> str | None:
-    """查找事件末端会合对象，但不把它升级为运动目标。"""
+def _reference_route_direction(entity: EntitySpec) -> tuple[float, float]:
+    """Use a reference proxy's longest horizontal axis without exposing meters."""
 
-    for relation in skeleton.relations:
-        if (
-            relation.kind != "proximity"
-            or relation.timeline_event_id != phase.timeline_event_id
-            or relation.temporal_mode != "at_end"
-        ):
-            continue
-        if relation.subject_id == phase.subject_id:
-            return relation.reference_id
-        if relation.reference_id == phase.subject_id:
-            return relation.subject_id
-    return None
+    proxy = entity.proxy
+    if proxy.type == "box":
+        return (1.0, 0.0) if proxy.size_xyz_m[0] >= proxy.size_xyz_m[1] else (0.0, 1.0)
+    if proxy.type == "plane":
+        return (1.0, 0.0) if proxy.size_xy_m[0] >= proxy.size_xy_m[1] else (0.0, 1.0)
+    return (1.0, 0.0)
+
+
+def _route_anchor_position(
+    skeleton: SceneSkeleton,
+    candidate: CandidateState,
+    subject_id: str,
+    anchor: SkeletonRouteAnchor,
+    route_direction: tuple[float, float],
+    profile: PlanningProfile,
+) -> tuple[float, float, float]:
+    """Resolve one symbolic route anchor into a validated world-space waypoint."""
+
+    relation = next(
+        item for item in skeleton.relations if item.relation_id == anchor.relation_id
+    )
+    other_id = (
+        relation.reference_id
+        if relation.subject_id == subject_id
+        else relation.subject_id
+    )
+    subject = candidate.entities[subject_id]
+    other = candidate.entities[other_id]
+    subject_position = subject.solved_transform.translation_m or (
+        0.0,
+        0.0,
+        _proxy_half_height(subject),
+    )
+    other_position = other.solved_transform.translation_m or (0.0, 0.0, 0.0)
+    if relation.kind == "proximity":
+        clearance = min(
+            2.5,
+            max(
+                0.75,
+                _proxy_lateral_radius(subject, route_direction)
+                + _proxy_lateral_radius(other, route_direction)
+                + 0.25,
+            ),
+        )
+        return (
+            other_position[0] - route_direction[1] * clearance,
+            other_position[1] + route_direction[0] * clearance,
+            subject_position[2],
+        )
+    if relation.kind == "relative_position" and relation.direction is not None:
+        axis, sign = {
+            "left": (0, -1.0),
+            "right": (0, 1.0),
+            "front": (1, -1.0),
+            "behind": (1, 1.0),
+            "below": (2, -1.0),
+            "above": (2, 1.0),
+        }[relation.direction]
+        if relation.reference_id == subject_id:
+            sign *= -1.0
+        waypoint = list(other_position)
+        waypoint[axis] += sign * profile.default_depth_gap_m
+        if axis != 2:
+            waypoint[2] = subject_position[2]
+        return tuple(waypoint)
+    raise ValueError(
+        f"Route Anchor {anchor.anchor_id} 的空间关系无法求解为路径点"
+    )
 
 
 def _objective_motion_direction(

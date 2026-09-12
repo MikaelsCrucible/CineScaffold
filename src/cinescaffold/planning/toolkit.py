@@ -55,7 +55,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.27"
+TOOLKIT_VERSION = "0.28"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -187,6 +187,24 @@ def _commit_ready(report: ValidationReport | None, profile: PlanningProfile) -> 
         and report.hard_pass
         and report.soft_score >= profile.minimum_soft_score
     )
+
+
+def _route_anchor_failures(
+    skeleton: SceneSkeleton,
+    report: ValidationReport,
+) -> list[Violation]:
+    """Keep a materialized route from knowingly missing its own waypoints."""
+
+    anchored_constraint_ids = {
+        f"skeleton_{anchor.relation_id}"
+        for route in skeleton.route_intents
+        for anchor in route.anchors
+    }
+    return [
+        item
+        for item in report.violations
+        if item.constraint_id in anchored_constraint_ids
+    ]
 
 
 def _duplicate_camera_track_ids(tracks: dict[str, TrackSpec]) -> dict[str, list[str]]:
@@ -779,6 +797,7 @@ class ScenePlanningToolkit:
                 "entity_count": len(parsed.entities),
                 "relation_count": len(parsed.relations),
                 "motion_phase_count": len(parsed.motion_phases),
+                "route_intent_count": len(parsed.route_intents),
                 "symbolic_only": True,
                 "next_tool": "request_design_options",
             },
@@ -884,6 +903,18 @@ class ScenePlanningToolkit:
                         "Design Option 未通过全部硬约束"
                         + (f"：{codes}" if codes else "")
                     )
+                route_failures = _route_anchor_failures(
+                    self._scene_skeleton,
+                    report,
+                )
+                if route_failures:
+                    codes = ", ".join(
+                        sorted({item.code for item in route_failures})
+                    )
+                    raise ValueError(
+                        "Design Option 未满足 Agent 声明的符号路径点"
+                        + (f"：{codes}" if codes else "")
+                    )
             except (ValidationError, ValueError) as error:
                 option_errors.append(f"{strategy}: {_error_message(error)}")
                 continue
@@ -968,6 +999,8 @@ class ScenePlanningToolkit:
             full_report = self._validate(option.candidate, FULL_VALIDATION_CHECKS)
             if not full_report.hard_pass:
                 raise ValueError("Design Option 已失去硬约束条件；请重新请求选项")
+            if _route_anchor_failures(self._scene_skeleton, full_report):
+                raise ValueError("Design Option 已失去符号路径点条件；请重新请求选项")
         except (ValidationError, ValueError) as error:
             self._design_options.clear()
             return _rejected(revision, _error_message(error))

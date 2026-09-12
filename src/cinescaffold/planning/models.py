@@ -317,6 +317,7 @@ def build_deterministic_scene_skeleton(
             )
 
     phases: list[dict[str, Any]] = []
+    phase_ranges: dict[str, tuple[float, float]] = {}
     for index, motion in enumerate(objective.subject_motion):
         subject_id = motion.get("subject_id")
         if not subject_id:
@@ -368,9 +369,10 @@ def build_deterministic_scene_skeleton(
             target_id = semantics.get("target_id")
             direction_mode = semantics.get("direction_mode") or "none"
             carrier_id = semantics.get("carrier_id")
+        phase_id = f"motion_{index + 1:02d}"
         phases.append(
             {
-                "phase_id": f"motion_{index + 1:02d}",
+                "phase_id": phase_id,
                 "motion_id": motion.get("motion_id"),
                 "subject_id": subject_id,
                 "kind": kind,
@@ -405,7 +407,45 @@ def build_deterministic_scene_skeleton(
                 "narrative_required": bool(semantics.get("narrative_required")),
             }
         )
+        start_seconds = motion.get("start_time_seconds")
+        end_seconds = motion.get("end_time_seconds")
+        if isinstance(start_seconds, (int, float)) and isinstance(
+            end_seconds, (int, float)
+        ):
+            phase_ranges[phase_id] = (float(start_seconds), float(end_seconds))
         postconditions = semantics.get("postconditions")
+        contained_by_id = (
+            postconditions.get("contained_by_id")
+            if isinstance(postconditions, dict)
+            else None
+        )
+        if (
+            contained_by_id in categories
+            and event_id is not None
+            and semantics.get("motion_mode") != "carried"
+        ):
+            pair = {str(subject_id), str(contained_by_id)}
+            has_transition_relation = any(
+                item["kind"] == "proximity"
+                and {item["subject_id"], item["reference_id"]} == pair
+                and item.get("timeline_event_id") == event_id
+                for item in relations
+            )
+            if not has_transition_relation:
+                # A containment transition implies a shared spatial boundary,
+                # regardless of the narrative verb used to describe it.
+                relations.append(
+                    {
+                        "relation_id": f"containment_transition_{index + 1:02d}",
+                        "kind": "proximity",
+                        "subject_id": str(contained_by_id),
+                        "reference_id": str(subject_id),
+                        "timeline_event_id": event_id,
+                        "temporal_mode": "at_end",
+                        "source_status": "inferred",
+                        "source_ref": f"content.subject_motion[{index}].motion_semantics",
+                    }
+                )
         if (
             isinstance(postconditions, dict)
             and postconditions.get("external_visibility") in {"visible", "hidden"}
@@ -431,6 +471,58 @@ def build_deterministic_scene_skeleton(
                     "narrative_required": bool(semantics.get("narrative_required")),
                 }
             )
+
+    event_ends = {
+        str(item.get("id")): float(item["end_time_seconds"])
+        for item in objective.timeline.get("events", [])
+        if item.get("id") is not None
+        and isinstance(item.get("end_time_seconds"), (int, float))
+    }
+    route_anchors: dict[str, list[dict[str, Any]]] = {}
+    used_boundaries: set[tuple[str, str]] = set()
+    for relation in relations:
+        event_id = relation.get("timeline_event_id")
+        if (
+            relation.get("kind") != "proximity"
+            or relation.get("temporal_mode") != "at_end"
+            or event_id not in event_ends
+        ):
+            continue
+        anchor_time = event_ends[event_id]
+        participants = {relation["subject_id"], relation["reference_id"]}
+        candidates = [
+            (phase_ranges[phase["phase_id"]][1], phase)
+            for phase in phases
+            if phase.get("kind") == "linear_move"
+            and phase.get("subject_id") in participants
+            and phase["phase_id"] in phase_ranges
+            and phase_ranges[phase["phase_id"]][1] <= anchor_time
+        ]
+        if not candidates:
+            continue
+        _, phase = max(candidates, key=lambda item: item[0])
+        boundary = (phase["phase_id"], "at_end")
+        if boundary in used_boundaries:
+            continue
+        used_boundaries.add(boundary)
+        subject_id = str(phase["subject_id"])
+        route_anchors.setdefault(subject_id, []).append(
+            {
+                "anchor_id": f"route_anchor_{relation['relation_id']}",
+                "phase_id": phase["phase_id"],
+                "boundary": "at_end",
+                "relation_id": relation["relation_id"],
+            }
+        )
+    route_intents = [
+        {
+            "route_id": f"route_{subject_id}",
+            "subject_id": subject_id,
+            "anchors": anchors,
+            "continuity": "preserve_direction",
+        }
+        for subject_id, anchors in sorted(route_anchors.items())
+    ]
 
     focus_target = _annotated_value(objective.camera.get("focus_target_id"))
     if not focus_target:
@@ -459,6 +551,7 @@ def build_deterministic_scene_skeleton(
         "entities": entities,
         "relations": relations,
         "motion_phases": phases,
+        "route_intents": route_intents,
         "camera_intent": {
             "movement": movement,
             "focus_target_id": focus_target,

@@ -12,11 +12,11 @@ from cinescaffold.planning.design import (
     task_capability_slice,
     validate_scene_skeleton,
 )
-from cinescaffold.planning.domain import PlanningProfile
+from cinescaffold.planning.domain import PlanningProfile, ValidationReport, Violation
 from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
 from cinescaffold.planning.models import _mock_scene_skeleton
 from cinescaffold.planning.objective import ObjectiveRequirement, project_objective_brief
-from cinescaffold.planning.toolkit import ScenePlanningToolkit
+from cinescaffold.planning.toolkit import ScenePlanningToolkit, _route_anchor_failures
 from tests.helpers import valid_planning_brief
 
 
@@ -97,7 +97,18 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertIn("camera_depth_order", result["required_relation_kinds"])
         self.assertNotIn("constraint_parameter_schemas", result)
         self.assertIn("custom_size_requests", result["size_design"])
+        self.assertEqual(
+            result["route_planning"]["decision_owner"],
+            "planning_agent",
+        )
         self.assertEqual(result["next_tool"], "apply_design_option")
+
+    def test_scene_skeleton_rejects_route_anchor_on_unrelated_phase(self) -> None:
+        value = _pickup_skeleton()
+        value["route_intents"][0]["anchors"][0]["phase_id"] = "man_wait"
+
+        with self.assertRaisesRegex(ValidationError, "linear_move"):
+            SceneSkeleton.model_validate(value)
 
     def test_skeleton_keeps_qualitative_proportion_without_numeric_size(self) -> None:
         value = _desert_skeleton()
@@ -658,6 +669,105 @@ class PlanningDesignTest(unittest.TestCase):
             3.0,
         )
 
+    def test_route_anchor_can_bind_motion_to_a_later_interaction_event(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+        skeleton = _pickup_skeleton()
+        skeleton["relations"][1].update(
+            timeline_event_id="boarding",
+        )
+        skeleton["motion_phases"][1].update(
+            direction_mode="none",
+            target_id=None,
+        )
+        skeleton["motion_phases"][5].update(
+            direction_mode="none",
+            target_id=None,
+        )
+        skeleton["route_intents"][0]["continuity"] = "preserve_direction"
+        del skeleton["motion_phases"][2]
+        accepted = toolkit.submit_scene_skeleton(skeleton)
+
+        self.assertEqual(accepted["data"]["route_intent_count"], 1)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertEqual(len(options["data"]["options"]), 1, options)
+        option = options["data"]["options"][0]
+        anchored_violation = "skeleton_car_stops_beside_man"
+        toolkit.apply_design_option(0, option["option_id"])
+        state = toolkit.store.get()
+        self.assertNotIn(
+            anchored_violation,
+            {item.constraint_id for item in state.validation.violations},
+        )
+        car_track = state.motion_tracks["design_motion_car"]
+        points = [item.value.translation_m for item in car_track.keyframes]
+        man = state.entities["man"].solved_transform.translation_m
+
+        self.assertLessEqual(
+            ((points[1][0] - man[0]) ** 2 + (points[1][1] - man[1]) ** 2) ** 0.5,
+            3.0,
+        )
+        approach = (points[1][0] - points[0][0], points[1][1] - points[0][1])
+        departure = (points[3][0] - points[2][0], points[3][1] - points[2][1])
+        self.assertGreater(approach[0] * departure[0] + approach[1] * departure[1], 0.0)
+
+    def test_route_can_take_its_axis_from_an_existing_reference_entity(self) -> None:
+        source = _example_toolkit("roadside_pickup_12s.json")
+        objective = source.objective_brief.model_copy(
+            deep=True,
+            update={
+                "translation_parameters": {
+                    "scene": {"dimensions_m": [20.0, 100.0]}
+                }
+            },
+        )
+        toolkit = ScenePlanningToolkit(objective)
+        skeleton = _pickup_skeleton()
+        skeleton["relations"][1].update(timeline_event_id="boarding")
+        skeleton["motion_phases"][1].update(direction_mode="none", target_id=None)
+        skeleton["motion_phases"][5].update(direction_mode="none", target_id=None)
+        skeleton["route_intents"][0].update(
+            axis_reference_id="road",
+            continuity="preserve_direction",
+        )
+        del skeleton["motion_phases"][2]
+        toolkit.submit_scene_skeleton(skeleton)
+
+        options = toolkit.request_design_options(max_options=1)
+        self.assertEqual(len(options["data"]["options"]), 1, options)
+        toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
+        points = [
+            item.value.translation_m
+            for item in toolkit.store.get()
+            .motion_tracks["design_motion_car"]
+            .keyframes
+        ]
+        approach = (points[1][0] - points[0][0], points[1][1] - points[0][1])
+
+        self.assertGreater(abs(approach[1]), abs(approach[0]))
+
+    def test_declared_route_anchor_rejects_even_a_soft_relation_violation(self) -> None:
+        skeleton = SceneSkeleton.model_validate(_pickup_skeleton())
+        report = ValidationReport(
+            revision=1,
+            hard_pass=True,
+            soft_score=0.99,
+            checks=["motion"],
+            violations=[
+                Violation(
+                    id="violation_1",
+                    code="DISTANCE_RANGE_VIOLATED",
+                    severity="soft",
+                    constraint_id="skeleton_car_stops_beside_man",
+                    entity_ids=["car", "man"],
+                    message="declared route waypoint was missed",
+                )
+            ],
+        )
+
+        failures = _route_anchor_failures(skeleton, report)
+
+        self.assertEqual([item.id for item in failures], ["violation_1"])
+
     def test_scene_skeleton_rejects_special_board_motion_kind(self) -> None:
         value = _pickup_skeleton()
         value["motion_phases"][2]["kind"] = "board"
@@ -927,6 +1037,21 @@ def _pickup_skeleton() -> dict:
                 carrier_id="car",
                 status="inferred",
             ),
+        ],
+        "route_intents": [
+            {
+                "route_id": "car_route",
+                "subject_id": "car",
+                "anchors": [
+                    {
+                        "anchor_id": "car_arrival_waypoint",
+                        "phase_id": "car_arrive",
+                        "boundary": "at_end",
+                        "relation_id": "car_stops_beside_man",
+                    }
+                ],
+                "continuity": "allow_turns",
+            }
         ],
         "camera_intent": _symbolic_camera("car"),
     }

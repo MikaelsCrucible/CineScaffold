@@ -378,9 +378,15 @@ class PlanningProtocolTest(unittest.TestCase):
             prepared = asyncio.run(
                 _prepare_scene_skeleton_tool(context, sentinel)
             )
+            resubmitted = deps.call_tool(
+                "submit_scene_skeleton",
+                {"skeleton": _desert_skeleton()},
+                lambda: deps.toolkit.submit_scene_skeleton(_desert_skeleton()),
+            )
 
         self.assertEqual(result["status"], "no_change")
         self.assertIs(prepared, sentinel)
+        self.assertEqual(resubmitted["status"], "ok")
 
     def test_identical_inspect_is_rejected_without_checkpoint(self) -> None:
         checkpoints: list[int] = []

@@ -17,10 +17,11 @@
    - Scene Skeleton 的 `proxy_family` 只表达 ground/human/vehicle/celestial/generic 等代理族；`scale_intent` 表达 tiny/small/human/large/huge，`proportion_intent` 表达 isotropic/flat/wide/tall/elongated。语义身份或主体间关系足以判断相对大小时，应使用常识做可审计的 inferred/agent-selected 尺度设计，不得因为 Brief 没给米数就把所有实体都留成 `unspecified`。显著的视觉尺度关系同时使用 `scale_dominance`。
    - 连续薄表面应使用 `ground_plane`，需要独立定位或厚度的薄片代理应使用 `generic_box + flat`，不得把表面退化成等边立方体。该约定适用于任意平台、带状表面或薄板，不是场景名称查表。
    - `ground_support`、`camera_depth_order`、`relative_position`、`proximity`、`scale_dominance`、`orbit_around` 与 `carried_by` 只表达关系，不自行换算米制间距。
-   - 有事件 ID 的关系还要选择 `temporal_mode`：持续成立用 `throughout`，只要求事件开始/结束瞬间成立用 `at_start` / `at_end`。例如“车驶来并停在男人身边”应在抵达事件末端满足 proximity，不能错误要求驶来全程都在三米内。
+   - 有事件 ID 的关系还要选择 `temporal_mode`：持续成立用 `throughout`，只要求事件开始/结束瞬间成立用 `at_start` / `at_end`。不得把只在关键时点成立的空间关系错误扩张到整个运动区间。
    - Motion Phase 只表达 hold/linear_move/orbit/carried/visibility、对应的 `motion_id/narrative_required`、目标、载体、路径族、`slow/medium/fast/stationary/unspecified` 速度意图和事件 ID；Camera Intent 同样只保留符号速度档位。明确速度必须填写独立的 `speed_source_status/speed_source_ref`。精确时间从 Objective Brief 的主体动作范围解析，事件关系只表达先后、相接、包含或重叠；米制速度与数值轨迹由 Toolkit 生成。
-   - 提交骨架前必须按 `subject_id` 通读该主体的完整时间线，先选择一条全局一致的运动意图，再填写各阶段。中间的 hold 只暂停位移，不清空此前路线；没有 explicit 转向、返回或反向要求时，后续 `direction_mode=none` 会继承同一主体此前的路线方向。不得逐事件各自选择一个局部最优方向。
-   - `target_id` 只表示 Brief 明确给出的几何运动目标，不表示事件参与者、乘员或接载对象。载体在事件末端与主体会合时，使用 `proximity + temporal_mode=at_end` 表达停靠点，并让线性运动保持场景内一致的路线；不得把载体轨迹直接指向主体中心。普通“驶来、开走、接走、到达、离开”的 `direction_mode=none` 必须保持未指定，由 Toolkit 结合完整主体时间线选择一致方向。
+   - 提交骨架前必须按 `subject_id` 通读该主体的完整时间线，并做一次全局路径检查：运动过程中必须经过、靠近、进入、避开或保持在哪一侧的空间条件是什么；哪些阶段之间必须保持方向；直线能否同时满足。直线足够时不要添加路径点；不够时用最少的 `route_intents.anchors` 把某个 `linear_move` 的起点或终点绑定到已经声明的 `proximity/relative_position` 关系。路径点只表达符号关系，不填写米制坐标。
+   - `route_intents` 是 Planning Agent 的路径拓扑决策，Toolkit 负责数值化。`continuity=preserve_direction` 表示跨 hold 或相邻运动阶段保持总体前进方向；确有转向需求才使用 `allow_turns`。场景存在可用的道路、轨道、平台或其他方向参照时，可以填写 `axis_reference_id`；没有参照物时留空，由 Toolkit 选择场景局部主轴，不得为了求解路线强行创建可见实体。
+   - `target_id` 只表示 Brief 明确给出的几何运动目标，不表示普通事件参与者。多个实体在关键时点发生空间交互时，先声明通用空间关系，再由相关运动主体的 Route Anchor 指明哪段路径应满足该关系；不得从叙事动词重新推断朝向或把轨迹直接指向另一实体中心。
    - Design Option 会按任务返回精简 `relevant_capabilities`，不得再请求整本通用能力手册。若首批 Option 返回的实体尺寸范围说明内置尺度/比例仍不足，可再次调用 `request_design_options`，在 `custom_size_requests` 中为实体提交 X/Y/Z 完整包围盒尺寸范围和理由；这是数值建议请求，不是直接修改 Candidate。Toolkit 会让旧 option 失效、保留 Brief explicit 尺寸优先级、按策略选值并完整验证；不得重复完全相同的请求。未被 Option 覆盖的能力只有在结构化 capability gap 后才能走低层 Patch 后备路径。
    - 不得依据 Blender、游戏引擎或训练语料的惯例猜坐标轴。所有持续区间使用 `[0, duration_seconds)`；末关键帧不得晚于冻结时间线的最后帧时刻。
 2. 每个 explicit_requirements 路径都必须通过 source_refs 或 source_ref 映射到对应实体、轨道、约束或摄影机字段；不得只为了过审而挂到无关对象。

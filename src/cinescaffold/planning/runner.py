@@ -36,7 +36,11 @@ from cinescaffold.planning.models import (
     build_deterministic_scene_skeleton,
     create_planning_model,
 )
-from cinescaffold.planning.objective import ObjectiveProjection, project_objective_brief
+from cinescaffold.planning.objective import (
+    ObjectivePlanningBrief,
+    ObjectiveProjection,
+    project_objective_brief,
+)
 from cinescaffold.planning.toolkit import (
     EXECUTION_SAFETY_CHECKS,
     FULL_VALIDATION_CHECKS,
@@ -588,6 +592,7 @@ def _initial_agent_prompt(
     resume_summary: dict[str, Any] | None = None,
 ) -> str:
     payload = projection.objective_brief.model_dump(mode="json")
+    route_context = _route_context_index(projection.objective_brief)
     continuation = (
         f"已从可信 checkpoint 恢复 Candidate revision {current_revision}；不要从头重建。"
         if resumed
@@ -612,8 +617,65 @@ def _initial_agent_prompt(
             else ""
         )
         + "\n\n"
+        + "Route Context（只索引运动相关事实，不新增要求或坐标）：\n"
+        + json.dumps(route_context, ensure_ascii=False, separators=(",", ":"))
+        + "\n\nObjective Planning Brief：\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
+
+
+def _route_context_index(objective: ObjectivePlanningBrief) -> dict[str, Any]:
+    """Give the planner a compact global motion index before Skeleton design."""
+
+    motion_timelines: dict[str, list[dict[str, Any]]] = {}
+    for motion in objective.subject_motion:
+        subject_id = motion.get("subject_id")
+        semantics = motion.get("motion_semantics")
+        if subject_id is None:
+            continue
+        if not isinstance(semantics, dict):
+            semantics = {}
+        motion_timelines.setdefault(str(subject_id), []).append(
+            {
+                "motion_id": motion.get("motion_id"),
+                "event_id": semantics.get("timeline_event_id"),
+                "start": motion.get("start_time_seconds"),
+                "end": motion.get("end_time_seconds"),
+                "motion_mode": semantics.get("motion_mode"),
+                "direction_mode": semantics.get("direction_mode"),
+                "target_id": semantics.get("target_id"),
+                "carrier_id": semantics.get("carrier_id"),
+                "path_type": semantics.get("path_type"),
+                "postconditions": semantics.get("postconditions"),
+            }
+        )
+    spatial_relations = [
+        {
+            "subject_id": item.get("subject_id"),
+            "reference_id": item.get("reference_id"),
+            "type": item.get("type"),
+            "source_status": item.get("source_status"),
+        }
+        for item in objective.scene_design.get("relationships", [])
+        if isinstance(item, dict)
+    ]
+    shared_events = [
+        {
+            "event_id": item.get("id"),
+            "start": item.get("start_time_seconds"),
+            "end": item.get("end_time_seconds"),
+            "reference_ids": item.get("reference_ids"),
+        }
+        for item in objective.timeline.get("events", [])
+        if isinstance(item, dict) and len(item.get("reference_ids") or []) > 1
+    ]
+    environment = objective.scene_design.get("environment")
+    return {
+        "motion_timelines": motion_timelines,
+        "spatial_relations": spatial_relations,
+        "shared_events": shared_events,
+        "environment": environment,
+    }
 
 
 def _resume_summary(toolkit: ScenePlanningToolkit) -> dict[str, Any]:
