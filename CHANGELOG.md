@@ -26,6 +26,7 @@
 
 ### Fixed
 
+- 修复 Semantic 模型把“同时结束”误写成 `meets`，并以 inferred `maximum_gap_seconds=0` 阻止关系规范化的问题；推断零间隔现在随错误标签一起清除并按实际区间改为 `ends_with` 等精确关系，用户明确数值间隔继续失败关闭。
 - 修复接载叙事中车辆被错误要求朝乘客移动、随后又远离同一乘客的问题；乘员进入可由隐藏后置状态和紧接的 carried 关系满足，不再强制人物代理移动到载体中心。
 - 确定性后备规划器不再根据 boarding/departure 等事件名制造方向；旧版接车 Brief 仍可在无专用动作种类的情况下生成 hard-pass Design Option。
 - Semantic 时间关系允许独立主体动作以“开始先后但区间重叠”的方式表达；无明确数值间隔时，会把与事件区间冲突的关系标签确定性规范化为 `starts_before/starts_after/starts_with/ends_with/during/overlaps`，不再因可修复的标签歧义让整个 Pipeline 在 Planning 前失败。明确的最小/最大时间间隔仍失败关闭。
@@ -36,7 +37,7 @@
 
 ### Verification
 
-- Python 3.12 完整离线回归 289 项通过；旧版道路接车 Brief 的 Mock 端到端规划和已取消真实失败结构的离线 Design 重放均成功。
+- Python 3.12 完整离线回归 290 项通过；旧版道路接车 Brief 的 Mock 端到端规划、inferred zero-gap 时间关系和已取消真实失败结构的离线 Design 重放均成功。
 - `uv build` 成功生成 Core 0.8.9 的 sdist 与 wheel。
 - Blender 5.2.1 LTS 真实后台验证静态主体/推镜和人物/车辆运动两类 Scene IR；GLB 约 122 KB，单次导出约 0.03 秒，稳定节点映射、摄影机、TRS 动画与 Scene IR 显隐补偿均通过结构检查。
 

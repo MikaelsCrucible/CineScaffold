@@ -491,13 +491,18 @@ def _normalize_temporal_relations(
             continue
         minimum_gap = item.get("minimum_gap_seconds")
         maximum_gap = item.get("maximum_gap_seconds")
-        if maximum_gap is not None or (
-            minimum_gap is not None and float(minimum_gap) > 0.0
-        ):
+        has_explicit_gap = item.get("source_status") == "explicit" and (
+            _is_number(maximum_gap)
+            or (_is_number(minimum_gap) and float(minimum_gap) > 0.0)
+        )
+        if has_explicit_gap:
             continue
         if _relation_matches_ranges(item, source, target):
             continue
         item["relation"] = _relation_for_ranges(source, target)
+        # 推断出的零间隔不是独立用户约束；标签纠正后不能留下矛盾边界。
+        item["minimum_gap_seconds"] = None
+        item["maximum_gap_seconds"] = None
 
 
 def _relation_matches_ranges(

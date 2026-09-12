@@ -434,6 +434,45 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(normalized["timeline"]["relations"][0]["relation"], "starts_before")
         self.assertEqual(parameters["temporal_relations"][0]["relation"], "starts_before")
 
+    def test_inferred_zero_gap_does_not_block_relation_normalization(self) -> None:
+        content = valid_model_output()
+        content["timeline"].update(
+            {
+                "duration_seconds": 10.0,
+                "duration_source_status": "explicit",
+                "events": [
+                    {
+                        **self._event("person_wait", "人物等待", "person", 7.0),
+                        "start_time_seconds": 0.0,
+                    },
+                    {
+                        **self._event("car_arrival", "车辆到达", "car", 7.0),
+                        "start_time_seconds": 2.0,
+                    },
+                ],
+                "relations": [
+                    {
+                        "relation_id": "car_arrival_meets_person_wait_end",
+                        "source_event_id": "car_arrival",
+                        "target_event_id": "person_wait",
+                        "relation": "meets",
+                        "minimum_gap_seconds": 0.0,
+                        "maximum_gap_seconds": 0.0,
+                        "source_status": "inferred",
+                        "source_text": "车辆到达时人物结束等待",
+                    }
+                ],
+            }
+        )
+
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        relation = normalized["timeline"]["relations"][0]
+        self.assertEqual(relation["relation"], "ends_with")
+        self.assertIsNone(relation["minimum_gap_seconds"])
+        self.assertIsNone(relation["maximum_gap_seconds"])
+        self.assertEqual(parameters["temporal_relations"][0]["relation"], "ends_with")
+
     def test_inconsistent_explicit_temporal_gap_is_rejected(self) -> None:
         content = valid_model_output()
         content["timeline"].update(
