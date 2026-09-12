@@ -11,6 +11,7 @@ from unittest.mock import patch
 from cinescaffold.blender.runtime import (
     _blender_render_engine,
     _configure_workbench_preview,
+    _export_viewer_artifacts,
     _render_profile_plan,
     _validate_mesh_geometry,
 )
@@ -148,6 +149,34 @@ class _FakeScene:
 
 
 class ExecutionTest(unittest.TestCase):
+    def test_glb_export_failure_is_best_effort_and_removes_partial_artifacts(self) -> None:
+        class ExportScene:
+            @staticmethod
+            def gltf(**kwargs):
+                Path(kwargs["filepath"]).write_bytes(b"invalid-glb")
+
+        class Ops:
+            export_scene = ExportScene()
+
+        class FakeBpy:
+            ops = Ops()
+
+        with tempfile.TemporaryDirectory() as directory:
+            target_dir = Path(directory)
+            result = _export_viewer_artifacts(
+                bpy=FakeBpy(),
+                scene_ir={"unused": True},
+                scene_ir_hash="sha256:test",
+                target_dir=target_dir,
+                blender_version="test",
+                runtime_validation={"passed": True, "violations": []},
+            )
+
+            self.assertEqual(result["status"], "unavailable")
+            self.assertEqual(result["error_code"], "glb_export_failed")
+            self.assertFalse((target_dir / "scene.glb").exists())
+            self.assertFalse((target_dir / "viewer_manifest.json").exists())
+
     def test_runner_emits_user_facing_stage_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             events: list[str] = []

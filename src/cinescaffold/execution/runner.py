@@ -26,6 +26,7 @@ class ExecutionResult(BaseModel):
     scene_ir_hash: str
     build: dict[str, Any]
     render: dict[str, Any] | None
+    viewer: dict[str, Any] | None = None
     artifacts: dict[str, str]
     elapsed_seconds: float
     error: str | None = None
@@ -145,6 +146,7 @@ class ExecutionRunner:
                     "message": str(error),
                 },
                 render=None,
+                viewer=None,
                 artifacts=self._existing_artifacts(),
                 elapsed_seconds=time.monotonic() - started,
                 error=f"Blender 场景构建失败：{error}",
@@ -160,6 +162,7 @@ class ExecutionRunner:
                 scene_ir_hash=scene_ir_hash,
                 build=build,
                 render=None,
+                viewer=build.get("viewer"),
                 artifacts=self._existing_artifacts(),
                 elapsed_seconds=time.monotonic() - started,
                 error="Blender Runtime 与 Scene IR 不一致",
@@ -196,6 +199,7 @@ class ExecutionRunner:
                     "stage": f"{self.config.render_backend}_render",
                     "message": str(error),
                 },
+                viewer=build.get("viewer"),
                 artifacts=self._existing_artifacts(),
                 elapsed_seconds=time.monotonic() - started,
                 error=f"Blender 渲染失败：{error}",
@@ -218,6 +222,7 @@ class ExecutionRunner:
             scene_ir_hash=scene_ir_hash,
             build=build,
             render=render,
+            viewer=build.get("viewer"),
             artifacts=self._existing_artifacts(),
             elapsed_seconds=time.monotonic() - started,
             error=None if status == "success" else "白模视频渲染失败",
@@ -244,6 +249,22 @@ class ExecutionRunner:
             validation_passed=build.get("validation_passed"),
             violation_count=build.get("violation_count"),
         )
+        viewer = build.get("viewer")
+        if not isinstance(viewer, dict):
+            return
+        if viewer.get("status") == "ok":
+            self._emit(
+                "viewer_export_completed",
+                glb_size_bytes=viewer.get("glb_size_bytes"),
+                glb_sha256=viewer.get("glb_sha256"),
+                warning_codes=viewer.get("warning_codes", []),
+            )
+        else:
+            self._emit(
+                "viewer_export_unavailable",
+                status=viewer.get("status"),
+                error_code=viewer.get("error_code"),
+            )
 
     def _emit_render_started(self, process_mode: str, frame_count: int) -> None:
         self._emit(
@@ -628,6 +649,8 @@ class ExecutionRunner:
             "scene_ir.json",
             "factory_template.blend",
             "scene.blend",
+            "scene.glb",
+            "viewer_manifest.json",
             "runtime_snapshot.json",
             "runtime_validation.json",
             "clay_preview.mp4",
@@ -685,6 +708,8 @@ class ExecutionRunner:
         names = {
             "scene_ir": "scene_ir.json",
             "blend": "scene.blend",
+            "glb_preview": "scene.glb",
+            "viewer_manifest": "viewer_manifest.json",
             "runtime_snapshot": "runtime_snapshot.json",
             "runtime_validation": "runtime_validation.json",
             "clay_preview": "clay_preview.mp4",
@@ -709,12 +734,12 @@ class ExecutionRunner:
             for artifact_id, path in result.artifacts.items()
         }
         manifest = {
-            "manifest_version": "0.3",
+            "manifest_version": "0.4",
             "created_at": datetime.now(UTC).isoformat(),
             "status": result.status,
             "scene_ir_hash": result.scene_ir_hash,
             "scene_ir_schema_version": scene_ir.schema_version,
-            "executor_api_version": "0.5",
+            "executor_api_version": "0.6",
             "build_backend": self.config.build_backend,
             "render_backend": self.config.render_backend,
             "requested_process_mode": self.config.process_mode,
@@ -726,6 +751,7 @@ class ExecutionRunner:
             "artifact_sha256": artifact_hashes,
             "build": result.build,
             "render": result.render,
+            "viewer": result.viewer,
             "error": result.error,
         }
         if self.config.build_backend == "mcp" or self.config.render_backend == "mcp":

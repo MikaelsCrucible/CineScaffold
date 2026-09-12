@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-EXECUTOR_VERSION = "0.3"
+EXECUTOR_VERSION = "0.4"
 FLOAT_TOLERANCE = 1e-5
 BLENDER_ENGINE_MAP = {"BLENDER_EEVEE_NEXT": "BLENDER_EEVEE"}
 NEUTRAL_CAMERA_RIG_SPECS = (
@@ -59,6 +59,23 @@ def apply_scene_ir(
     _write_json(validation_path, validation)
     bpy.ops.wm.save_as_mainfile(filepath=str(blend_path), check_existing=False)
 
+    viewer = _export_viewer_artifacts(
+        bpy=bpy,
+        scene_ir=scene_ir,
+        scene_ir_hash=scene_ir_hash,
+        target_dir=target_dir,
+        blender_version=bpy.app.version_string,
+        runtime_validation=validation,
+    )
+
+    artifacts = {
+        "blend": str(blend_path),
+        "runtime_snapshot": str(snapshot_path),
+        "runtime_validation": str(validation_path),
+    }
+    if viewer["status"] == "ok":
+        artifacts.update(viewer["artifacts"])
+
     return {
         "status": "ok" if validation["passed"] else "runtime_mismatch",
         "executor_version": EXECUTOR_VERSION,
@@ -66,12 +83,81 @@ def apply_scene_ir(
         "blender_version": bpy.app.version_string,
         "validation_passed": validation["passed"],
         "violation_count": len(validation["violations"]),
-        "artifacts": {
-            "blend": str(blend_path),
-            "runtime_snapshot": str(snapshot_path),
-            "runtime_validation": str(validation_path),
-        },
+        "viewer": viewer,
+        "artifacts": artifacts,
     }
+
+
+def _export_viewer_artifacts(
+    *,
+    bpy,
+    scene_ir: dict[str, Any],
+    scene_ir_hash: str,
+    target_dir: Path,
+    blender_version: str,
+    runtime_validation: dict[str, Any],
+) -> dict[str, Any]:
+    """最佳努力导出 GLB；失败不得改变场景构建或视频渲染结果。"""
+    glb_path = target_dir / "scene.glb"
+    manifest_path = target_dir / "viewer_manifest.json"
+    if runtime_validation.get("passed") is not True:
+        return {
+            "status": "skipped",
+            "error_code": "runtime_validation_failed",
+            "message": "Runtime 校验未通过，未生成交互预览。",
+            "artifacts": {},
+        }
+    try:
+        from cinescaffold.viewer_manifest import build_viewer_manifest, write_viewer_manifest
+
+        bpy.ops.export_scene.gltf(
+            filepath=str(glb_path),
+            check_existing=False,
+            export_format="GLB",
+            export_cameras=True,
+            export_extras=True,
+            export_animations=True,
+            export_frame_range=True,
+            export_frame_step=1,
+            export_force_sampling=True,
+            export_animation_mode="SCENE",
+            export_lights=False,
+            export_yup=True,
+            export_apply=False,
+            export_materials="EXPORT",
+            export_draco_mesh_compression_enable=False,
+            export_meshopt_compression_enable=False,
+            will_save_settings=False,
+        )
+        manifest = build_viewer_manifest(
+            scene_ir=scene_ir,
+            scene_ir_hash=scene_ir_hash,
+            glb_path=glb_path,
+            blender_version=blender_version,
+            runtime_validation=runtime_validation,
+        )
+        write_viewer_manifest(manifest_path, manifest)
+        return {
+            "status": "ok",
+            "schema_version": manifest["schema_version"],
+            "glb_sha256": manifest["glb"]["sha256"],
+            "glb_size_bytes": manifest["glb"]["size_bytes"],
+            "warning_codes": [item["code"] for item in manifest["warnings"]],
+            "artifacts": {
+                "glb_preview": str(glb_path),
+                "viewer_manifest": str(manifest_path),
+            },
+        }
+    except Exception as error:
+        for path in (glb_path, manifest_path):
+            if path.is_file():
+                path.unlink()
+        return {
+            "status": "unavailable",
+            "error_code": "glb_export_failed",
+            "message": str(error),
+            "artifacts": {},
+        }
 
 
 def render_clay_video(render_profile: str = "preview") -> dict[str, Any]:

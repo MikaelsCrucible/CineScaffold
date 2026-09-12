@@ -365,6 +365,8 @@ cinescaffold execute \
 
 当构建与渲染都使用默认 `background` 后端时，执行阶段默认只启动一个无窗口 Blender 进程：从 factory startup 读取规范化 Scene IR，构建场景、运行 Runtime Validation、立即保存 `scene.blend`，再在同一进程中渲染视频。这样同时省去第二次 Blender 启动和 `.blend` 重载，以及 MCP Server、Add-on、工具发现和中间 template 文件。父进程会等待完整构建结果落盘，再立刻切换 UI/CLI 到渲染阶段；构建与渲染分别受各自超时约束，任一阶段超时都会终止 Blender 子进程。构建结果先于渲染落盘，因此渲染失败或超时仍可保留已验证的场景并被正确归类。
 
+Runtime Validation 通过后，固定 Executor 还会在视频渲染前最佳努力生成 `scene.glb` 与 `viewer_manifest.json`。GLB 由 Blender 官方 glTF 2.0 导出器生成，保留代理网格、简单 PBR 材质、摄影机、TRS 动画和 `cinescaffold_id` Extras；初版不启用 Draco 或 Meshopt。Manifest 用 Scene IR canonical hash 与 GLB 文件 SHA-256 绑定二者，并记录时间轴、Entity/Camera 节点映射、显隐区间、能力边界和 MP4 降级策略。显隐及动态焦距仍以 Scene IR 为准，不假装 GLB 能完整表达。GLB 导出或结构检查失败只会把 `ExecutionResult.viewer` 标记为 `unavailable`，不会阻止已验证场景继续渲染视频。
+
 需要隔离日志或定位构建/渲染问题时可传入 `--process-mode split`，恢复两个后台 Blender 进程。只要构建或渲染任一阶段选择 `mcp`，系统也会自动使用 Split；兼容性测试可分别传入 `--build-backend mcp`、`--render-backend mcp`。对应配置项为 `execution_process_mode = fused|split`。
 
 ## CLI 输出
@@ -385,7 +387,7 @@ cinescaffold execute \
 | --- | --- |
 | `parse` | `cinematic_brief.json`、`textual_six_dimensions.txt` |
 | `plan` | Agent Trace、checkpoint、Constraint Plan、验证报告、`final_scene_ir.json` |
-| `execute` | `scene.blend`、Runtime Snapshot、Runtime Validation、执行 manifest、白模 MP4 |
+| `execute` | `scene.blend`、`scene.glb`、`viewer_manifest.json`、Runtime Snapshot、Runtime Validation、执行 manifest、白模 MP4 |
 | `run` | 所有适用阶段的产物、`textual_six_dimensions.txt` 及 `pipeline_summary.json` |
 
 运行目录默认拒绝覆盖已有产物。`run --overwrite` 会在新管线开始前清理该输出目录中的 `planning/`、`execution/`、`pipeline_summary.json`，以及由 `--text`/`--text-six-file` 生成的根级 Brief 与文本六维，但保留根目录中的其他文件；独立 `plan` 仍要求使用空输出目录。执行阶段只有显式传入 `--overwrite` 才会覆盖其固定输出。
