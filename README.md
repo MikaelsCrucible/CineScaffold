@@ -44,22 +44,23 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 使用 LLM 提取“谁、在哪、做什么、感觉”，再通过版本化规则表生成可复现的主体、运动、场景、摄影机、构图和光源量化快照。
 - 将 Cinematic Brief 中的客观空间、运动、构图和摄影机要求交给规划 Agent。
 - 规划 Agent 先做符号化拆解，包括相对大小和 flat/wide/tall 等形体比例；Toolkit 再联合冻结 Profile 与完整 Validator 给出少量数值候选、可行范围和任务相关接口。内置比例不足时，Agent 可向建议接口提交受约束的三轴尺寸范围，候选仍由 Toolkit 原子物化，避免绕过门禁直接改 IR。
-- 复合叙事动作不会扩张为场景专用实体或专用执行原语；例如“上车”由通用的目标相对直线移动、事件末端接近约束和明确要求下的可见性转场组合表达，事件名称只负责时间编排。
+- Cinematic Brief v0.6 先区分主体静态/动态场景；动态场景按实体记录稀疏、独立的动作区间，并用类型化时间关系表达相接、先后、包含和重叠，不再按全场事件数量机械等分总时长。稳定 `motion_id` 和 `narrative_required` 会贯穿规划与恢复交付。
+- 复合叙事动作不会扩张为场景专用实体或专用执行原语；例如“上车”由通用的目标相对直线移动、事件末端接近约束和明确要求下的可见性转场组合表达，事件名称只负责时间编排。构造器会把等待/停留写入同一实体轨道的保持关键点，避免空档插值导致主体提前移动；已隐藏的被运载代理无需再生成与载体重叠的可见跟随轨道。
 - 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
 - Validator 按冻结时间线逐帧复验地面、投影、点式空间约束和类型化运动语义；明确要求的来源不仅要映射到正确字段，还必须绑定 Brief 指定的实体。Commit Gate 会再核对编译后逐帧 Scene IR 与已验证 Candidate 的位置、旋转、尺度、显隐、摄影机和焦距等价。
 - 用户明确要求“可见”时，白模阶段以 hard `keep_in_frame` 证明代理几何至少部分进入画面；这不等价于已验证真实遮挡、材质透明或最终生成视频的可见性。
-- Validator 发现共线机位、屏幕运动不可读、主体出画或投影尺寸不合格时，Toolkit 会确定性搜索少量经复验的摄影机策略；Agent 选择整体方案，不再逐项猜坐标和焦距。
-- 默认规划会把失败类型、当前/最佳 revision、完整 violation、能力缺口和剩余尝试数组成 `Recovery Context` 回灌给 Agent；`infeasible` / `unsupported` 声明不再立即终止。确定性修复搜索返回 `no_change` 后，只重新开放受 Schema 和 Validator 限制的手工 Mutation。
-- 逐帧 Validator 仍在 Candidate、checkpoint 和诊断产物中保留完整证据；发给 Agent 的工具返回与 Recovery Context 会按错误签名和相邻帧合并为连续时间段，只携带首个、最严重和最后样本，且去除 Envelope 中重复的 validation 列表，避免同一连续错误耗尽上下文。
-- Toolkit 采用渐进披露而不是删掉解题信息：Design Option 在选择前给出任务相关能力和按根因去重的有限 hard hints；确定性修复无解后，Agent 获得一个可跨实体、约束、运动和摄影机联合修改的原子 Candidate Patch。建议修复领域只负责排序注意力，不限制可用字段；完整压缩错误仍保留，提案还会先在不可见副本中验证，退化时不写入 revision。
+- Design Option 在交给 Agent 前必须通过完整 Validator 的全部 hard 约束，应用时再次复验；已知错误候选不再作为“安全基线”暴露。
+- Validator 对靠近、抵达、离开、进入/退出和绕行动作同时记录世界空间结果与屏幕质心、方向性尺度、出入画或显隐结果。动作主体的世界位移和状态改变是 hard，目标自身移动不能替代主体动作；屏幕表现默认作为 warning，不会为了可读性篡改真实动作。
+- 默认规划的外层恢复轮次不再回放上一轮完整 thinking；每轮获得新的紧凑 `RepairPacket`，只含冻结目标时间线、关键动作、当前 Candidate 摘要、压缩 violation、能力缺口和剩余尝试。第一次出现确定性工具不支持的 hard violation 就立即开放受 Schema 和 Validator 限制的原子 Candidate Patch。
+- 逐帧 Validator 仍在 Candidate、checkpoint 和诊断产物中保留完整证据；发给 Agent 的工具返回与 RepairPacket 会按错误签名和相邻帧合并为连续时间段，只携带首个、最严重和最后样本，且去除 Envelope 中重复的 validation 列表，避免同一连续错误耗尽上下文。
+- Toolkit 采用渐进披露而不是删掉解题信息：Design Option 在选择前给出任务相关能力；遇到确定性工具不支持的 hard error 时，Agent 获得一个可跨实体、约束、运动和摄影机联合修改的原子 Candidate Patch。建议修复领域只负责排序注意力，不限制可用字段；完整压缩错误仍保留，提案还会先在不可见副本中验证，退化时不写入 revision。
 - Agent 的 Entity Patch 不再清空其 Schema 中不可见的已求解 Transform；Design 生成的 `ground_plane` 自动携带语言无关的环境地面身份。Design Option、全部 Mutation、历史恢复和 Validator 现在共用同一组引用、地面、时间、轨道唯一性与参考系不变量，避免一个入口生成、另一个入口拒绝同一状态。
 - 工具参数不再“接受后忽略”：`inspect_candidate` 会实际执行适用的实体、摄影机、约束和时间过滤，并拒绝与视图不相容的过滤器；Agent 只看到当前真正实现的 layout/camera 启发式 Solver 选项。轨道会拒绝执行器不用的变体字段、重复关键帧时间和落在自身时间段外的关键帧。
-- 完整修复用尽后，规划器优先保留并提交 Agent 已建立的最佳可执行 Candidate；若还没有可执行 Candidate，则从已类型 Objective Brief 确定性生成简化方案，不再请求 Provider。简化交付必须通过独立 Execution Safety Gate，同时保留未满足的语义 fidelity violations，不伪装成完整通过。
-- Execution Safety Gate 只检查可编译、可重建和安全执行条件，不再意外重复执行内容忠实度 Constraint；因此可播放但尚有构图/语义偏差的 Candidate 可以按 `simplified` 交付，同时完整保留 fidelity violations。
+- 完整修复用尽后，规划器优先保留并提交同时通过执行安全与叙事完整性门禁的最佳 Candidate；若还没有合格 Candidate，则从已类型 Objective Brief 确定性生成简化方案，不再请求 Provider。简化交付可以放宽构图和屏幕表现，但仍必须保留全部关键动作、显隐/容纳后置状态和 explicit 要求。
 - 支持世界、局部、目标相对和摄影机相对参考系。
 - 支持直线、圆、椭圆、平滑样条和 8 字等代理运动轨迹。
 - Agent 可见接口固定右手 Z-up、路径方向和屏幕坐标约定；推断机位下的解析轨道需通过投影可读性门禁。
-- 每个量化为移动的主体阶段还需通过通用投影运动可读性门禁；仅有世界坐标位移、但屏幕轨迹和尺度变化都过小的 Candidate 不得提交。
+- 每个量化为移动的主体阶段都会经过通用投影结果检查；仅有世界坐标位移、但屏幕轨迹和尺度变化都过小时记录 warning，供后续质量优化和评测使用。
 - 未明确要求迎面或背面跟拍时，线性主体运动与摄影机视线必须保留至少 20° 的中位斜视夹角，避免 Agent 仅靠迎面尺寸变化通过运动可读性门禁；明确机位保留用户要求并记录 warning。
 - 默认通过无窗口 Blender CLI 调用固定 Executor；官方 Blender Lab MCP 仅作为显式兼容后端。两种路径都不把任意 Blender Python 暴露给模型。
 - 输出 `.blend`、运行时验证、执行 manifest 和 H.264 白模视频。
@@ -122,7 +123,7 @@ python -c "import cinescaffold; print(cinescaffold.__version__)"
 生产环境应依赖正式 tag 或完整 commit，而不是 `main`：
 
 ```text
-cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.6
+cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.7
 ```
 
 嵌入式调用只依赖 [`cinescaffold.api`](src/cinescaffold/api.py) 的公共入口；`planning`、`execution` 等子模块属于内部实现：
@@ -338,7 +339,7 @@ cinescaffold plan \
 
 正常规划的前三个工具阶段固定为：提交无数值 Scene Skeleton、请求经 Validator 预测的 Design Options、按 `option_id` 原子应用一个候选。只有候选仍有结构化 violation 或 capability gap 时，低层 Patch、Solver 与修复建议工具才会按状态开放；从 checkpoint 恢复时则直接从已有 Candidate 继续。
 
-`planning_summary.json` 用 `delivery_tier=standard|recovered|simplified` 区分首次完整通过、外层恢复后完整通过和安全简化交付。`Recovery Context` 和简化交付遗留的 fidelity violations 保存在 Summary/Trace 中。研究用 `--full-power-diagnostic` 保留原始严格观测语义，不自动转为简化交付。常规产品运行若达到请求、工具调用、输入、上下文或输出 Token 上限，会停止继续调用 Provider，并尝试用已有 Candidate 或 Objective Brief 的确定性方案通过 Execution Safety Gate；成功时仍交付 `simplified`，不会把它伪装成完整语义通过。墙钟超时和 Provider 金额上限保持失败关闭，不在预算事件后扩大运行范围。
+`planning_summary.json` 用 `delivery_tier=standard|recovered|simplified` 区分首次完整通过、外层恢复后完整通过和叙事保真简化交付。RepairPacket 和简化交付遗留的非阻断质量问题保存在 Summary/Trace 中。研究用 `--full-power-diagnostic` 保留原始严格观测语义，不自动转为简化交付。常规产品运行若达到请求、工具调用、输入、上下文或输出 Token 上限，会停止继续调用 Provider，并尝试用已有 Candidate 或 Objective Brief 的确定性方案通过 Execution Safety 与 Narrative Fidelity Gate；成功时仍交付 `simplified`。墙钟超时和 Provider 金额上限保持失败关闭，不在预算事件后扩大运行范围。
 
 定位供应商长推理或流式停顿时，可以显式开启一次性诊断特例：
 

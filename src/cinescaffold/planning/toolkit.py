@@ -55,7 +55,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.26"
+TOOLKIT_VERSION = "0.27"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -88,6 +88,25 @@ FULL_VALIDATION_CHECKS = [
     "hard_semantics",
     "rebuildability",
 ]
+
+# Simplified delivery may relax composition and screen readability, but it must
+# preserve executable structure plus typed actions, state changes and explicit
+# requirements. `narrative_motion` intentionally excludes camera presentation.
+NARRATIVE_FIDELITY_CHECKS = [
+    "schema",
+    "references",
+    "timeline",
+    "hierarchy",
+    "transforms",
+    "visibility",
+    "narrative_motion",
+    "camera",
+    "hard_semantics",
+    "rebuildability",
+]
+VALIDATION_CHECKS = sorted(
+    set(FULL_VALIDATION_CHECKS) | set(NARRATIVE_FIDELITY_CHECKS)
+)
 
 # These checks prove that a Candidate can be compiled and executed safely. The
 # remaining full checks measure semantic fidelity and visual readability.
@@ -252,6 +271,15 @@ class ScenePlanningToolkit:
         return bool(self._design_options)
 
     @property
+    def design_search_failed(self) -> bool:
+        return (
+            self._scene_skeleton is not None
+            and self._last_design_request_hash is not None
+            and not self._design_options
+            and not self.store.get().entities
+        )
+
+    @property
     def design_option_applied(self) -> bool:
         return bool(self.store.get().entities)
 
@@ -263,6 +291,18 @@ class ScenePlanningToolkit:
             and any(
                 item.code in REPAIRABLE_VIOLATION_CODES
                 and item.severity != "warning"
+                for item in validation.violations
+            )
+        )
+
+    @property
+    def has_unrepairable_hard_violations(self) -> bool:
+        validation = self.store.get().validation
+        return bool(
+            validation
+            and any(
+                item.severity == "hard"
+                and item.code not in REPAIRABLE_VIOLATION_CODES
                 for item in validation.violations
             )
         )
@@ -830,6 +870,20 @@ class ScenePlanningToolkit:
                         + (f"：{codes}" if codes else "")
                     )
                 report = self._validate(candidate, FULL_VALIDATION_CHECKS)
+                if not report.hard_pass:
+                    codes = ", ".join(
+                        sorted(
+                            {
+                                item.code
+                                for item in report.violations
+                                if item.severity == "hard"
+                            }
+                        )
+                    )
+                    raise ValueError(
+                        "Design Option 未通过全部硬约束"
+                        + (f"：{codes}" if codes else "")
+                    )
             except (ValidationError, ValueError) as error:
                 option_errors.append(f"{strategy}: {_error_message(error)}")
                 continue
@@ -911,6 +965,9 @@ class ScenePlanningToolkit:
             )
             if not safety_report.hard_pass:
                 raise ValueError("Design Option 已失去执行安全条件；请重新请求选项")
+            full_report = self._validate(option.candidate, FULL_VALIDATION_CHECKS)
+            if not full_report.hard_pass:
+                raise ValueError("Design Option 已失去硬约束条件；请重新请求选项")
         except (ValidationError, ValueError) as error:
             self._design_options.clear()
             return _rejected(revision, _error_message(error))
@@ -1849,7 +1906,7 @@ class ScenePlanningToolkit:
                 next_actions=["使用冻结的 research_default Sampling Profile"],
             )
         selected = checks or FULL_VALIDATION_CHECKS
-        unknown = sorted(set(selected) - set(FULL_VALIDATION_CHECKS))
+        unknown = sorted(set(selected) - set(VALIDATION_CHECKS))
         if unknown:
             return _rejected(state.revision, f"未知 Validator：{', '.join(unknown)}")
         report = self._validate(state, selected)
@@ -2171,7 +2228,7 @@ class ScenePlanningToolkit:
             violations.extend(_camera_violations(state))
         if "projection" in checks:
             violations.extend(_projection_violations(state, self.profile))
-        if "motion" in checks:
+        if "motion" in checks or "narrative_motion" in checks:
             violations.extend(
                 _typed_motion_semantic_violations(
                     state,
@@ -2185,6 +2242,7 @@ class ScenePlanningToolkit:
                     self.objective_brief,
                 )
             )
+        if "motion" in checks:
             violations.extend(
                 _nested_orbit_readability_violations(
                     state,
@@ -3235,7 +3293,7 @@ def _typed_motion_semantic_violations(
     profile: PlanningProfile,
 ) -> list[Violation]:
     """逐阶段复验类型化运动语义，不依赖动作文本或场景身份。"""
-    if objective_brief.schema_version not in {"0.3", "0.4", "0.5"}:
+    if objective_brief.schema_version not in {"0.3", "0.4", "0.5", "0.6"}:
         return []
     frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
     last_frame_time = state.timeline.duration_seconds - frame_step
@@ -3269,7 +3327,13 @@ def _typed_motion_semantic_violations(
         motion_mode = semantics.get("motion_mode")
         action_kind = semantics.get("action_kind")
         stationary_tolerance = 1e-4
-        displacement_action = action_kind in {"board", "disembark"}
+        displacement_action = action_kind in {"board", "disembark", "enter", "exit"}
+        minimum_displacement = _minimum_semantic_displacement(
+            objective_brief,
+            motion_index,
+            start,
+            end,
+        )
         if motion_mode == "stationary" or (
             motion_mode == "local_interaction" and not displacement_action
         ):
@@ -3286,14 +3350,14 @@ def _typed_motion_semantic_violations(
                     )
                 )
         elif motion_mode == "self_propelled" or displacement_action:
-            if movement_extent <= stationary_tolerance:
+            if movement_extent + profile.numeric_tolerance < minimum_displacement:
                 violations.append(
                     _violation(
                         "SELF_PROPELLED_MOTION_MISSING",
-                        f"自主运动阶段没有产生实体位移：{subject_id}",
+                        f"自主运动阶段没有产生足够的实体位移：{subject_id}",
                         entity_ids=[subject_id],
                         time_range_seconds=(start, end),
-                        expected={"minimum_displacement_m": stationary_tolerance},
+                        expected={"minimum_displacement_m": minimum_displacement},
                         actual={"displacement_extent_m": movement_extent},
                         adjustable_variables=[f"motion_tracks.{subject_id}"],
                     )
@@ -3308,6 +3372,7 @@ def _typed_motion_semantic_violations(
                     start,
                     end,
                     profile,
+                    minimum_displacement,
                 )
             )
 
@@ -3479,10 +3544,11 @@ def _typed_direction_violations(
     start: float,
     end: float,
     profile: PlanningProfile,
+    minimum_progress: float,
 ) -> list[Violation]:
     mode = semantics.get("direction_mode")
     target_id = semantics.get("target_id")
-    tolerance = 1e-4
+    tolerance = max(profile.numeric_tolerance, minimum_progress)
     actual: dict[str, Any]
     if mode in {"toward_target", "away_from_target"}:
         if not isinstance(target_id, str) or target_id not in state.entities:
@@ -3493,24 +3559,35 @@ def _typed_direction_violations(
             ).translation_m
             for time_seconds in sample_times
         ]
-        start_distance = length(subtract(positions[0], target_positions[0]))
+        start_offset = subtract(target_positions[0], positions[0])
+        start_distance = length(start_offset)
         end_distance = length(subtract(positions[-1], target_positions[-1]))
-        progress = (
+        actor_delta = subtract(positions[-1], positions[0])
+        if start_distance <= profile.numeric_tolerance:
+            actor_progress = length(actor_delta) if mode == "away_from_target" else 0.0
+        else:
+            toward_direction = normalize(start_offset)
+            actor_progress = dot(actor_delta, toward_direction)
+            if mode == "away_from_target":
+                actor_progress = -actor_progress
+        relative_progress = (
             start_distance - end_distance
             if mode == "toward_target"
             else end_distance - start_distance
         )
-        if progress > tolerance:
+        if actor_progress + profile.numeric_tolerance >= tolerance:
             return []
         actual = {
             "start_distance_m": start_distance,
             "end_distance_m": end_distance,
-            "directed_progress_m": progress,
+            "actor_displacement_m": length(actor_delta),
+            "actor_directed_progress_m": actor_progress,
+            "relative_distance_progress_m": relative_progress,
         }
     elif mode == "world_forward":
         delta = subtract(positions[-1], positions[0])
         progress = -delta[1]
-        if progress > tolerance:
+        if progress + profile.numeric_tolerance >= tolerance:
             return []
         actual = {"world_displacement_m": delta, "forward_progress_m": progress}
     elif mode == "relative_to_target":
@@ -3532,11 +3609,36 @@ def _typed_direction_violations(
                 *([target_id] if isinstance(target_id, str) else []),
             ],
             time_range_seconds=(start, end),
-            expected={"direction_mode": mode, "minimum_progress_m": tolerance},
+            expected={"direction_mode": mode, "minimum_actor_progress_m": tolerance},
             actual=actual,
             adjustable_variables=[f"motion_tracks.{subject_id}"],
         )
     ]
+
+
+def _minimum_semantic_displacement(
+    objective_brief: ObjectivePlanningBrief,
+    motion_index: int,
+    start: float,
+    end: float,
+) -> float:
+    """Scale a permissive hard floor from the frozen speed intent and duration."""
+
+    motions = (objective_brief.translation_parameters or {}).get("motions", [])
+    if not isinstance(motions, list) or motion_index >= len(motions):
+        return 0.25
+    parameters = motions[motion_index]
+    speed_range = parameters.get("speed_range_mps") if isinstance(parameters, dict) else None
+    minimum_speed = (
+        float(speed_range[0])
+        if isinstance(speed_range, list)
+        and speed_range
+        and isinstance(speed_range[0], (int, float))
+        else 0.0
+    )
+    # This is deliberately only a fraction of the nominal lower speed bound:
+    # it rejects proxy-motion substitutions without over-constraining staging.
+    return min(2.0, max(0.25, minimum_speed * max(0.0, end - start) * 0.25))
 
 
 def _typed_path_violations(
@@ -3743,16 +3845,33 @@ def _projected_motion_readability_violations(
             if positive_sizes
             else math.inf
         )
+        action_kind = str(motion.get("action_kind") or "locomotion")
+        visibility_sample = min(max(end, 0.0), last_frame_time)
+        hidden_at_end = not _entity_visibility_at(
+            state,
+            subject_id,
+            visibility_sample,
+        )
+        end_outside_frame = not (
+            0.0 <= centers[-1][0] <= 1.0 and 0.0 <= centers[-1][1] <= 1.0
+        )
+        directional_scale_ratio = scale_ratio
+        if positive_sizes and action_kind in {"approach", "arrive", "board", "enter"}:
+            directional_scale_ratio = sizes[-1] / max(sizes[0], profile.numeric_tolerance)
+        elif positive_sizes and action_kind in {"depart", "disembark", "exit"}:
+            directional_scale_ratio = sizes[0] / max(sizes[-1], profile.numeric_tolerance)
         if (
             projected_extent + profile.numeric_tolerance
             >= profile.minimum_projected_motion_extent
-            or scale_ratio + profile.numeric_tolerance
+            or directional_scale_ratio + profile.numeric_tolerance
             >= profile.minimum_projected_motion_scale_ratio
+            or action_kind in {"board", "enter"} and hidden_at_end
+            or action_kind == "depart" and end_outside_frame
         ):
             continue
 
         message = (
-            f"主体 {subject_id} 的语义移动在屏幕投影中近似静止；"
+            f"主体 {subject_id} 的 {action_kind} 动作在屏幕投影中近似静止；"
             "请调整运动方向、摄影机距离或摄影机方位，使白模能够辨识该动作"
         )
         if explicit_camera:
@@ -3770,11 +3889,20 @@ def _projected_motion_readability_violations(
                     profile.minimum_projected_motion_scale_ratio
                 ),
                 "acceptance": "满足任意一项",
+                "action_kind": action_kind,
+                "result_signals": [
+                    "centroid_displacement",
+                    "directional_scale_change",
+                    "enter_hidden_or_depart_out_of_frame",
+                ],
                 "purpose": "让控制白模中的主体运动保持可辨识",
             },
             actual={
                 "projected_centroid_extent": projected_extent,
                 "projected_scale_ratio": scale_ratio,
+                "directional_scale_ratio": directional_scale_ratio,
+                "hidden_at_end": hidden_at_end,
+                "end_outside_frame": end_outside_frame,
                 "sample_count": len(centers),
                 "motion_index": motion.get("motion_index"),
             },
@@ -3784,11 +3912,9 @@ def _projected_motion_readability_violations(
                 "camera focal length",
             ],
         )
-        violations.append(
-            violation.model_copy(update={"severity": "warning"})
-            if explicit_camera
-            else violation
-        )
+        # Screen presentation is a quality signal by default. World-space action
+        # semantics and state transitions remain hard requirements elsewhere.
+        violations.append(violation.model_copy(update={"severity": "warning"}))
     return violations
 
 
@@ -3974,7 +4100,7 @@ def _orbit_projection_readability_violations(
             profile.minimum_orbit_plane_view_alignment
         ):
             continue
-        severity = "warning" if explicit_view else "hard"
+        severity = "warning"
         message = (
             f"解析轨道在当前摄影机下长期接近侧视：{subject_id} -> {reference_id}；"
             "请调整摄影机或轨道平面，使白模能够辨识闭合运动"

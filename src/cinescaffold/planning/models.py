@@ -355,7 +355,7 @@ def build_deterministic_scene_skeleton(
             target_id = None
             carrier_id = semantics.get("carrier_id") or board_targets.get(subject_id)
         elif (
-            action_kind == "board"
+            action_kind in {"board", "enter"}
             or (subject_id in board_targets and event_id == "boarding")
         ):
             kind = "linear_move"
@@ -386,6 +386,7 @@ def build_deterministic_scene_skeleton(
         phases.append(
             {
                 "phase_id": f"motion_{index + 1:02d}",
+                "motion_id": motion.get("motion_id"),
                 "subject_id": subject_id,
                 "kind": kind,
                 "timeline_event_id": event_id,
@@ -416,6 +417,7 @@ def build_deterministic_scene_skeleton(
                     if semantics
                     else f"content.subject_motion[{index}].action"
                 ),
+                "narrative_required": bool(semantics.get("narrative_required")),
             }
         )
         postconditions = semantics.get("postconditions")
@@ -426,6 +428,7 @@ def build_deterministic_scene_skeleton(
             phases.append(
                 {
                     "phase_id": f"motion_{index + 1:02d}_visibility",
+                    "motion_id": motion.get("motion_id"),
                     "subject_id": subject_id,
                     "kind": "visibility",
                     "timeline_event_id": event_id,
@@ -440,6 +443,7 @@ def build_deterministic_scene_skeleton(
                     "transition_at": "at_end",
                     "source_status": semantics.get("source_status", "inferred"),
                     "source_ref": f"content.subject_motion[{index}].motion_semantics",
+                    "narrative_required": bool(semantics.get("narrative_required")),
                 }
             )
 

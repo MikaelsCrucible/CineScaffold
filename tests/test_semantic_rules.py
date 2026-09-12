@@ -15,6 +15,9 @@ class SemanticRulesTest(unittest.TestCase):
         self.schema = load_schema(
             ROOT / "src/cinescaffold/resources/schemas/semantic_translation_parameters.schema.json"
         )
+        self.model_schema = load_schema(
+            ROOT / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json"
+        )
 
     def test_loneliness_maps_to_fixed_profile_without_preview_lighting(self) -> None:
         content = valid_model_output()
@@ -191,7 +194,7 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(parameters["subjects"][1]["minimum_footprint_m"], [10.0, 10.0])
         self.assertEqual(parameters["subjects"][1]["default_scene_depth_ratio"], 0.5)
 
-    def test_sequential_full_timeline_events_are_partitioned_and_aligned(self) -> None:
+    def test_dynamic_entity_timelines_preserve_independent_ranges(self) -> None:
         content = valid_model_output()
         content["subjects"] = [
             {
@@ -232,9 +235,14 @@ class SemanticRulesTest(unittest.TestCase):
                 timeline_event_id="pickup",
             ),
         ]
-        for motion in content["subject_motion"]:
-            motion["start_time_seconds"] = 0.0
-            motion["end_time_seconds"] = 10.0
+        content["subject_motion"][0].update(
+            start_time_seconds=0.0,
+            end_time_seconds=7.0,
+        )
+        content["subject_motion"][1].update(
+            start_time_seconds=2.0,
+            end_time_seconds=7.0,
+        )
         content["timeline"].update(
             {
                 "duration_seconds": 10.0,
@@ -244,7 +252,7 @@ class SemanticRulesTest(unittest.TestCase):
                         "id": "waiting",
                         "description": "人物等待",
                         "start_time_seconds": 0.0,
-                        "end_time_seconds": 10.0,
+                        "end_time_seconds": 7.0,
                         "reference_ids": ["person"],
                         "source_status": "explicit",
                         "source_text": "一个人在路边等待",
@@ -252,16 +260,39 @@ class SemanticRulesTest(unittest.TestCase):
                     {
                         "id": "pickup",
                         "description": "车辆驶来并接走人物",
-                        "start_time_seconds": 0.0,
-                        "end_time_seconds": 10.0,
+                        "start_time_seconds": 2.0,
+                        "end_time_seconds": 7.0,
                         "reference_ids": ["car", "person"],
                         "source_status": "explicit",
                         "source_text": "一辆车开了过来把他接走了",
                     },
                 ],
+                "relations": [
+                    {
+                        "relation_id": "arrival_ends_wait",
+                        "source_event_id": "pickup",
+                        "target_event_id": "waiting",
+                        "relation": "ends_with",
+                        "minimum_gap_seconds": None,
+                        "maximum_gap_seconds": None,
+                        "source_status": "inferred",
+                        "source_text": "等待，然后车辆驶来",
+                    },
+                    {
+                        "relation_id": "wait_precedes_pickup_end",
+                        "source_event_id": "waiting",
+                        "target_event_id": "pickup",
+                        "relation": "overlaps",
+                        "minimum_gap_seconds": None,
+                        "maximum_gap_seconds": None,
+                        "source_status": "inferred",
+                        "source_text": "等待期间车辆驶来",
+                    },
+                ],
             }
         )
 
+        validate_model_output(content, self.model_schema)
         normalized, parameters = apply_translation_rules(
             content,
             self.rules,
@@ -271,29 +302,87 @@ class SemanticRulesTest(unittest.TestCase):
         events = normalized["timeline"]["events"]
         self.assertEqual(
             [(item["start_time_seconds"], item["end_time_seconds"]) for item in events],
-            [(0.0, 5.0), (5.0, 10.0)],
+            [(0.0, 7.0), (2.0, 7.0)],
         )
-        self.assertTrue(all(item["source_status"] == "inferred" for item in events))
         self.assertEqual(
             [
                 (item["start_time_seconds"], item["end_time_seconds"])
                 for item in normalized["subject_motion"]
             ],
-            [(0.0, 5.0), (5.0, 10.0)],
+            [(0.0, 7.0), (2.0, 7.0)],
         )
         self.assertEqual(
             [
                 (item["start_time_seconds"], item["end_time_seconds"])
                 for item in parameters["motions"]
             ],
-            [(0.0, 5.0), (5.0, 10.0)],
+            [(0.0, 7.0), (2.0, 7.0)],
         )
-        uncertainty = next(
-            item
-            for item in normalized["uncertainties"]
-            if item["field"] == "timeline.events"
+        self.assertEqual(parameters["scene_dynamics"]["mode"], "dynamic")
+        self.assertEqual(len(parameters["temporal_relations"]), 2)
+
+    def test_sequential_events_are_not_mechanically_partitioned(self) -> None:
+        content = valid_model_output()
+        content["timeline"].update(
+            {
+                "duration_seconds": 10.0,
+                "duration_source_status": "explicit",
+                "events": [
+                    self._event("first", "先等待", "person", 10.0),
+                    self._event("second", "然后离开", "person", 10.0),
+                ],
+                "relations": [],
+            }
         )
-        self.assertEqual(uncertainty["resolution"], "use_inference")
+
+        with self.assertRaisesRegex(ValueError, "不能全部覆盖完整镜头"):
+            apply_translation_rules(content, self.rules, "先等待，然后离开")
+
+    def test_camera_only_motion_remains_static_scene(self) -> None:
+        content = valid_model_output()
+        content["camera"]["movement"]["type"] = self._annotated(
+            "缓慢推近",
+            "镜头缓慢推近",
+        )
+
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
+        self.assertEqual(parameters["scene_dynamics"]["mode"], "static")
+
+    def test_invalid_temporal_relation_is_rejected(self) -> None:
+        content = valid_model_output()
+        content["timeline"].update(
+            {
+                "duration_seconds": 10.0,
+                "duration_source_status": "explicit",
+                "events": [
+                    {
+                        **self._event("first", "先等待", "person", 4.0),
+                        "start_time_seconds": 0.0,
+                    },
+                    {
+                        **self._event("second", "然后离开", "person", 10.0),
+                        "start_time_seconds": 3.0,
+                    },
+                ],
+                "relations": [
+                    {
+                        "relation_id": "bad_order",
+                        "source_event_id": "first",
+                        "target_event_id": "second",
+                        "relation": "before",
+                        "minimum_gap_seconds": 0.0,
+                        "maximum_gap_seconds": None,
+                        "source_status": "inferred",
+                        "source_text": "然后",
+                    }
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "时间不一致"):
+            apply_translation_rules(content, self.rules, "先等待，然后离开")
 
     def test_transport_semantics_are_not_reparsed_as_walking(self) -> None:
         content = valid_model_output()
@@ -447,6 +536,7 @@ class SemanticRulesTest(unittest.TestCase):
         external_visibility: str = "unchanged",
     ) -> dict:
         return {
+            "motion_id": f"{subject_id}_{action_kind}",
             "subject_id": subject_id,
             "action": cls._annotated(action, action),
             "motion_semantics": {
@@ -458,6 +548,7 @@ class SemanticRulesTest(unittest.TestCase):
                 "carrier_id": carrier_id,
                 "path_type": path_type,
                 "timeline_event_id": timeline_event_id,
+                "narrative_required": True,
                 "postconditions": {
                     "contained_by_id": contained_by_id,
                     "external_visibility": external_visibility,

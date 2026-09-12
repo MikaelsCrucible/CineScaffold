@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/cinematic_brief_model_output.schema.json",
-  "title": "Cinematic Brief Model Output v0.4",
+  "title": "Cinematic Brief Model Output v0.5",
   "type": "object",
   "properties": {
     "summary": {"type": "string"},
@@ -13,6 +13,7 @@
       "type": "array",
       "items": {"$ref": "#/$defs/subjectMotion"}
     },
+    "scene_dynamics": {"$ref": "#/$defs/sceneDynamics"},
     "scene_design": {"$ref": "#/$defs/sceneDesign"},
     "mood": {"$ref": "#/$defs/mood"},
     "composition": {"$ref": "#/$defs/composition"},
@@ -27,6 +28,7 @@
     "summary",
     "subjects",
     "subject_motion",
+    "scene_dynamics",
     "scene_design",
     "mood",
     "composition",
@@ -89,6 +91,7 @@
     "subjectMotion": {
       "type": "object",
       "properties": {
+        "motion_id": {"type": "string"},
         "subject_id": {"type": "string"},
         "action": {"$ref": "#/$defs/annotatedText"},
         "motion_semantics": {"$ref": "#/$defs/motionSemantics"},
@@ -103,6 +106,7 @@
         }
       },
       "required": [
+        "motion_id",
         "subject_id",
         "action",
         "motion_semantics",
@@ -122,7 +126,7 @@
           "type": "string",
           "enum": [
             "hold", "locomotion", "approach", "arrive", "stop", "depart",
-            "board", "disembark", "transport", "orbit", "jump", "interact", "other"
+            "board", "disembark", "enter", "exit", "transport", "orbit", "jump", "interact", "other"
           ]
         },
         "motion_type": {
@@ -153,6 +157,7 @@
           ]
         },
         "timeline_event_id": {"type": ["string", "null"]},
+        "narrative_required": {"type": "boolean"},
         "postconditions": {"$ref": "#/$defs/motionPostconditions"},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
         "source_text": {"type": ["string", "null"]}
@@ -160,7 +165,7 @@
       "required": [
         "action_kind", "motion_type", "motion_mode", "direction_mode",
         "target_id", "carrier_id", "path_type", "timeline_event_id",
-        "postconditions", "source_status", "source_text"
+        "narrative_required", "postconditions", "source_status", "source_text"
       ],
       "additionalProperties": false
     },
@@ -174,6 +179,16 @@
         }
       },
       "required": ["contained_by_id", "external_visibility"],
+      "additionalProperties": false
+    },
+    "sceneDynamics": {
+      "type": "object",
+      "properties": {
+        "mode": {"type": "string", "enum": ["static", "dynamic"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "reason": {"type": "string"}
+      },
+      "required": ["mode", "source_status", "reason"],
       "additionalProperties": false
     },
     "spatialLayer": {
@@ -317,6 +332,27 @@
       "required": ["id", "description", "start_time_seconds", "end_time_seconds", "reference_ids", "source_status", "source_text"],
       "additionalProperties": false
     },
+    "temporalRelation": {
+      "type": "object",
+      "properties": {
+        "relation_id": {"type": "string"},
+        "source_event_id": {"type": "string"},
+        "target_event_id": {"type": "string"},
+        "relation": {
+          "type": "string",
+          "enum": ["before", "after", "meets", "overlaps", "during", "starts_with", "ends_with"]
+        },
+        "minimum_gap_seconds": {"type": ["number", "null"]},
+        "maximum_gap_seconds": {"type": ["number", "null"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": [
+        "relation_id", "source_event_id", "target_event_id", "relation",
+        "minimum_gap_seconds", "maximum_gap_seconds", "source_status", "source_text"
+      ],
+      "additionalProperties": false
+    },
     "timeline": {
       "type": "object",
       "properties": {
@@ -336,9 +372,10 @@
           ]
         },
         "duration_source_status": {"$ref": "#/$defs/sourceStatus"},
-        "events": {"type": "array", "items": {"$ref": "#/$defs/timelineEvent"}}
+        "events": {"type": "array", "items": {"$ref": "#/$defs/timelineEvent"}},
+        "relations": {"type": "array", "items": {"$ref": "#/$defs/temporalRelation"}}
       },
-      "required": ["duration_seconds", "duration_range_seconds", "duration_source_status", "events"],
+      "required": ["duration_seconds", "duration_range_seconds", "duration_source_status", "events", "relations"],
       "additionalProperties": false
     },
     "uncertainty": {

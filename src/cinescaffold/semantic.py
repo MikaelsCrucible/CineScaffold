@@ -28,7 +28,7 @@ class SemanticParserConfig:
     model_output_schema_path: Path
     translation_rules_path: Path
     translation_parameters_schema_path: Path
-    prompt_version: str = "semantic-parser-v0.6"
+    prompt_version: str = "semantic-parser-v0.7"
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ def parse_semantic_input(
     rules_bytes = config.rules_path.read_bytes()
     textual_six = source_six or render_textual_six(content)
     brief = {
-        "schema_version": "0.5",
+        "schema_version": "0.6",
         "content": content,
         "translation_parameters": translation_parameters,
         "provenance": {

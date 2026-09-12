@@ -4,6 +4,9 @@
 
 ### Added
 
+- Cinematic Brief v0.6 增加主体静态/动态分类、稳定动作 ID、关键叙事标记、按实体独立的稀疏动作时间线和类型化事件关系；顺序描述不再机械等分总时长。
+- 新增 Narrative Fidelity Gate，简化交付仍必须保留类型化动作、容纳/显隐后置状态和全部 explicit 要求。
+
 - 新增跨实体、Constraint、Motion 与 Camera 的原子 `apply_candidate_patch`；提案先在不可见 Store preview 中完整验证，退化时不产生 revision。
 - Design Option 预测摘要增加按根因去重的有限 hard violation hints，Agent-facing 验证增加保留完整明细、主因同样去重的 `repair_focus`。
 - 默认规划路径新增结构化 Recovery Context；Commit Gate 拒绝、Agent 过早声明不可行/不支持和可恢复的 Agent 异常会在原预算中续跑。
@@ -14,13 +17,18 @@
 
 ### Changed
 
+- Design Option 只向 Agent 暴露完整 hard-pass 候选，并在应用时再次完整复验。
+- 外层恢复轮次改用不含上一轮 thinking 的新 `RepairPacket`；确定性工具不支持的首个 hard error 会立即开放受限原子 Candidate Patch。
+- 动作方向验证改为检查施事主体自身的定向位移，目标移动不再能替代“靠近/离开”；等待和停留会写入保持关键点，已隐藏主体不再生成冗余 carried 轨道。
+- 靠近、抵达、离开、进入/退出和绕行增加屏幕结果检查；世界动作保持 hard，屏幕呈现默认记录 warning。
+
 - Entity 更新改为真正的 merge-patch：省略字段保持现有值，显式空值才执行字段契约中的清除语义。
 - 正常 Agent 在确定性修复无解后只看到一个组合 Candidate Patch；四个分散低层 Patch 保留给兼容和诊断，不再共同占用正常工具表。坐标、时间、来源与运动语义等一次规划所需 Prompt 信息暂不删减，等待冻结 A/B 后再决定。
 - `suggest_repairs` 在当前 revision 确定性搜索穷尽后重新开放受控手工 Mutation，仍不允许绕过 Schema、Validator 或 Commit Gate。
 
 ### Verification
 
-- Python 3.12 完整离线回归 276 项通过。
+- Python 3.12 完整离线回归 285 项通过。
 - Blender 5.2.1 LTS 真实后台验证静态主体/推镜和人物/车辆运动两类 Scene IR；GLB 约 122 KB，单次导出约 0.03 秒，稳定节点映射、摄影机、TRS 动画与 Scene IR 显隐补偿均通过结构检查。
 
 ## 0.8.3 — 2026-09-11

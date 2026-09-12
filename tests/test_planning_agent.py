@@ -36,7 +36,12 @@ from cinescaffold.planning.agent import (
     _prepare_repair_suggestion_tool,
     _prepare_scene_skeleton_tool,
 )
-from cinescaffold.planning.domain import ConstraintSpec, TrackSpec
+from cinescaffold.planning.domain import (
+    ConstraintSpec,
+    TrackSpec,
+    ValidationReport,
+    Violation,
+)
 from cinescaffold.planning.models import create_planning_model
 from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.trace import TraceRecorder
@@ -351,6 +356,32 @@ class PlanningProtocolTest(unittest.TestCase):
                 asyncio.run(_prepare_candidate_tool(context, sentinel))
             )
 
+    def test_failed_design_search_reopens_symbolic_skeleton(self) -> None:
+        sentinel = object()
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), _toolkit())
+            context = _context(deps)
+            deps.toolkit.submit_scene_skeleton(_desert_skeleton())
+            result = deps.toolkit.request_design_options(
+                max_options=1,
+                custom_size_requests=[
+                    {
+                        "entity_id": "ship_01",
+                        "minimum_xyz_m": [60.0, 18.0, 8.0],
+                        "maximum_xyz_m": [80.0, 30.0, 12.0],
+                        "preferred_xyz_m": [70.0, 24.0, 10.0],
+                        "rationale": "触发无合法候选",
+                    }
+                ],
+            )
+
+            prepared = asyncio.run(
+                _prepare_scene_skeleton_tool(context, sentinel)
+            )
+
+        self.assertEqual(result["status"], "no_change")
+        self.assertIs(prepared, sentinel)
+
     def test_identical_inspect_is_rejected_without_checkpoint(self) -> None:
         checkpoints: list[int] = []
         with tempfile.TemporaryDirectory() as directory:
@@ -478,6 +509,47 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertIsNotNone(candidate_patch)
         assert candidate_patch is not None
         self.assertIn("这些是建议而非硬隐藏", candidate_patch.description or "")
+
+    def test_unrepairable_hard_error_exposes_patch_on_first_failure(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(0.0, 0.0, 0.9),
+            camera_position=(0.0, -10.0, 1.5),
+        )
+        revision = toolkit.store.current_revision
+        toolkit.store.save_validation(
+            ValidationReport(
+                revision=revision,
+                hard_pass=False,
+                soft_score=1.0,
+                checks=["motion"],
+                violations=[
+                    Violation(
+                        id="unrepairable_motion",
+                        code="MOTION_DIRECTION_SEMANTICS_UNMET",
+                        severity="hard",
+                        entity_ids=["man_01"],
+                        message="动作主体没有完成要求的方向位移",
+                    ),
+                    Violation(
+                        id="repairable_camera",
+                        code="PROJECTED_MOTION_UNREADABLE",
+                        severity="hard",
+                        entity_ids=["man_01"],
+                        message="屏幕投影不清晰",
+                    ),
+                ],
+            )
+        )
+        sentinel = object()
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(_deps(Path(directory), toolkit))
+
+            prepared = asyncio.run(
+                _prepare_escalated_candidate_tool(context, sentinel)
+            )
+
+        self.assertIs(prepared, sentinel)
+        self.assertFalse(toolkit.has_exhausted_repair_search)
 
 
 def _deps(

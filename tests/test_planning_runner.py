@@ -35,6 +35,7 @@ from cinescaffold.planning.runner import (
     _requires_complete_thinking_history,
     _usage_limit_type,
 )
+from cinescaffold.planning.toolkit import NARRATIVE_FIDELITY_CHECKS
 from cinescaffold.planning.trace import (
     CostRates,
     ProviderCostLimitExceeded,
@@ -105,8 +106,10 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertIn("simplified_delivery_committed", trace)
 
     def test_infeasible_terminal_falls_back_to_executable_scene_ir(self) -> None:
+        request_messages: list[str] = []
+
         def callback(messages, info) -> ModelResponse:
-            del messages
+            request_messages.append(repr(messages))
             output_tool = next(
                 item for item in info.output_tools if item.name.endswith("InfeasibleResult")
             )
@@ -154,16 +157,13 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertEqual(result.recovery_context["stage"], "simplified_delivery")
         self.assertEqual(
             scene_ir["acceptance"]["required_validators"],
-            [
-                "schema",
-                "references",
-                "timeline",
-                "hierarchy",
-                "transforms",
-                "camera",
-                "rebuildability",
-            ],
+            NARRATIVE_FIDELITY_CHECKS,
         )
+        self.assertEqual(len(request_messages), 2)
+        second_request = request_messages[1]
+        self.assertIn("repair_packet_version", second_request)
+        self.assertIn("narrative_motions", second_request)
+        self.assertNotIn("infeasible_terminal", second_request)
         self.assertIn("planning_recovery_requested", trace)
         self.assertIn("simplified_delivery_committed", trace)
 
@@ -492,7 +492,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "tool_call_completed" for item in trace))
         self.assertTrue(any(item["event_type"] == "commit_gate_completed" for item in trace))
         run_started = next(item for item in trace if item["event_type"] == "run_started")
-        self.assertEqual(run_started["payload"]["toolkit_version"], "0.26")
+        self.assertEqual(run_started["payload"]["toolkit_version"], "0.27")
         self.assertNotIn("孤独", "\n".join(trace_lines))
         # 普通运行保持精简日志：不记录对话内容，response 只记类型与规模。
         request_started = next(

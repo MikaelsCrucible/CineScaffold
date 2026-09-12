@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-TRANSLATION_PARAMETERS_VERSION = "0.3"
+TRANSLATION_PARAMETERS_VERSION = "0.4"
 
 
 def load_translation_rules(path: Path) -> dict[str, Any]:
@@ -31,7 +31,9 @@ def apply_translation_rules(
     _validate_rule_table(rules)
     content = deepcopy(model_content)
     _apply_semantic_defaults(content, rules)
+    _normalize_motion_metadata(content)
     _apply_timeline_rules(content, rules, source_prompt)
+    _apply_scene_dynamics(content)
 
     emotion = _classify_emotion(content, rules)
     profile = rules["emotion_classes"][emotion["class_id"]]
@@ -54,6 +56,8 @@ def apply_translation_rules(
         "emotion_class": emotion,
         "subjects": subjects,
         "motions": motions,
+        "scene_dynamics": deepcopy(content["scene_dynamics"]),
+        "temporal_relations": deepcopy(content["timeline"].get("relations", [])),
         "scene": scene,
         "camera": {
             **deepcopy(resolved_profile["camera"]),
@@ -295,6 +299,7 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
             continue
         motions.append(
             {
+                "motion_id": f"default_hold_{subject_id}",
                 "subject_id": subject_id,
                 "action": _annotated(defaults["action_label"], "default"),
                 "motion_semantics": {
@@ -306,6 +311,7 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
                     "carrier_id": None,
                     "path_type": "stationary",
                     "timeline_event_id": None,
+                    "narrative_required": False,
                     "postconditions": {
                         "contained_by_id": None,
                         "external_visibility": "unchanged",
@@ -333,27 +339,41 @@ def _apply_timeline_rules(
     rules: dict[str, Any],
     source_prompt: str | None,
 ) -> None:
-    """把明确的先后叙事转换为分段时间，而非让每个动作覆盖全片。"""
-    if not source_prompt:
-        return
-    timeline_rules = rules["timeline"]
-    if not _contains_sequential_marker(source_prompt, timeline_rules):
-        return
+    """Validate independent entity ranges and typed relations without global partitioning."""
 
-    events = content["timeline"].get("events", [])
-    if len(events) < 2:
-        raise ValueError("自然语言包含先后关系，但模型没有拆分 timeline.events")
+    timeline = content["timeline"]
+    timeline.setdefault("relations", [])
+    events = timeline.get("events", [])
+    duration = float(timeline["duration_seconds"])
+    event_ids = [item.get("id") for item in events if isinstance(item, dict)]
+    if len(event_ids) != len(set(event_ids)):
+        raise ValueError("timeline.events 的 id 必须唯一")
 
-    duration = float(content["timeline"]["duration_seconds"])
-    simultaneous = any(
-        marker in source_prompt for marker in timeline_rules["simultaneous_markers"]
+    for event in events:
+        start = event.get("start_time_seconds")
+        end = event.get("end_time_seconds")
+        if not _is_number(start) or not _is_number(end):
+            raise ValueError("动态事件必须给出关键时间范围")
+        if not 0.0 <= float(start) < float(end) <= duration:
+            raise ValueError(f"timeline event 时间范围无效：{event.get('id')}")
+
+    sequential = bool(
+        source_prompt
+        and _contains_sequential_marker(source_prompt, rules["timeline"])
     )
-    if _all_events_cover_full_timeline(events, duration):
-        if simultaneous:
-            raise ValueError("自然语言同时包含先后与并行关系，但模型没有给出分段时间")
-        _partition_events_equally(content, events, duration)
+    if sequential:
+        if len(events) < 2:
+            raise ValueError("自然语言包含先后关系，但模型没有拆分 timeline.events")
+        if _all_events_cover_full_timeline(events, duration):
+            raise ValueError(
+                "顺序事件不能全部覆盖完整镜头；请按主体独立时间线给出范围和 temporal relation"
+            )
+        if not timeline.get("relations"):
+            raise ValueError("自然语言包含先后关系，但模型没有给出 temporal relation")
 
+    _validate_temporal_relations(timeline.get("relations", []), events)
     _align_full_timeline_motions(content, events, duration)
+    _validate_motion_ranges(content.get("subject_motion", []), duration)
 
 
 def _contains_sequential_marker(text: str, timeline_rules: dict[str, Any]) -> bool:
@@ -387,26 +407,112 @@ def _covers_full_timeline(start: Any, end: Any, duration: float) -> bool:
     return abs(start_value) <= 1e-9 and abs(end_value - duration) <= 1e-9
 
 
-def _partition_events_equally(
-    content: dict[str, Any],
+def _validate_temporal_relations(
+    relations: list[dict[str, Any]],
     events: list[dict[str, Any]],
-    duration: float,
 ) -> None:
-    count = len(events)
-    ranges: list[str] = []
-    for index, event in enumerate(events):
-        start = duration * index / count
-        end = duration * (index + 1) / count
-        event["start_time_seconds"] = start
-        event["end_time_seconds"] = end
-        event["source_status"] = "inferred"
-        ranges.append(f"{event.get('id', index)}={start:g}-{end:g}秒")
-    _add_inference_uncertainty(
-        content,
-        "timeline.events",
-        "；".join(ranges),
-        "用户明确了事件顺序但未给出各阶段时长，按事件数量等分总时长",
-    )
+    event_map = {str(item["id"]): item for item in events}
+    relation_ids: set[str] = set()
+    tolerance = 1e-6
+    for item in relations:
+        relation_id = str(item.get("relation_id") or "")
+        if not relation_id or relation_id in relation_ids:
+            raise ValueError("timeline.relations 的 relation_id 必须非空且唯一")
+        relation_ids.add(relation_id)
+        source_id = item.get("source_event_id")
+        target_id = item.get("target_event_id")
+        if source_id not in event_map or target_id not in event_map:
+            raise ValueError(f"temporal relation 引用未知事件：{relation_id}")
+        source = event_map[str(source_id)]
+        target = event_map[str(target_id)]
+        source_start = float(source["start_time_seconds"])
+        source_end = float(source["end_time_seconds"])
+        target_start = float(target["start_time_seconds"])
+        target_end = float(target["end_time_seconds"])
+        relation = item.get("relation")
+        if relation == "before":
+            gap = target_start - source_end
+            valid = gap >= -tolerance
+        elif relation == "after":
+            gap = source_start - target_end
+            valid = gap >= -tolerance
+        elif relation == "meets":
+            gap = target_start - source_end
+            valid = abs(gap) <= tolerance
+        elif relation == "overlaps":
+            gap = 0.0
+            valid = max(source_start, target_start) < min(source_end, target_end)
+        elif relation == "during":
+            gap = 0.0
+            valid = target_start - tolerance <= source_start and source_end <= target_end + tolerance
+        elif relation == "starts_with":
+            gap = 0.0
+            valid = abs(source_start - target_start) <= tolerance
+        elif relation == "ends_with":
+            gap = 0.0
+            valid = abs(source_end - target_end) <= tolerance
+        else:
+            raise ValueError(f"未知 temporal relation：{relation}")
+        minimum_gap = item.get("minimum_gap_seconds")
+        maximum_gap = item.get("maximum_gap_seconds")
+        if relation in {"before", "after", "meets"}:
+            if _is_number(minimum_gap):
+                valid = valid and gap + tolerance >= float(minimum_gap)
+            if _is_number(maximum_gap):
+                valid = valid and gap - tolerance <= float(maximum_gap)
+        if not valid:
+            raise ValueError(f"temporal relation 与事件时间不一致：{relation_id}")
+
+
+def _normalize_motion_metadata(content: dict[str, Any]) -> None:
+    seen: set[str] = set()
+    for index, motion in enumerate(content.get("subject_motion", [])):
+        motion_id = motion.get("motion_id") or f"motion_{index + 1:02d}"
+        if not isinstance(motion_id, str) or not motion_id or motion_id in seen:
+            raise ValueError("subject_motion.motion_id 必须非空且唯一")
+        motion["motion_id"] = motion_id
+        seen.add(motion_id)
+        semantics = motion.get("motion_semantics")
+        if not isinstance(semantics, dict):
+            continue
+        if "narrative_required" not in semantics:
+            action = motion.get("action")
+            semantics["narrative_required"] = bool(
+                isinstance(action, dict) and action.get("source_status") == "explicit"
+            )
+
+
+def _apply_scene_dynamics(content: dict[str, Any]) -> None:
+    dynamic = bool(content.get("scene_design", {}).get("environmental_motion"))
+    for motion in content.get("subject_motion", []):
+        semantics = motion.get("motion_semantics")
+        if not isinstance(semantics, dict):
+            continue
+        postconditions = semantics.get("postconditions")
+        changes_state = isinstance(postconditions, dict) and (
+            postconditions.get("contained_by_id") is not None
+            or postconditions.get("external_visibility") in {"visible", "hidden"}
+        )
+        if semantics.get("motion_mode") != "stationary" or changes_state:
+            dynamic = True
+            break
+    expected = "dynamic" if dynamic else "static"
+    declared = content.get("scene_dynamics")
+    if not isinstance(declared, dict):
+        content["scene_dynamics"] = {
+            "mode": expected,
+            "source_status": "inferred",
+            "reason": "根据主体运动和状态转换确定",
+        }
+        return
+    if declared.get("mode") != expected:
+        declared.update(
+            {
+                "mode": expected,
+                "source_status": "inferred",
+                "reason": "模型分类与主体时间线不一致，已按类型化动作确定性纠正",
+            }
+        )
 
 
 def _align_full_timeline_motions(
@@ -414,6 +520,10 @@ def _align_full_timeline_motions(
     events: list[dict[str, Any]],
     duration: float,
 ) -> None:
+    subject_counts: dict[str, int] = {}
+    for motion in content["subject_motion"]:
+        subject_id = str(motion.get("subject_id"))
+        subject_counts[subject_id] = subject_counts.get(subject_id, 0) + 1
     for motion in content["subject_motion"]:
         if not _covers_full_timeline(
             motion.get("start_time_seconds"),
@@ -423,6 +533,13 @@ def _align_full_timeline_motions(
             continue
         event = _matching_timeline_event(motion, events)
         if event is None:
+            if (
+                motion.get("start_time_seconds") is None
+                and motion.get("end_time_seconds") is None
+                and subject_counts.get(str(motion.get("subject_id"))) == 1
+            ):
+                motion["start_time_seconds"] = 0.0
+                motion["end_time_seconds"] = duration
             continue
         start = event.get("start_time_seconds")
         end = event.get("end_time_seconds")
@@ -440,6 +557,19 @@ def _matching_timeline_event(
     if event_id is None:
         return None
     return next((event for event in events if event.get("id") == event_id), None)
+
+
+def _validate_motion_ranges(
+    motions: list[dict[str, Any]],
+    duration: float,
+) -> None:
+    for index, motion in enumerate(motions):
+        start = motion.get("start_time_seconds")
+        end = motion.get("end_time_seconds")
+        if not _is_number(start) or not _is_number(end):
+            raise ValueError(f"subject_motion[{index}] 必须给出关键时间范围")
+        if not 0.0 <= float(start) < float(end) <= duration:
+            raise ValueError(f"subject_motion[{index}] 的关键时间范围无效")
 
 
 def _classify_emotion(content: dict[str, Any], rules: dict[str, Any]) -> dict[str, Any]:
@@ -537,6 +667,7 @@ def _motion_parameters(content: dict[str, Any], rules: dict[str, Any]) -> list[d
         result.append(
             {
                 "motion_index": index,
+                "motion_id": motion["motion_id"],
                 "subject_id": motion.get("subject_id"),
                 "action_kind": semantics["action_kind"],
                 "motion_type": motion_type,
@@ -552,6 +683,7 @@ def _motion_parameters(content: dict[str, Any], rules: dict[str, Any]) -> list[d
                 "carrier_id": semantics["carrier_id"],
                 "path_type": semantics["path_type"],
                 "timeline_event_id": semantics["timeline_event_id"],
+                "narrative_required": bool(semantics["narrative_required"]),
                 "postconditions": deepcopy(semantics["postconditions"]),
                 "start_time_seconds": _number_or(motion.get("start_time_seconds"), 0.0),
                 "end_time_seconds": _number_or(motion.get("end_time_seconds"), duration),
@@ -623,10 +755,10 @@ def _validated_motion_semantics(
         contained_by_id not in subject_ids or contained_by_id == subject_id
     ):
         raise ValueError(f"subject_motion[{index}] 的 contained_by_id 无效")
-    if semantics.get("action_kind") == "board":
+    if semantics.get("action_kind") in {"board", "enter"}:
         if target_id is None or contained_by_id != target_id:
             raise ValueError(
-                f"subject_motion[{index}] 的 board 阶段必须把 target_id 写入 contained_by_id"
+                f"subject_motion[{index}] 的进入阶段必须把 target_id 写入 contained_by_id"
             )
     if semantics.get("action_kind") == "transport" and motion_mode != "carried":
         raise ValueError(f"subject_motion[{index}] 的 transport 阶段必须使用 carried 模式")
@@ -648,6 +780,8 @@ def _validated_motion_semantics(
     timeline_event_id = semantics.get("timeline_event_id")
     if timeline_event_id is not None and timeline_event_id not in event_ids:
         raise ValueError(f"subject_motion[{index}] 的 timeline_event_id 未引用有效事件")
+    if not isinstance(semantics.get("narrative_required"), bool):
+        raise ValueError(f"subject_motion[{index}] 缺少 narrative_required")
     return semantics
 
 

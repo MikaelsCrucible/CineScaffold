@@ -62,6 +62,25 @@ class PlanningDesignTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ship_01"):
             validate_scene_skeleton(objective, skeleton)
 
+    def test_v06_skeleton_must_keep_every_required_narrative_motion(self) -> None:
+        objective = project_objective_brief(valid_planning_brief()).objective_brief
+        objective = objective.model_copy(
+            update={
+                "schema_version": "0.6",
+                "subject_motion": [
+                    {
+                        "motion_id": "required_hold",
+                        "subject_id": "man_01",
+                        "motion_semantics": {"narrative_required": True},
+                    }
+                ],
+            }
+        )
+        skeleton = SceneSkeleton.model_validate(_desert_skeleton())
+
+        with self.assertRaisesRegex(ValueError, "required_hold"):
+            validate_scene_skeleton(objective, skeleton)
+
     def test_scene_skeleton_rejects_unknown_timeline_event(self) -> None:
         objective = project_objective_brief(valid_planning_brief()).objective_brief
         skeleton = SceneSkeleton.model_validate(_desert_skeleton())
@@ -178,9 +197,9 @@ class PlanningDesignTest(unittest.TestCase):
             custom_size_requests=[
                 {
                     "entity_id": "ship_01",
-                    "minimum_xyz_m": [60.0, 18.0, 8.0],
-                    "maximum_xyz_m": [80.0, 30.0, 12.0],
-                    "preferred_xyz_m": [70.0, 24.0, 10.0],
+                    "minimum_xyz_m": [30.0, 10.0, 5.0],
+                    "maximum_xyz_m": [40.0, 12.0, 6.0],
+                    "preferred_xyz_m": [35.0, 11.0, 5.5],
                     "rationale": "大型背景飞船需要宽扁代理体",
                 }
             ],
@@ -192,11 +211,34 @@ class PlanningDesignTest(unittest.TestCase):
         geometry = toolkit.store.get().entities["ship_01"].proxy
 
         self.assertEqual(applied["status"], "ok")
-        self.assertEqual(geometry.size_xyz_m, (70.0, 24.0, 10.0))
-        self.assertEqual(size_range["minimum_xyz"], [60.0, 18.0, 8.0])
-        self.assertEqual(size_range["maximum_xyz"], [80.0, 30.0, 12.0])
-        self.assertEqual(size_range["selected_xyz"], [70.0, 24.0, 10.0])
+        self.assertEqual(geometry.size_xyz_m, (35.0, 11.0, 5.5))
+        self.assertEqual(size_range["minimum_xyz"], [30.0, 10.0, 5.0])
+        self.assertEqual(size_range["maximum_xyz"], [40.0, 12.0, 6.0])
+        self.assertEqual(size_range["selected_xyz"], [35.0, 11.0, 5.5])
         self.assertEqual(suggested["data"]["custom_size_request_count"], 1)
+
+    def test_design_options_never_expose_a_hard_invalid_candidate(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+
+        result = toolkit.request_design_options(
+            max_options=1,
+            custom_size_requests=[
+                {
+                    "entity_id": "ship_01",
+                    "minimum_xyz_m": [60.0, 18.0, 8.0],
+                    "maximum_xyz_m": [80.0, 30.0, 12.0],
+                    "preferred_xyz_m": [70.0, 24.0, 10.0],
+                    "rationale": "故意制造无法投影的候选以测试暴露前门禁",
+                }
+            ],
+        )
+
+        self.assertEqual(result["status"], "no_change")
+        self.assertEqual(result["data"]["options"], [])
+        self.assertTrue(
+            any("全部硬约束" in warning for warning in result["warnings"])
+        )
 
     def test_custom_size_request_rejects_unknown_entity(self) -> None:
         toolkit = _desert_toolkit()
@@ -226,8 +268,8 @@ class PlanningDesignTest(unittest.TestCase):
             custom_size_requests=[
                 {
                     "entity_id": "ship_01",
-                    "minimum_xyz_m": [60.0, 18.0, 8.0],
-                    "maximum_xyz_m": [80.0, 30.0, 12.0],
+                    "minimum_xyz_m": [30.0, 10.0, 5.0],
+                    "maximum_xyz_m": [40.0, 12.0, 6.0],
                     "rationale": "首批候选比例不足",
                 }
             ],
@@ -349,7 +391,6 @@ class PlanningDesignTest(unittest.TestCase):
         car_track = state.motion_tracks["design_motion_car"]
         man_track = state.motion_tracks["design_motion_man"]
         visibility = state.motion_tracks["design_visibility_man"]
-        carried = state.motion_tracks["design_carried_man_man_carried"]
 
         self.assertTrue(applied["data"]["commit_ready"], applied["violations"])
         self.assertEqual(set(state.entities), {"road", "man", "car"})
@@ -359,7 +400,11 @@ class PlanningDesignTest(unittest.TestCase):
         )
         self.assertEqual(
             [item.time_seconds for item in man_track.keyframes],
-            [4.0, 7.0],
+            [0.0, 4.0, 7.0],
+        )
+        self.assertEqual(
+            man_track.keyframes[0].value.translation_m,
+            man_track.keyframes[1].value.translation_m,
         )
         self.assertNotEqual(
             man_track.keyframes[0].value.translation_m,
@@ -367,8 +412,7 @@ class PlanningDesignTest(unittest.TestCase):
         )
         self.assertFalse(visibility.keyframes[-1].value)
         self.assertAlmostEqual(visibility.keyframes[-1].time_seconds, 7.0)
-        self.assertEqual(carried.path.space, "target_relative")
-        self.assertEqual(carried.path.target_id, "car")
+        self.assertNotIn("design_carried_man_man_carried", state.motion_tracks)
 
     def test_motion_phase_uses_narrower_motion_interval_than_shared_event(self) -> None:
         toolkit = _example_toolkit("roadside_pickup_12s.json")
@@ -377,6 +421,10 @@ class PlanningDesignTest(unittest.TestCase):
             end_time_seconds=6.0,
         )
         toolkit.objective_brief.subject_motion[2].update(
+            start_time_seconds=6.0,
+            end_time_seconds=8.0,
+        )
+        toolkit.objective_brief.subject_motion[3].update(
             start_time_seconds=6.0,
             end_time_seconds=8.0,
         )
@@ -409,6 +457,8 @@ class PlanningDesignTest(unittest.TestCase):
         skeleton["motion_phases"][1]["timeline_event_id"] = "arrival_and_boarding"
         skeleton["motion_phases"][2]["timeline_event_id"] = "arrival_and_boarding"
         skeleton["motion_phases"][3]["timeline_event_id"] = "arrival_and_boarding"
+        skeleton["relations"][1]["timeline_event_id"] = "arrival_and_boarding"
+        skeleton["relations"][2]["timeline_event_id"] = "arrival_and_boarding"
         toolkit.submit_scene_skeleton(skeleton)
 
         options = toolkit.request_design_options(max_options=1)
@@ -421,7 +471,7 @@ class PlanningDesignTest(unittest.TestCase):
         )
         self.assertEqual(
             [item.time_seconds for item in state.motion_tracks["design_motion_man"].keyframes],
-            [6.0, 8.0],
+            [0.0, 4.0, 6.0, 8.0],
         )
         codes = {item["code"] for item in toolkit.validate_candidate()["violations"]}
         self.assertNotIn("MOTION_MODE_STATIONARY_VIOLATED", codes)
@@ -547,14 +597,13 @@ class PlanningDesignTest(unittest.TestCase):
         approach_end = car_track.keyframes[1].value.translation_m
         departure_start = car_track.keyframes[2].value.translation_m
         departure_end = car_track.keyframes[3].value.translation_m
-        carried = state.motion_tracks["design_carried_man_man_carried"]
 
         self.assertGreater(
             abs(approach_start[0] - man_position[0]),
             abs(approach_end[0] - man_position[0]),
         )
         self.assertLess(departure_end[1], departure_start[1])
-        self.assertEqual(carried.path.target_id, "car")
+        self.assertNotIn("design_carried_man_man_carried", state.motion_tracks)
         codes = {item["code"] for item in toolkit.validate_candidate()["violations"]}
         self.assertNotIn("MOTION_DIRECTION_SEMANTICS_UNMET", codes)
         self.assertNotIn("MOTION_POSTCONDITION_CONTAINMENT_UNMET", codes)

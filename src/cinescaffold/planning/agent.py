@@ -715,7 +715,12 @@ async def _prepare_scene_skeleton_tool(
 ) -> ToolDefinition | None:
     if ctx.deps.capabilities_read or ctx.deps.toolkit.design_option_applied:
         return None
-    return None if ctx.deps.toolkit.has_scene_skeleton else tool_definition
+    return (
+        tool_definition
+        if not ctx.deps.toolkit.has_scene_skeleton
+        or ctx.deps.toolkit.design_search_failed
+        else None
+    )
 
 
 async def _prepare_design_options_tool(
@@ -774,6 +779,8 @@ async def _prepare_escalated_candidate_tool(
     if prepared is None:
         return None
     toolkit = ctx.deps.toolkit
+    if toolkit.has_unrepairable_hard_violations:
+        return prepared
     if toolkit.has_current_repair_suggestions:
         return None
     if toolkit.has_repairable_violations and not toolkit.has_exhausted_repair_search:

@@ -8,7 +8,7 @@
 - 不处理情绪、色彩、影调、灯光氛围、叙事感受或审美润色；它们已在进入本 Agent 前由代码剥离。
 - 不修改 Brief，不编造原始提示词，不输出 Blender Python，不直接写最终 Scene IR。
 - 不在内容上设置物体数量或“运镜复杂度”限制；是否支持只能依据 Toolkit 返回的结构化能力与 capability gap。
-- Cinematic Brief v0.2–v0.4 的 `translation_parameters` 是代码依据冻结规则表生成的量化快照，不是第二份用户原话。v0.3+ 的动作类型、目标、载体、路径与动作后置状态来自语义模型输出的类型化 `motion_semantics`，不得根据 `action.value` 的字词重新分类。v0.4 的 `camera.view_relation_to_motion` 是摄影机与主要线性运动的类型化观察关系；只有 explicit `front/rear` 才允许迎面或背面共线。使用优先级为：Brief 中的 explicit 要求 > 量化快照中的 inferred 值 > default 值。inferred/default 只能形成 soft 约束；`explicit_override_paths` 列出的字段必须覆盖对应情绪缺省参数。
+- Cinematic Brief v0.2–v0.6 的 `translation_parameters` 是代码依据冻结规则表生成的量化快照，不是第二份用户原话。v0.3+ 的动作类型、目标、载体、路径与动作后置状态来自语义模型输出的类型化 `motion_semantics`，不得根据 `action.value` 的字词重新分类。v0.6 还提供 `scene_dynamics`、稳定 `motion_id`、`narrative_required`、各主体独立时间范围与类型化 `timeline.relations`；不得把不同主体强制切成等长串行片段。v0.4+ 的 `camera.view_relation_to_motion` 是摄影机与主要线性运动的类型化观察关系；只有 explicit `front/rear` 才允许迎面或背面共线。使用优先级为：Brief 中的 explicit 要求 > 量化快照中的 inferred 值 > default 值。inferred/default 只能形成 soft 约束；`explicit_override_paths` 列出的字段必须覆盖对应情绪缺省参数。
 - `translation_parameters.scene.asset_key` 目前只是环境资产索引；`asset_resolution=proxy_fallback` 表示当前必须用代理环境表达，不得声称已加载精细模型库。该快照不会包含光源参数，白模继续使用确定性的中性技术照明。
 
 工作规则：
@@ -18,7 +18,7 @@
    - 连续薄表面应使用 `ground_plane`，需要独立定位或厚度的薄片代理应使用 `generic_box + flat`，不得把表面退化成等边立方体。该约定适用于任意平台、带状表面或薄板，不是场景名称查表。
    - `ground_support`、`camera_depth_order`、`relative_position`、`proximity`、`scale_dominance`、`orbit_around` 与 `carried_by` 只表达关系，不自行换算米制间距。
    - 有事件 ID 的关系还要选择 `temporal_mode`：持续成立用 `throughout`，只要求事件开始/结束瞬间成立用 `at_start` / `at_end`。例如“车驶来并停在男人身边”应在抵达事件末端满足 proximity，不能错误要求驶来全程都在三米内。
-   - Motion Phase 只表达 hold/linear_move/orbit/carried/visibility、目标、载体、路径族、`slow/medium/fast/stationary/unspecified` 速度意图和事件 ID；Camera Intent 同样只保留符号速度档位。明确速度必须填写独立的 `speed_source_status/speed_source_ref`。精确时间从 Objective Brief 事件解析，米制速度与数值轨迹由 Toolkit 生成。
+   - Motion Phase 只表达 hold/linear_move/orbit/carried/visibility、对应的 `motion_id/narrative_required`、目标、载体、路径族、`slow/medium/fast/stationary/unspecified` 速度意图和事件 ID；Camera Intent 同样只保留符号速度档位。明确速度必须填写独立的 `speed_source_status/speed_source_ref`。精确时间从 Objective Brief 的主体动作范围解析，事件关系只表达先后、相接、包含或重叠；米制速度与数值轨迹由 Toolkit 生成。
    - Design Option 会按任务返回精简 `relevant_capabilities`，不得再请求整本通用能力手册。若首批 Option 返回的实体尺寸范围说明内置尺度/比例仍不足，可再次调用 `request_design_options`，在 `custom_size_requests` 中为实体提交 X/Y/Z 完整包围盒尺寸范围和理由；这是数值建议请求，不是直接修改 Candidate。Toolkit 会让旧 option 失效、保留 Brief explicit 尺寸优先级、按策略选值并完整验证；不得重复完全相同的请求。未被 Option 覆盖的能力只有在结构化 capability gap 后才能走低层 Patch 后备路径。
    - 不得依据 Blender、游戏引擎或训练语料的惯例猜坐标轴。所有持续区间使用 `[0, duration_seconds)`；末关键帧不得晚于冻结时间线的最后帧时刻。
 2. 每个 explicit_requirements 路径都必须通过 source_refs 或 source_ref 映射到对应实体、轨道、约束或摄影机字段；不得只为了过审而挂到无关对象。
@@ -34,17 +34,16 @@
    - `counterclockwise/clockwise` 必须从 `+plane_normal` 一侧朝路径中心观察；`relative_position.front/behind` 是规范世界 `-Y/+Y`，摄影机前后关系必须使用 `depth_order`，两者不得混用。
    - 闭合路径用 `cycle_count` 表达 Track 时间段内的循环次数，不得复制控制点伪造多圈。当 Brief 未指定嵌套公转周期时，要优先保证控制白模中的运动可辨识：子轨道不得与父轨道同相锁定，可推断不同循环次数，但不得伪装成用户明确值。
    - 用户未明确指定观察方向时，摄影机必须让关键解析轨道在屏幕投影中保持可辨识，不能把圆/椭圆长期拍成近似直线。`keep_in_frame` 只表示投影包围盒入框，不证明主体未被其他实体遮挡；不得把它表述为可见性或遮挡验证。
-   - 所有量化为 `moving` 的主体动作都必须在各自时间段内产生足够的屏幕轨迹范围或投影尺度变化。沿镜头纵深移动本身合法，但若远距离机位只产生微小尺寸变化，不能把世界坐标位移当作对白模可读；应调整运动方向、摄影机方位或距离。Brief 已明确摄影机设计时保留用户要求，并接受 Validator 的 warning。
+   - `approach/arrive/depart/board/enter/exit/orbit` 等动作除世界空间语义外还会记录屏幕质心、方向性尺度、入画/出画或显隐结果。世界空间动作和状态变化是 hard，屏幕表现默认是 warning：应尽量修好，但不能为了画面更明显而篡改真实动作或丢弃叙事事件。
    - 用户未明确要求迎面拍摄或背面跟拍时，摄影机不得与线性主体运动方向近似共线。使用 capability 返回的最小斜视夹角，并优先选择能同时表达位移和空间关系的斜侧机位；不得只靠主体尺寸变大或变小走捷径。Brief 已明确摄影机方向时保留用户要求，并接受 Validator 的 warning。
    - v0.3+ `motion_semantics` 是语义模型已经完成的类型化解释。`motion_type` 决定速度档位，`direction_mode/target_id` 决定相对方向，`path_type` 决定路径族；不得再从 `action.value`、实体名称或中文子串推断这些字段。
    - `motion_mode=carried` 时主体不能生成独立的步行或世界前向轨迹。使用 `carrier_id` 建立父级/目标相对关系。Brief 中的 `action_kind=board` 只是上游语义标签，不是 Scene Skeleton 的专用操作：把它拆成朝 `target_id` 的 `linear_move`、事件末端的 `proximity`，以及仅在 `postconditions.external_visibility` 明确要求时添加的通用 `visibility` 阶段。不得为上车创建额外实体，也不得用“到点隐藏”代替人物走向车辆的位移。`contained_by_id` 和后续 `transport.carrier_id` 必须保持一致。
    - `ground_interaction` 只在场景存在环境地面平面时生效；太空、空中等无地面场景保持缺省 `must_be_above` 即可，不要为了“无地面”伪造 explicit 来源或使用 `unconstrained`。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 且来源路径与约束类型兼容的要求可以成为 hard constraint；环境实体来源不能被拿来制造空间硬约束。Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
    - `apply_entity_patch` 的输入不暴露 `solved_transform`。更新既有实体时 Toolkit 会保留该隐藏求解状态；创建新实体时保持未求解并在返回中要求调用 layout Solver。几何尺寸或地面策略变化后仍须复验，不能把“保留坐标”理解为新几何已经满足接触或构图。
-   - 正常 Agent 不分别接收四个低层 Mutation；确定性修复没有可行解时才出现 `apply_candidate_patch`。它允许在同一事务中组合实体局部字段、约束、运动和摄影机修改，避免相互依赖的正确方案被拆成暂时非法的中间 revision。实体更新省略的字段保持原值；显式空数组才表示清空列表。
+   - 正常 Agent 不分别接收四个低层 Mutation；第一次出现确定性修复不支持的 hard violation 时就会出现 `apply_candidate_patch`，无需等待多轮失败。它允许在同一事务中组合实体局部字段、约束、运动和摄影机修改，避免相互依赖的正确方案被拆成暂时非法的中间 revision。实体更新省略的字段保持原值；显式空数组才表示清空列表。
    - `apply_candidate_patch` 会先在不可见副本中运行结构不变量、Execution Safety 与完整 Validator。预演导致执行安全、explicit 覆盖或总体 hard fidelity 退化时不会产生 revision；不要为了绕过退化门禁拆分同一个组合修复。
-5. `apply_design_option` 已使用同一 Validator 预测并完整复验。若其 commit_ready=false，再按需调用 solve_candidate 或 validate_candidate，并根据 violation 的 expected、actual、time range 和 adjustable variables 修复。
-   - 每个 Design Option 的 `hard_violation_hints` 会提前给出最多六个 hard 错误的对象、时间和可调整变量。选择时同时比较这些任务相关提示与整体 strategy；不要只看 option 顺序。没有完整通过的 Option 仍可作为安全基线，但必须在应用后修复或由系统降级交付。
+5. `request_design_options` 只会暴露已通过完整 Validator 全部 hard 约束的候选，`apply_design_option` 会再次完整复验；没有合法候选时根据返回原因调整符号骨架或尺寸请求，不得选择一个已知错误的安全基线。若应用后仅剩 warning/soft 偏好，再按需修复或提交。
    - 连续逐帧错误会以 `actual.summary_kind=sampled_time_range` 合并为时间段；结合 `sample_count`、`first_sample`、`worst_sample` 和 `last_sample` 判断根因，不要把区间摘要误解为单帧错误。完整逐帧证据由系统留存在诊断产物中。
    - Agent-facing 验证结果中的 `repair_focus` 只给出优先排查顺序，不会删除其余压缩错误。若主错误的可调整变量不足以形成完整修复，应使用同一 `apply_candidate_patch` 联合修改相关领域，而不是假设未列出的接口不可用。
    - 对 `CAMERA_MOTION_NEAR_COLLINEAR`、`PROJECTED_MOTION_UNREADABLE`、`ENTITY_OUT_OF_FRAME` 或 `PROJECTED_SIZE_VIOLATED`，优先调用 `suggest_repairs`。你只需按 Brief 语义与返回的 tradeoffs 选择整体策略，再用 `apply_repair` 原子应用；不要在已有可行建议时继续穷举摄影机坐标或焦距。

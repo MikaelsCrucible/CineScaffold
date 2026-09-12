@@ -40,6 +40,7 @@ from cinescaffold.planning.objective import ObjectiveProjection, project_objecti
 from cinescaffold.planning.toolkit import (
     EXECUTION_SAFETY_CHECKS,
     FULL_VALIDATION_CHECKS,
+    NARRATIVE_FIDELITY_CHECKS,
     TOOLKIT_VERSION,
     ScenePlanningToolkit,
 )
@@ -175,9 +176,9 @@ class InterpreterRunner:
                 limits=effective_limits,
                 full_power_diagnostic=self.config.full_power_diagnostic,
                 thinking_history_policy=(
-                    "complete_provider_roundtrip"
+                    "complete_within_attempt_fresh_recovery_rounds"
                     if preserve_thinking_history
-                    else "bounded_recent_tool_pairs"
+                    else "bounded_within_attempt_fresh_recovery_rounds"
                 ),
             )
             if self.config.full_power_diagnostic:
@@ -320,7 +321,6 @@ class InterpreterRunner:
                 checkpoint_writer=checkpoint_writer,
                 preserve_complete_thinking_history=preserve_thinking_history,
             )
-            history = None
             prompt = _initial_agent_prompt(
                 projection,
                 current_revision=toolkit.store.current_revision,
@@ -348,7 +348,11 @@ class InterpreterRunner:
                     try:
                         result = await agent.run(
                             prompt,
-                            message_history=history,
+                            # Recovery rounds are intentionally fresh. Provider
+                            # reasoning/tool history is preserved only within a
+                            # single agent.run round; the next round receives a
+                            # compact RepairPacket instead.
+                            message_history=None,
                             deps=deps,
                             usage=usage,
                             usage_limits=usage_limits,
@@ -386,7 +390,6 @@ class InterpreterRunner:
                             continue
                         status = "failed"
                         break
-                    history = result.all_messages()
                     terminal = result.output
                     terminal_type = terminal.type
                     trace.record(
@@ -681,9 +684,47 @@ def _recovery_context(
     )
     best_revision = _best_executable_revision(toolkit)
     effective_violations = violations or validation["violations"]
+    objective = toolkit.objective_brief
+    narrative_motions = []
+    for motion in objective.subject_motion:
+        if not isinstance(motion, dict):
+            continue
+        semantics = motion.get("motion_semantics")
+        if not isinstance(semantics, dict):
+            continue
+        narrative_motions.append(
+            {
+                "motion_id": motion.get("motion_id"),
+                "subject_id": motion.get("subject_id"),
+                "start_time_seconds": motion.get("start_time_seconds"),
+                "end_time_seconds": motion.get("end_time_seconds"),
+                "action_kind": semantics.get("action_kind"),
+                "motion_mode": semantics.get("motion_mode"),
+                "direction_mode": semantics.get("direction_mode"),
+                "target_id": semantics.get("target_id"),
+                "carrier_id": semantics.get("carrier_id"),
+                "postconditions": semantics.get("postconditions"),
+                "narrative_required": semantics.get("narrative_required", False),
+            }
+        )
     context = {
+        "repair_packet_version": "0.1",
         "stage": stage,
         "failure_class": failure_class,
+        "objective": {
+            "schema_version": objective.schema_version,
+            "scene_dynamics": objective.scene_dynamics,
+            "duration_seconds": objective.timeline.get("duration_seconds"),
+            "events": objective.timeline.get("events", []),
+            "temporal_relations": objective.timeline.get("relations", []),
+            "narrative_motions": narrative_motions,
+        },
+        "candidate": {
+            "entity_ids": sorted(current.entities),
+            "motion_track_ids": sorted(current.motion_tracks),
+            "constraint_ids": sorted(current.constraints),
+            "has_camera": current.camera is not None,
+        },
         "current_revision": current.revision,
         "best_revision": best_revision,
         "hard_pass": validation["data"]["hard_pass"],
@@ -694,7 +735,8 @@ def _recovery_context(
         "attempts_remaining": attempts_remaining,
         "allowed_recovery_actions": [
             "inspect_current_or_historical_candidate",
-            "apply_validator_scoped_patch_after_repair_search_exhaustion",
+            "apply_restricted_patch_immediately_for_unrepairable_hard_violation",
+            "use_deterministic_repair_for_supported_quality_violations",
             "restore_best_revision",
             "solve_and_validate",
             "request_full_fidelity_commit",
@@ -711,9 +753,9 @@ def _recovery_context(
 
 def _recovery_prompt(feedback: dict[str, Any]) -> str:
     return (
-        "上一轮未被系统接受为完整交付。根据以下 Recovery Context 继续；"
+        "这是一个新的恢复轮次，不包含上一轮 thinking。根据以下 RepairPacket 继续；"
         "不要从头重建，不要放松 explicit hard requirement，也不要重复已穷尽的修复搜索。"
-        "若确定性建议已返回 no_change，可仅针对 violation 指向字段使用重新开放的受控 Mutation，"
+        "首次遇到确定性工具无法修复的 hard violation 时，可立即仅针对 violation 指向字段使用受限 Patch，"
         "修改后必须重新验证。系统会在完整修复仍不成功时独立生成简化交付。\n\n"
         + json.dumps(feedback, ensure_ascii=False, indent=2)
     )
@@ -731,14 +773,17 @@ def _best_executable_revision(toolkit: ScenePlanningToolkit) -> int | None:
         )["data"]
         if not safety["hard_pass"]:
             continue
+        narrative = toolkit.validate_candidate(
+            revision=revision,
+            checks=NARRATIVE_FIDELITY_CHECKS,
+        )["data"]
+        if not narrative["hard_pass"]:
+            continue
         fidelity = toolkit.validate_candidate(
             revision=revision,
             checks=FULL_VALIDATION_CHECKS,
         )["data"]
-        hard_count = sum(
-            item["severity"] == "hard" for item in fidelity["violations"]
-        )
-        ranked.append((hard_count, -float(fidelity["soft_score"]), -revision))
+        ranked.append((0, -float(fidelity["soft_score"]), -revision))
     if not ranked:
         return None
     return -min(ranked)[2]

@@ -131,6 +131,10 @@ class SkeletonRelation(StrictModel):
 
 class SkeletonMotionPhase(StrictModel):
     phase_id: str = Field(min_length=1)
+    motion_id: str | None = Field(
+        default=None,
+        description="Cinematic Brief v0.6 的稳定动作身份，用于叙事完整性校验",
+    )
     subject_id: str
     kind: Literal[
         "hold",
@@ -167,6 +171,7 @@ class SkeletonMotionPhase(StrictModel):
     transition_at: Literal["at_start", "at_end"] | None = None
     source_status: SourceStatus
     source_ref: str
+    narrative_required: bool = False
 
     @model_validator(mode="after")
     def validate_motion_shape(self) -> SkeletonMotionPhase:
@@ -304,6 +309,43 @@ def validate_scene_skeleton(
     unknown_events = sorted(referenced_event_ids - known_event_ids)
     if unknown_events:
         raise ValueError(f"Scene Skeleton 引用了未知事件：{', '.join(unknown_events)}")
+
+    if objective.schema_version == "0.6":
+        objective_motion_subjects = {
+            str(item.get("motion_id")): str(item.get("subject_id"))
+            for item in objective.subject_motion
+            if isinstance(item, dict) and item.get("motion_id") is not None
+        }
+        for phase in value.motion_phases:
+            if phase.motion_id is None:
+                continue
+            expected_subject = objective_motion_subjects.get(phase.motion_id)
+            if expected_subject is None:
+                raise ValueError(
+                    f"Scene Skeleton 引用了未知 motion_id：{phase.motion_id}"
+                )
+            if expected_subject != phase.subject_id:
+                raise ValueError(
+                    f"Scene Skeleton motion_id 与主体不一致：{phase.motion_id}"
+                )
+        required_motion_ids = {
+            str(item.get("motion_id"))
+            for item in objective.subject_motion
+            if isinstance(item, dict)
+            and isinstance(item.get("motion_semantics"), dict)
+            and item["motion_semantics"].get("narrative_required") is True
+        }
+        skeleton_motion_ids = {
+            item.motion_id
+            for item in value.motion_phases
+            if item.motion_id is not None
+        }
+        missing_motion_ids = sorted(required_motion_ids - skeleton_motion_ids)
+        if missing_motion_ids:
+            raise ValueError(
+                "Scene Skeleton 遗漏关键叙事动作："
+                + ", ".join(missing_motion_ids)
+            )
 
     valid_explicit_refs = {item.path for item in objective.explicit_requirements}
     for source_ref, status in _skeleton_sources(value):
@@ -970,11 +1012,30 @@ def _build_motion(
                     subject_id
                 ].solved_transform.model_copy(update={"translation_m": tuple(position)})
             keyframes: list[TrackKeyframe] = []
+            positional_phases = [
+                item for item in phases if item.kind in {"hold", "linear_move"}
+            ]
             for phase in sorted(
-                moving,
+                positional_phases,
                 key=lambda item: _phase_range(objective, item, duration)[0],
             ):
                 start, end = _phase_range(objective, phase, duration)
+                if phase.kind == "hold":
+                    keyframes.extend(
+                        [
+                            TrackKeyframe(
+                                time_seconds=start,
+                                value=TransformValue(translation_m=tuple(position)),
+                                interpolation="step",
+                            ),
+                            TrackKeyframe(
+                                time_seconds=_track_end_time(candidate, end),
+                                value=TransformValue(translation_m=tuple(position)),
+                                interpolation="step",
+                            ),
+                        ]
+                    )
+                    continue
                 keyframes.append(
                     TrackKeyframe(
                         time_seconds=start,
@@ -1005,7 +1066,7 @@ def _build_motion(
                     TrackKeyframe(
                         time_seconds=_track_end_time(candidate, end),
                         value=TransformValue(translation_m=tuple(position)),
-                        interpolation="smooth",
+                        interpolation="step",
                     )
                 )
             track = TrackSpec(
@@ -1027,6 +1088,10 @@ def _build_motion(
             if phase.carrier_id is None:
                 continue
             start, end = _phase_range(objective, phase, duration)
+            if _subject_hidden_at(phases, objective, duration, start):
+                # 已隐藏的乘员无需再生成可见的跟随代理；显隐后置条件本身
+                # 足以表达“已进入载体”，也避免两个代理卡在一起。
+                continue
             subject = candidate.entities[subject_id]
             carrier = candidate.entities[phase.carrier_id]
             subject_z = (subject.solved_transform.translation_m or (0.0, 0.0, 0.0))[2]
@@ -1542,9 +1607,31 @@ def _phase_range(
             end = float(motion.get("end_time_seconds") or duration)
             if 0.0 <= start < end <= duration:
                 return (start, end)
+            raise ValueError(f"Motion Phase 引用了无效动作时间范围：{phase.phase_id}")
     except (IndexError, TypeError, ValueError, AttributeError):
         pass
     return _event_range(objective, phase.timeline_event_id, duration)
+
+
+def _subject_hidden_at(
+    phases: list[SkeletonMotionPhase],
+    objective: ObjectivePlanningBrief,
+    duration: float,
+    time_seconds: float,
+) -> bool:
+    hidden = False
+    transitions: list[tuple[float, bool]] = []
+    for phase in phases:
+        if phase.kind != "visibility" or phase.visibility_state is None:
+            continue
+        start, end = _phase_range(objective, phase, duration)
+        transition = start if phase.transition_at == "at_start" else end
+        transitions.append((transition, phase.visibility_state == "hidden"))
+    for transition, becomes_hidden in sorted(transitions):
+        if transition > time_seconds + 1e-9:
+            break
+        hidden = becomes_hidden
+    return hidden
 
 
 def _relation_time_range(

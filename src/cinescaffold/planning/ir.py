@@ -232,7 +232,9 @@ class AcceptanceIR(StrictModel):
 
 
 class ProvenanceIR(StrictModel):
-    cinematic_brief_schema_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5"] = "0.1"
+    cinematic_brief_schema_version: Literal[
+        "0.1", "0.2", "0.3", "0.4", "0.5", "0.6"
+    ] = "0.1"
     cinematic_brief_hash: str
     constraint_plan_schema_version: Literal["0.1"] = "0.1"
     constraint_plan_hash: str

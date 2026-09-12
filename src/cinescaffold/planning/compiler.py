@@ -41,6 +41,7 @@ from cinescaffold.planning.toolkit import (
     CONSTRAINT_CATALOG_VERSION,
     EXECUTION_SAFETY_CHECKS,
     FULL_VALIDATION_CHECKS,
+    NARRATIVE_FIDELITY_CHECKS,
     TOOLKIT_VERSION,
     ScenePlanningToolkit,
     _WorldTransformResolver,
@@ -48,8 +49,8 @@ from cinescaffold.planning.toolkit import (
 )
 
 
-COMPILER_VERSION = "0.12"
-COMMIT_GATE_VERSION = "0.11"
+COMPILER_VERSION = "0.13"
+COMMIT_GATE_VERSION = "0.12"
 
 
 @dataclass(frozen=True)
@@ -124,7 +125,7 @@ class SceneIRCommitGate:
         agent_run_id: str,
         trace_ref: str,
     ) -> CommitGateResult:
-        """Commit only after execution-safety checks pass; retain fidelity failures."""
+        """Relax presentation quality while preserving every typed narrative event."""
 
         state = self.toolkit.store.get(request.candidate_revision)
         safety_envelope = self.toolkit.validate_candidate(
@@ -137,16 +138,25 @@ class SceneIRCommitGate:
             checks=FULL_VALIDATION_CHECKS,
         )
         full_report = full_envelope["data"]
+        narrative_envelope = self.toolkit.validate_candidate(
+            revision=request.candidate_revision,
+            checks=NARRATIVE_FIDELITY_CHECKS,
+        )
+        narrative_report = narrative_envelope["data"]
         constraint_plan = state.model_dump(mode="json")
-        if not safety_report["hard_pass"]:
+        if not safety_report["hard_pass"] or not narrative_report["hard_pass"]:
             return CommitGateResult(
                 status="rejected",
-                gate_mode="execution_safety",
+                gate_mode="narrative_fidelity",
                 scene_ir=None,
                 scene_ir_hash=None,
                 constraint_plan=constraint_plan,
                 validation=full_report,
-                violations=safety_envelope["violations"],
+                violations=(
+                    safety_envelope["violations"]
+                    if not safety_report["hard_pass"]
+                    else narrative_envelope["violations"]
+                ),
             )
 
         scene_ir = compile_scene_ir(
@@ -154,7 +164,7 @@ class SceneIRCommitGate:
             state,
             agent_run_id=agent_run_id,
             trace_ref=trace_ref,
-            required_validators=EXECUTION_SAFETY_CHECKS,
+            required_validators=NARRATIVE_FIDELITY_CHECKS,
         )
         _validate_compiled_scene_ir(scene_ir)
         validate_scene_ir_for_execution(scene_ir)
@@ -163,7 +173,7 @@ class SceneIRCommitGate:
         self.toolkit.store.commit(request.candidate_revision)
         return CommitGateResult(
             status="success",
-            gate_mode="execution_safety",
+            gate_mode="narrative_fidelity",
             scene_ir=scene_ir,
             scene_ir_hash=scene_ir_hash,
             constraint_plan=constraint_plan,

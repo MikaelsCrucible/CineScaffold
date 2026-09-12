@@ -9,6 +9,7 @@ from cinescaffold.planning.objective import ObjectiveRequirement, project_object
 from cinescaffold.planning.toolkit import (
     EXECUTION_SAFETY_CHECKS,
     FULL_VALIDATION_CHECKS,
+    NARRATIVE_FIDELITY_CHECKS,
     ScenePlanningToolkit,
     _direction_matches,
     _entity_transform_at,
@@ -89,6 +90,80 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 space="world",
             )
         )
+
+    def test_target_motion_cannot_substitute_for_approaching_actor(self) -> None:
+        toolkit = _toolkit()
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "schema_version": "0.6",
+                "scene_dynamics": {
+                    "mode": "dynamic",
+                    "source_status": "inferred",
+                    "reason": "主体发生接近运动",
+                },
+                "subject_motion": [
+                    {
+                        "motion_id": "man_approaches_ship",
+                        "subject_id": "man_01",
+                        "start_time_seconds": 0.0,
+                        "end_time_seconds": 6.0,
+                        "motion_semantics": {
+                            "action_kind": "approach",
+                            "motion_type": "walking",
+                            "motion_mode": "self_propelled",
+                            "direction_mode": "toward_target",
+                            "target_id": "ship_01",
+                            "carrier_id": None,
+                            "path_type": "linear",
+                            "timeline_event_id": None,
+                            "narrative_required": True,
+                            "postconditions": {
+                                "contained_by_id": None,
+                                "external_visibility": "unchanged",
+                            },
+                            "source_status": "inferred",
+                        },
+                    }
+                ],
+                "translation_parameters": {
+                    "motions": [
+                        {
+                            "motion_id": "man_approaches_ship",
+                            "speed_range_mps": [0.8, 2.0],
+                        }
+                    ]
+                },
+            }
+        )
+        toolkit.apply_entity_patch([_man_entity(), _ship_entity()], [])
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "ship_moves_to_man",
+                    "target_entity_id": "ship_01",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [8.0, 0.0, 0.0]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [1.0, 0.0, 0.0]},
+                        },
+                    ],
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["narrative_motion"])
+        codes = {item["code"] for item in validation["violations"]}
+
+        self.assertFalse(validation["data"]["hard_pass"])
+        self.assertIn("SELF_PROPELLED_MOTION_MISSING", codes)
+        self.assertIn("MOTION_DIRECTION_SEMANTICS_UNMET", codes)
 
     def test_hold_checks_motion_between_matching_endpoints(self) -> None:
         toolkit = _toolkit()
@@ -1172,17 +1247,36 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         self.assertEqual(full.status, "rejected")
         self.assertEqual(full.gate_mode, "full_fidelity")
-        self.assertEqual(simplified.status, "success")
-        self.assertEqual(simplified.gate_mode, "execution_safety")
+        self.assertEqual(simplified.status, "rejected")
+        self.assertEqual(simplified.gate_mode, "narrative_fidelity")
         self.assertTrue(
             any(
                 item["code"] == "UNMAPPED_EXPLICIT_REQUIREMENT"
                 for item in simplified.violations
             )
         )
+        self.assertIsNone(simplified.scene_ir)
+
+    def test_simplified_commit_keeps_narrative_validators(self) -> None:
+        toolkit = _solved_toolkit()
+        toolkit.solve_candidate()
+        request = CommitRequest(
+            type="commit_request",
+            candidate_revision=toolkit.store.current_revision,
+            summary="exercise narrative-preserving simplified gate",
+        )
+
+        simplified = SceneIRCommitGate(toolkit).commit_simplified(
+            request,
+            agent_run_id="narrative_gate_test",
+            trace_ref="trace.jsonl",
+        )
+
+        self.assertEqual(simplified.status, "success", simplified.violations)
+        self.assertEqual(simplified.gate_mode, "narrative_fidelity")
         self.assertEqual(
             simplified.scene_ir.acceptance.required_validators,
-            EXECUTION_SAFETY_CHECKS,
+            NARRATIVE_FIDELITY_CHECKS,
         )
 
     def test_equivalent_orbit_action_relationship_and_event_share_mapping(self) -> None:
@@ -1667,7 +1761,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
 
-    def test_inferred_camera_rejects_nearly_edge_on_orbit_projection(self) -> None:
+    def test_edge_on_orbit_projection_is_a_non_blocking_screen_warning(self) -> None:
         toolkit = _relative_motion_toolkit(
             plane_normal=(0.0, 1.0, 0.0),
             camera_position=(0.0, 9.0, 36.0),
@@ -1675,13 +1769,13 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         validation = toolkit.validate_candidate(checks=["motion"])
 
-        self.assertFalse(validation["data"]["hard_pass"])
+        self.assertTrue(validation["data"]["hard_pass"])
         violation = next(
             item
             for item in validation["violations"]
             if item["code"] == "ORBIT_PLANE_NEAR_EDGE_ON"
         )
-        self.assertEqual(violation["severity"], "hard")
+        self.assertEqual(violation["severity"], "warning")
         self.assertLess(
             violation["actual"]["median_absolute_view_normal_dot"],
             violation["expected"]["minimum_median_absolute_view_normal_dot"],
@@ -1877,26 +1971,20 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(applied["status"], "rejected")
         self.assertIn("当前为", applied["warnings"][0])
 
-    def test_repair_suggestion_can_make_depth_motion_readable(self) -> None:
-        toolkit = _projected_motion_toolkit(end_position=(0.0, 0.0, 0.9))
+    def test_screen_motion_result_is_recorded_without_blocking_delivery(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(0.0, 0.0, 0.9),
+            camera_position=(25.0, -48.0, 1.5),
+        )
         validation = toolkit.validate_candidate(checks=["motion"])
-        violation_id = next(
-            item["id"]
+        violation = next(
+            item
             for item in validation["violations"]
             if item["code"] == "PROJECTED_MOTION_UNREADABLE"
         )
-
-        suggested = toolkit.suggest_repairs(
-            violation_ids=[violation_id],
-            preference="maximize_motion_readability",
-            max_options=1,
-        )
-
-        self.assertEqual(suggested["status"], "ok")
-        self.assertEqual(
-            suggested["data"]["options"][0]["predicted"]["target_violation_count"],
-            0,
-        )
+        self.assertTrue(validation["data"]["hard_pass"])
+        self.assertEqual(violation["severity"], "warning")
+        self.assertIn("result_signals", violation["expected"])
 
     def test_repair_suggestions_cover_framing_and_projected_size(self) -> None:
         cases = [

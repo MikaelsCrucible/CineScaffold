@@ -2,6 +2,11 @@
   "summary": "",
   "subjects": [],
   "subject_motion": [],
+  "scene_dynamics": {
+    "mode": "static",
+    "source_status": "default",
+    "reason": "没有主体运动或状态改变"
+  },
   "scene_design": {
     "environment": {"value": null, "source_status": "unknown", "source_text": null},
     "spatial_layers": [],
@@ -42,7 +47,8 @@
     "duration_seconds": null,
     "duration_range_seconds": null,
     "duration_source_status": "unknown",
-    "events": []
+    "events": [],
+    "relations": []
   },
   "uncertainties": []
 }

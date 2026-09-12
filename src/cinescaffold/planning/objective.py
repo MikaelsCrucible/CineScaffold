@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 OBJECTIVE_CONTENT_FIELDS = (
     "subjects",
     "subject_motion",
+    "scene_dynamics",
     "scene_design",
     "composition",
     "camera",
@@ -48,10 +49,17 @@ class IgnoredSubjectiveField(_StrictModel):
 
 
 class ObjectivePlanningBrief(_StrictModel):
-    schema_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5"] = "0.1"
+    schema_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6"] = "0.1"
     source_brief_sha256: str
     subjects: list[dict[str, Any]]
     subject_motion: list[dict[str, Any]]
+    scene_dynamics: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "mode": "dynamic",
+            "source_status": "default",
+            "reason": "旧版 Objective 兼容默认",
+        }
+    )
     scene_design: dict[str, Any]
     composition: dict[str, Any]
     camera: dict[str, Any]
@@ -70,20 +78,27 @@ class ObjectiveProjection(_StrictModel):
 def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
     """在模型调用前剥离主观维度和原始提示词。"""
     schema_version = brief.get("schema_version")
-    if schema_version not in {"0.1", "0.2", "0.3", "0.4", "0.5"}:
-        raise ValueError("Agent 1 仅支持 Cinematic Brief v0.1–v0.5")
+    if schema_version not in {"0.1", "0.2", "0.3", "0.4", "0.5", "0.6"}:
+        raise ValueError("Agent 1 仅支持 Cinematic Brief v0.1–v0.6")
     content = brief.get("content")
     provenance = brief.get("provenance")
     if not isinstance(content, dict) or not isinstance(provenance, dict):
         raise ValueError("Cinematic Brief 缺少 content 或 provenance")
     translation_parameters = brief.get("translation_parameters")
-    if schema_version in {"0.2", "0.3", "0.4", "0.5"} and not isinstance(translation_parameters, dict):
+    if schema_version in {"0.2", "0.3", "0.4", "0.5", "0.6"} and not isinstance(translation_parameters, dict):
         raise ValueError(f"Cinematic Brief v{schema_version} 缺少 translation_parameters")
-    if schema_version in {"0.2", "0.3", "0.4", "0.5"} and not _optional_string(
+    if schema_version in {"0.2", "0.3", "0.4", "0.5", "0.6"} and not _optional_string(
         provenance.get("translation_rules_sha256")
     ):
         raise ValueError(f"Cinematic Brief v{schema_version} 缺少 translation_rules_sha256")
 
+    if "scene_dynamics" not in content and schema_version != "0.6":
+        content = deepcopy(content)
+        content["scene_dynamics"] = {
+            "mode": "dynamic" if content.get("subject_motion") else "static",
+            "source_status": "default",
+            "reason": "旧版 Brief 兼容投影",
+        }
     missing = [name for name in OBJECTIVE_CONTENT_FIELDS if name not in content]
     if missing:
         raise ValueError(f"Cinematic Brief 缺少客观字段：{', '.join(missing)}")
@@ -112,7 +127,7 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
         source_brief_sha256=_canonical_sha256(brief),
         translation_parameters=(
             objective_translation_parameters(translation_parameters)
-            if schema_version in {"0.2", "0.3", "0.4", "0.5"}
+            if schema_version in {"0.2", "0.3", "0.4", "0.5", "0.6"}
             else None
         ),
         explicit_requirements=requirements,

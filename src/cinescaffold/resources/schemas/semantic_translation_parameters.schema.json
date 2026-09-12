@@ -1,16 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/semantic_translation_parameters.schema.json",
-  "title": "Semantic Translation Parameters v0.3",
+  "title": "Semantic Translation Parameters v0.4",
   "type": "object",
   "properties": {
-    "schema_version": {"type": "string", "const": "0.3"},
+    "schema_version": {"type": "string", "const": "0.4"},
     "rules_version": {"type": "string"},
     "coordinate_system": {"$ref": "#/$defs/coordinateSystem"},
     "input_slots": {"$ref": "#/$defs/inputSlots"},
     "emotion_class": {"$ref": "#/$defs/emotionClass"},
     "subjects": {"type": "array", "items": {"$ref": "#/$defs/subjectParameters"}},
     "motions": {"type": "array", "items": {"$ref": "#/$defs/motionParameters"}},
+    "scene_dynamics": {"$ref": "#/$defs/sceneDynamics"},
+    "temporal_relations": {"type": "array", "items": {"$ref": "#/$defs/temporalRelation"}},
     "scene": {"$ref": "#/$defs/sceneParameters"},
     "camera": {"$ref": "#/$defs/cameraParameters"},
     "composition": {"$ref": "#/$defs/compositionParameters"},
@@ -20,7 +22,7 @@
   },
   "required": [
     "schema_version", "rules_version", "coordinate_system", "input_slots",
-    "emotion_class", "subjects", "motions", "scene", "camera", "composition",
+    "emotion_class", "subjects", "motions", "scene_dynamics", "temporal_relations", "scene", "camera", "composition",
     "lighting", "explicit_override_paths", "precedence"
   ],
   "additionalProperties": false,
@@ -114,6 +116,7 @@
       "type": "object",
       "properties": {
         "motion_index": {"type": "integer"},
+        "motion_id": {"type": "string"},
         "subject_id": {"type": ["string", "null"]},
         "action_kind": {"type": "string"},
         "motion_type": {"type": "string"},
@@ -125,6 +128,7 @@
         "carrier_id": {"type": ["string", "null"]},
         "path_type": {"type": "string"},
         "timeline_event_id": {"type": ["string", "null"]},
+        "narrative_required": {"type": "boolean"},
         "postconditions": {
           "type": "object",
           "properties": {
@@ -142,10 +146,38 @@
         "source_status": {"$ref": "#/$defs/sourceStatus"}
       },
       "required": [
-        "motion_index", "subject_id", "action_kind", "motion_type", "motion_mode",
+        "motion_index", "motion_id", "subject_id", "action_kind", "motion_type", "motion_mode",
         "speed_range_mps", "direction_mode", "direction_vector_world", "target_id",
-        "carrier_id", "path_type", "timeline_event_id", "postconditions",
+        "carrier_id", "path_type", "timeline_event_id", "narrative_required", "postconditions",
         "start_time_seconds", "end_time_seconds", "source_status"
+      ],
+      "additionalProperties": false
+    },
+    "sceneDynamics": {
+      "type": "object",
+      "properties": {
+        "mode": {"type": "string", "enum": ["static", "dynamic"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "reason": {"type": "string"}
+      },
+      "required": ["mode", "source_status", "reason"],
+      "additionalProperties": false
+    },
+    "temporalRelation": {
+      "type": "object",
+      "properties": {
+        "relation_id": {"type": "string"},
+        "source_event_id": {"type": "string"},
+        "target_event_id": {"type": "string"},
+        "relation": {"type": "string"},
+        "minimum_gap_seconds": {"type": ["number", "null"]},
+        "maximum_gap_seconds": {"type": ["number", "null"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": [
+        "relation_id", "source_event_id", "target_event_id", "relation",
+        "minimum_gap_seconds", "maximum_gap_seconds", "source_status", "source_text"
       ],
       "additionalProperties": false
     },
