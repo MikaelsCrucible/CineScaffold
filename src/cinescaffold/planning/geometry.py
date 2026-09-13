@@ -407,6 +407,133 @@ def geometry_bounding_radius(geometry: ProxyGeometry) -> float:
     return 0.5 * math.sqrt(sum(item * item for item in geometry.size_xy_m))
 
 
+def directional_support_extent(
+    geometry: ProxyGeometry,
+    transform: TransformValue,
+    direction: Vec3,
+) -> float:
+    """Return the transformed proxy half-extent along a world-space direction."""
+
+    unit = normalize(direction)
+    if length(unit) < 1e-8:
+        return 0.0
+    rotation = transform.rotation_quaternion_wxyz or IDENTITY_QUATERNION
+    scale = transform.scale or UNIT_SCALE
+    local_direction = rotate_vector(quaternion_conjugate(rotation), unit)
+    if geometry.type == "sphere":
+        return geometry.radius_m * math.sqrt(
+            sum(
+                (local_direction[index] * scale[index]) ** 2
+                for index in range(3)
+            )
+        )
+    if geometry.type == "capsule":
+        axis = {"+X": 0, "+Y": 1, "+Z": 2}[geometry.axis]
+        radial_support = geometry.radius_m * math.sqrt(
+            sum(
+                (local_direction[index] * scale[index]) ** 2
+                for index in range(3)
+            )
+        )
+        segment_support = (
+            abs(local_direction[axis])
+            * scale[axis]
+            * geometry.segment_length_m
+            / 2.0
+        )
+        return radial_support + segment_support
+    if geometry.type in {"cylinder", "cone"}:
+        axis = {"+X": 0, "+Y": 1, "+Z": 2}[geometry.axis]
+        radius = (
+            geometry.radius_m
+            if geometry.type == "cylinder"
+            else max(geometry.radius_bottom_m, geometry.radius_top_m)
+        )
+        radial_axes = [index for index in range(3) if index != axis]
+        radial_support = radius * math.sqrt(
+            sum(
+                (local_direction[index] * scale[index]) ** 2
+                for index in radial_axes
+            )
+        )
+        axial_support = (
+            abs(local_direction[axis]) * scale[axis] * geometry.depth_m / 2.0
+        )
+        return radial_support + axial_support
+    return max(
+        abs(
+            dot(
+                rotate_vector(
+                    rotation,
+                    tuple(point[index] * scale[index] for index in range(3)),
+                ),
+                unit,
+            )
+        )
+        for point in geometry_local_bounds_points(geometry)
+    )
+
+
+def surface_clearance_ratio(
+    first_geometry: ProxyGeometry,
+    first_transform: TransformValue,
+    second_geometry: ProxyGeometry,
+    second_transform: TransformValue,
+    *,
+    ground_plane: bool,
+) -> tuple[float, float, float]:
+    """Measure edge clearance relative to the larger directional full extent."""
+
+    first_center = first_transform.translation_m or (0.0, 0.0, 0.0)
+    second_center = second_transform.translation_m or (0.0, 0.0, 0.0)
+    delta = subtract(second_center, first_center)
+    if ground_plane:
+        delta = (delta[0], delta[1], 0.0)
+    center_distance = length(delta)
+    direction = normalize(delta) if center_distance > 1e-8 else (0.0, 1.0, 0.0)
+    first_support = directional_support_extent(
+        first_geometry,
+        first_transform,
+        direction,
+    )
+    second_support = directional_support_extent(
+        second_geometry,
+        second_transform,
+        direction,
+    )
+    clearance = center_distance - first_support - second_support
+    characteristic_extent = 2.0 * max(first_support, second_support, 1e-8)
+    return clearance / characteristic_extent, clearance, characteristic_extent
+
+
+def surface_clearance_target_distance(
+    first_geometry: ProxyGeometry,
+    first_transform: TransformValue,
+    second_geometry: ProxyGeometry,
+    second_transform: TransformValue,
+    direction: Vec3,
+    target_ratio: float,
+) -> float:
+    """Convert a normalized edge-clearance request into a center distance."""
+
+    first_support = directional_support_extent(
+        first_geometry,
+        first_transform,
+        direction,
+    )
+    second_support = directional_support_extent(
+        second_geometry,
+        second_transform,
+        direction,
+    )
+    characteristic_extent = 2.0 * max(first_support, second_support, 1e-8)
+    return (
+        first_support
+        + second_support
+        + target_ratio * characteristic_extent
+    )
+
+
 def rotate_vector(quaternion: Quaternion, vector: Vec3) -> Vec3:
     pure: Quaternion = (0.0, *vector)
     rotated = quaternion_multiply(quaternion_multiply(quaternion, pure), quaternion_conjugate(quaternion))

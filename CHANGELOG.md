@@ -4,6 +4,7 @@
 
 ### Added
 
+- Toolkit v0.29 新增 `surface_clearance_range`：按两代理沿关系方向的外边界测量净空，并以较大代理的方向完整尺寸归一化；支持有界最小、偏好和最大比例以及 world/ground-plane 测量空间。
 - Cinematic Brief v0.6 增加主体静态/动态分类、稳定动作 ID、关键叙事标记、按实体独立的稀疏动作时间线和类型化事件关系；顺序描述不再机械等分总时长。
 - 新增 Narrative Fidelity Gate，简化交付仍必须保留类型化动作、容纳/显隐后置状态和全部 explicit 要求。
 
@@ -17,6 +18,7 @@
 
 ### Changed
 
+- 明确的“远处/背景”关系现在必须同时具有 `depth_order` 与 `surface_clearance_range` hard 证据。Design Option、确定性布局 Solver 和逐帧 Validator 共用同一方向包围体计算；距离档位相对物体尺寸而非固定米数，Agent 可在受限 Patch 中调整比例范围但不能绕过门禁直接写最终坐标。
 - Semantic 输出的 `action_kind` 收敛为 hold/locomotion/interact/other；Planning 只依据明确方向、路径、载体和后置状态建立几何，不再把 arrive/depart/transport 等叙事标签二次加工为目标或方向。
 - Scene Planner 必须先联合检查每个实体的完整阶段时间线；未明确转向或反转的线性运动跨静止阶段继承同一路线方向，事件末端会合关系不再把另一个参与者变成运动目标。
 - Design Option 只向 Agent 暴露完整 hard-pass 候选，并在应用时再次完整复验。
@@ -26,6 +28,7 @@
 
 ### Fixed
 
+- 修复巨型代理仅以中心深度满足“远处”，导致中心相距十余米但人物距飞船边缘不足一米仍被 Commit Gate 接受的问题；旋转后的长轴也会进入方向相关净空计算。
 - 修复 Semantic 模型把“同时结束”误写成 `meets`，并以 inferred `maximum_gap_seconds=0` 阻止关系规范化的问题；推断零间隔现在随错误标签一起清除并按实际区间改为 `ends_with` 等精确关系，用户明确数值间隔继续失败关闭。
 - 修复接载叙事中车辆被错误要求朝乘客移动、随后又远离同一乘客的问题；乘员进入可由隐藏后置状态和紧接的 carried 关系满足，不再强制人物代理移动到载体中心。
 - 确定性后备规划器不再根据 boarding/departure 等事件名制造方向；旧版接车 Brief 仍可在无专用动作种类的情况下生成 hard-pass Design Option。
@@ -37,6 +40,7 @@
 
 ### Verification
 
+- Python 3.12 完整离线回归 297 项通过；新增回归覆盖超大自定义代理、旋转长方体、far explicit 双约束完整性、比例范围校验和统一 Solver/Validator 行为。
 - Python 3.12 完整离线回归 290 项通过；旧版道路接车 Brief 的 Mock 端到端规划、inferred zero-gap 时间关系和已取消真实失败结构的离线 Design 重放均成功。
 - `uv build` 成功生成 Core 0.8.9 的 sdist 与 wheel。
 - Blender 5.2.1 LTS 真实后台验证静态主体/推镜和人物/车辆运动两类 Scene IR；GLB 约 122 KB，单次导出约 0.03 秒，稳定节点映射、摄影机、TRS 动画与 Scene IR 显隐补偿均通过结构检查。

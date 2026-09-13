@@ -14,6 +14,7 @@ from cinescaffold.planning.design import (
 )
 from cinescaffold.planning.domain import PlanningProfile, ValidationReport, Violation
 from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
+from cinescaffold.planning.geometry import surface_clearance_ratio
 from cinescaffold.planning.models import _mock_scene_skeleton
 from cinescaffold.planning.objective import ObjectiveRequirement, project_objective_brief
 from cinescaffold.planning.toolkit import ScenePlanningToolkit, _route_anchor_failures
@@ -228,7 +229,7 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertEqual(size_range["selected_xyz"], [35.0, 11.0, 5.5])
         self.assertEqual(suggested["data"]["custom_size_request_count"], 1)
 
-    def test_design_options_never_expose_a_hard_invalid_candidate(self) -> None:
+    def test_large_proxy_is_placed_by_surface_clearance_not_center_gap(self) -> None:
         toolkit = _desert_toolkit()
         toolkit.submit_scene_skeleton(_desert_skeleton())
 
@@ -240,16 +241,25 @@ class PlanningDesignTest(unittest.TestCase):
                     "minimum_xyz_m": [60.0, 18.0, 8.0],
                     "maximum_xyz_m": [80.0, 30.0, 12.0],
                     "preferred_xyz_m": [70.0, 24.0, 10.0],
-                    "rationale": "故意制造无法投影的候选以测试暴露前门禁",
+                    "rationale": "验证巨型代理仍按边缘净空而非固定中心距离摆放",
                 }
             ],
         )
 
-        self.assertEqual(result["status"], "no_change")
-        self.assertEqual(result["data"]["options"], [])
-        self.assertTrue(
-            any("全部硬约束" in warning for warning in result["warnings"])
+        self.assertEqual(result["status"], "ok")
+        option = result["data"]["options"][0]
+        toolkit.apply_design_option(0, option["option_id"])
+        state = toolkit.store.get()
+        ratio, clearance_m, characteristic_extent_m = surface_clearance_ratio(
+            state.entities["man_01"].proxy,
+            state.entities["man_01"].solved_transform,
+            state.entities["ship_01"].proxy,
+            state.entities["ship_01"].solved_transform,
+            ground_plane=True,
         )
+        self.assertGreaterEqual(ratio, 0.5)
+        self.assertGreater(clearance_m, 0.0)
+        self.assertGreater(characteristic_extent_m, 20.0)
 
     def test_custom_size_request_rejects_unknown_entity(self) -> None:
         toolkit = _desert_toolkit()

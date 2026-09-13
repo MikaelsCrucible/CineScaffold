@@ -383,6 +383,7 @@ class EntitySpec(StrictModel):
 CONSTRAINT_KINDS = (
     "relative_position",
     "distance_range",
+    "surface_clearance_range",
     "depth_order",
     "orientation_relation",
     "contact",
@@ -415,6 +416,7 @@ CONSTRAINT_KINDS = (
 ConstraintKind = Literal[
     "relative_position",
     "distance_range",
+    "surface_clearance_range",
     "depth_order",
     "orientation_relation",
     "contact",
@@ -469,6 +471,32 @@ class DistanceRangeParameters(StrictModel):
     entity_ids: tuple[str, str]
     minimum_meters: float = Field(ge=0)
     maximum_meters: float = Field(ge=0)
+
+
+class SurfaceClearanceRangeParameters(StrictModel):
+    entity_ids: tuple[str, str]
+    minimum_ratio: float = Field(ge=0)
+    preferred_ratio: float | None = Field(default=None, ge=0)
+    maximum_ratio: float = Field(ge=0)
+    scale_basis: Literal["larger_directional_extent"] = (
+        "larger_directional_extent"
+    )
+    space: Literal["world", "ground_plane"] = "ground_plane"
+
+    @model_validator(mode="after")
+    def validate_ratio_range(self) -> SurfaceClearanceRangeParameters:
+        values = [self.minimum_ratio, self.maximum_ratio]
+        if self.preferred_ratio is not None:
+            values.append(self.preferred_ratio)
+        if not all(math.isfinite(item) for item in values):
+            raise ValueError("surface_clearance_range 比例必须是有限数")
+        if self.maximum_ratio < self.minimum_ratio:
+            raise ValueError("surface_clearance_range 比例上下界颠倒")
+        if self.preferred_ratio is not None and not (
+            self.minimum_ratio <= self.preferred_ratio <= self.maximum_ratio
+        ):
+            raise ValueError("surface_clearance_range 偏好比例越界")
+        return self
 
 
 class DepthOrderParameters(StrictModel):
@@ -570,6 +598,7 @@ class UnsupportedConstraintParameters(StrictModel):
 ConstraintParameters = (
     RelativePositionParameters
     | DistanceRangeParameters
+    | SurfaceClearanceRangeParameters
     | DepthOrderParameters
     | ScreenRegionParameters
     | ProjectedSizeParameters
@@ -606,6 +635,7 @@ class ConstraintSpec(StrictModel):
         expected = {
             "relative_position": RelativePositionParameters,
             "distance_range": DistanceRangeParameters,
+            "surface_clearance_range": SurfaceClearanceRangeParameters,
             "depth_order": DepthOrderParameters,
             "screen_region": ScreenRegionParameters,
             "projected_size": ProjectedSizeParameters,
@@ -766,6 +796,8 @@ class PlanningProfile(StrictModel):
     default_focal_length_mm: float = 35.0
     default_camera_distance_m: float = 12.0
     default_depth_gap_m: float = 12.0
+    far_clearance_ratio_range: tuple[float, float] = (0.5, 2.0)
+    far_clearance_preferred_ratio: float = 1.0
     stationary_speed_max_mps: float = 0.0001
     slow_speed_range_mps: tuple[float, float] = (0.01, 2.0)
     medium_speed_range_mps: tuple[float, float] = (0.5, 4.0)
@@ -780,6 +812,20 @@ class PlanningProfile(StrictModel):
     )
     numeric_tolerance: float = Field(default=1e-8, gt=0)
     random_seed: int = 0
+
+    @model_validator(mode="after")
+    def validate_far_clearance_profile(self) -> PlanningProfile:
+        minimum, maximum = self.far_clearance_ratio_range
+        if (
+            not math.isfinite(minimum)
+            or not math.isfinite(maximum)
+            or minimum < 0
+            or maximum < minimum
+        ):
+            raise ValueError("far_clearance_ratio_range 必须是合法有限范围")
+        if not minimum <= self.far_clearance_preferred_ratio <= maximum:
+            raise ValueError("far_clearance_preferred_ratio 必须位于范围内")
+        return self
 
 
 class CommitRequest(StrictModel):

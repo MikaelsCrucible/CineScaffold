@@ -414,6 +414,31 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertIn("间距上下界颠倒", result["warnings"][0])
 
+    def test_surface_clearance_rejects_preference_outside_bounded_range(self) -> None:
+        result = _toolkit().apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "invalid_clearance_range",
+                    "type": "surface_clearance_range",
+                    "strength": "soft",
+                    "subjects": ["man_01", "ship_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "entity_ids": ["man_01", "ship_01"],
+                        "minimum_ratio": 0.5,
+                        "preferred_ratio": 3.0,
+                        "maximum_ratio": 2.0,
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.layout",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("偏好比例越界", result["warnings"][0])
+
     def test_relative_position_enforces_maximum_gap(self) -> None:
         toolkit = _toolkit()
         man = _man_entity() | {
@@ -894,7 +919,40 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             for item in validation["violations"]
             if item["code"] == "EXPLICIT_REQUIREMENT_CONSTRAINT_INCOMPLETE"
         )
-        self.assertEqual(violation["expected"]["constraint_types"], ["depth_order"])
+        self.assertEqual(
+            violation["expected"]["constraint_types"],
+            ["depth_order", "surface_clearance_range"],
+        )
+
+    def test_surface_clearance_uses_rotated_proxy_edges_not_center_distance(self) -> None:
+        toolkit = _solved_toolkit()
+
+        def place_rotated_ship_nearby(state):
+            ship = state.entities["ship_01"]
+            ship.solved_transform = ship.solved_transform.model_copy(
+                update={
+                    "translation_m": (0.0, 50.0, 7.5),
+                    "rotation_quaternion_wxyz": (
+                        0.70710678,
+                        0.0,
+                        0.0,
+                        0.70710678,
+                    ),
+                }
+            )
+            return ([{"operation": "test", "path": "entities.ship_01"}], [])
+
+        toolkit.store.apply(place_rotated_ship_nearby)
+        validation = toolkit.validate_candidate(checks=["composition"])
+        violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "SURFACE_CLEARANCE_RANGE_VIOLATED"
+        )
+
+        self.assertFalse(validation["data"]["hard_pass"])
+        self.assertLess(violation["actual"]["surface_clearance_m"], 10.0)
+        self.assertLess(violation["actual"]["clearance_ratio"], 0.5)
 
     def test_entity_fully_below_horizontal_ground_is_rejected(self) -> None:
         toolkit = _toolkit()
@@ -1420,6 +1478,23 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                         "near_entity_id": "man_01",
                         "far_entity_id": "ship_01",
                         "minimum_depth_gap_meters": 1.0,
+                    },
+                    "source_status": "explicit",
+                    "source_ref": relationship_ref,
+                },
+                {
+                    "constraint_id": "ship_clear_of_man",
+                    "type": "surface_clearance_range",
+                    "strength": "hard",
+                    "weight": 1.0,
+                    "subjects": ["man_01", "ship_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "entity_ids": ["man_01", "ship_01"],
+                        "minimum_ratio": 0.5,
+                        "preferred_ratio": 1.0,
+                        "maximum_ratio": 2.0,
+                        "space": "ground_plane",
                     },
                     "source_status": "explicit",
                     "source_ref": relationship_ref,
@@ -2244,6 +2319,23 @@ def _solved_toolkit() -> ScenePlanningToolkit:
                     "near_entity_id": "man_01",
                     "far_entity_id": "ship_01",
                     "minimum_depth_gap_meters": 20.0,
+                },
+                "source_status": "explicit",
+                "source_ref": "content.scene_design.relationships[0]",
+            },
+            {
+                "constraint_id": "ship_clear_of_man",
+                "type": "surface_clearance_range",
+                "strength": "hard",
+                "weight": 1.0,
+                "subjects": ["man_01", "ship_01"],
+                "time_range_seconds": [0.0, 6.0],
+                "parameters": {
+                    "entity_ids": ["man_01", "ship_01"],
+                    "minimum_ratio": 0.5,
+                    "preferred_ratio": 1.0,
+                    "maximum_ratio": 2.0,
+                    "space": "ground_plane",
                 },
                 "source_status": "explicit",
                 "source_ref": "content.scene_design.relationships[0]",

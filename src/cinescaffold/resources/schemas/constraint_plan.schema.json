@@ -571,6 +571,7 @@
           "enum": [
             "relative_position",
             "distance_range",
+            "surface_clearance_range",
             "depth_order",
             "orientation_relation",
             "contact",
@@ -645,6 +646,9 @@
             },
             {
               "$ref": "#/$defs/DistanceRangeParameters"
+            },
+            {
+              "$ref": "#/$defs/SurfaceClearanceRangeParameters"
             },
             {
               "$ref": "#/$defs/DepthOrderParameters"
@@ -2126,6 +2130,70 @@
         "radius_m"
       ],
       "title": "SphereGeometry",
+      "type": "object"
+    },
+    "SurfaceClearanceRangeParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_ids": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "minimum_ratio": {
+          "minimum": 0,
+          "title": "Minimum Ratio",
+          "type": "number"
+        },
+        "preferred_ratio": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preferred Ratio"
+        },
+        "maximum_ratio": {
+          "minimum": 0,
+          "title": "Maximum Ratio",
+          "type": "number"
+        },
+        "scale_basis": {
+          "const": "larger_directional_extent",
+          "default": "larger_directional_extent",
+          "title": "Scale Basis",
+          "type": "string"
+        },
+        "space": {
+          "default": "ground_plane",
+          "enum": [
+            "world",
+            "ground_plane"
+          ],
+          "title": "Space",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_ids",
+        "minimum_ratio",
+        "maximum_ratio"
+      ],
+      "title": "SurfaceClearanceRangeParameters",
       "type": "object"
     },
     "TimelineSpec": {

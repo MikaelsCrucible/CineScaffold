@@ -50,16 +50,19 @@ from cinescaffold.planning.geometry import (
     sample_scalar_track,
     sample_transform_track,
     subtract,
+    surface_clearance_ratio,
+    surface_clearance_target_distance,
 )
 from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.28"
+TOOLKIT_VERSION = "0.29"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
     "distance_range",
+    "surface_clearance_range",
     "depth_order",
     "screen_region",
     "projected_size",
@@ -146,6 +149,7 @@ REPAIR_PREFERENCES = {
 PER_FRAME_CONSTRAINTS = {
     "relative_position",
     "distance_range",
+    "surface_clearance_range",
     "depth_order",
     "screen_region",
     "projected_size",
@@ -640,6 +644,26 @@ class ScenePlanningToolkit:
                 },
                 "distance_range": {
                     "required": ["entity_ids", "minimum_meters", "maximum_meters"],
+                },
+                "surface_clearance_range": {
+                    "required": [
+                        "entity_ids",
+                        "minimum_ratio",
+                        "maximum_ratio",
+                    ],
+                    "optional": [
+                        "preferred_ratio",
+                        "scale_basis",
+                        "space",
+                    ],
+                    "allowed_values": {
+                        "scale_basis": ["larger_directional_extent"],
+                        "space": ["world", "ground_plane"],
+                    },
+                    "defaults": {
+                        "scale_basis": "larger_directional_extent",
+                        "space": "ground_plane",
+                    },
                 },
                 "depth_order": {
                     "required": ["near_entity_id", "far_entity_id"],
@@ -1806,6 +1830,7 @@ class ScenePlanningToolkit:
             "relative_position",
             "depth_order",
             "distance_range",
+            "surface_clearance_range",
         }
         unsupported_constraints = sorted(
             constraint.constraint_id
@@ -1866,7 +1891,12 @@ class ScenePlanningToolkit:
                 for constraint in state.constraints.values():
                     if selected_ids and constraint.constraint_id not in selected_ids:
                         continue
-                    if constraint.type in {"relative_position", "depth_order", "distance_range"}:
+                    if constraint.type in {
+                        "relative_position",
+                        "depth_order",
+                        "distance_range",
+                        "surface_clearance_range",
+                    }:
                         if _apply_layout_constraint(state, constraint, self.profile):
                             changes.append({"operation": "solve", "path": f"constraints.{constraint.constraint_id}"})
 
@@ -3191,6 +3221,57 @@ def _apply_layout_constraint(
         distance = (minimum + maximum) / 2.0
         state.entities[ids[1]].solved_transform = second.model_copy(
             update={"translation_m": (first.translation_m[0], first.translation_m[1] + distance, second.translation_m[2])}
+        )
+        return True
+    if constraint.type == "surface_clearance_range":
+        ids = params.get("entity_ids") or constraint.subjects
+        if (
+            not isinstance(ids, (list, tuple))
+            or len(ids) != 2
+            or any(item not in state.entities for item in ids)
+        ):
+            return False
+        first_entity = state.entities[ids[0]]
+        second_entity = state.entities[ids[1]]
+        first = _complete_transform(first_entity.solved_transform)
+        second = _complete_transform(second_entity.solved_transform)
+        ground_plane = params.get("space", "ground_plane") == "ground_plane"
+        delta = subtract(second.translation_m, first.translation_m)
+        if ground_plane:
+            delta = (delta[0], delta[1], 0.0)
+        direction = normalize(delta)
+        if length(direction) < profile.numeric_tolerance:
+            direction = (0.0, 1.0, 0.0)
+        preferred_ratio = params.get("preferred_ratio")
+        target_ratio = (
+            float(preferred_ratio)
+            if preferred_ratio is not None
+            else (
+                float(params.get("minimum_ratio", 0.0))
+                + float(params.get("maximum_ratio", 0.0))
+            )
+            / 2.0
+        )
+        target_center_distance = surface_clearance_target_distance(
+            first_entity.proxy,
+            first,
+            second_entity.proxy,
+            second,
+            direction,
+            target_ratio,
+        )
+        target_center = add(
+            first.translation_m,
+            tuple(component * target_center_distance for component in direction),
+        )
+        if ground_plane:
+            target_center = (
+                target_center[0],
+                target_center[1],
+                second.translation_m[2],
+            )
+        state.entities[ids[1]].solved_transform = second.model_copy(
+            update={"translation_m": target_center}
         )
         return True
     return False
@@ -5036,7 +5117,10 @@ def _required_constraint_types(
         relationship = objective_brief.scene_design.get("relationships", [])[index]
     except (IndexError, TypeError, ValueError):
         return set()
-    relation = str(relationship.get("type", "")).lower()
+    relation = " ".join(
+        str(relationship.get(name, ""))
+        for name in ("type", "strength")
+    ).lower()
     has_entity_pair = all(
         isinstance(relationship.get(name), str)
         for name in ("subject_id", "reference_id")
@@ -5045,8 +5129,13 @@ def _required_constraint_types(
         marker in relation
         for marker in ("远", "far", "background", "远景", "后景")
     ):
-        # 欧氏距离不足以表达画面中的“远处”，还必须证明其摄影机深度在主体之后。
-        return {"depth_order"} if has_entity_pair else set()
+        # “远处”同时需要物体表面净空和摄影机深度；只验证中心点会让
+        # 巨型代理在数值上很远、几何上却贴住前景主体。
+        return (
+            {"depth_order", "surface_clearance_range"}
+            if has_entity_pair
+            else set()
+        )
     if any(
         marker in relation
         for marker in ("近", "靠近", "旁边", "身边", "near", "beside", "adjacent")
@@ -5257,6 +5346,48 @@ def _constraint_violation(
                 profile.numeric_tolerance,
             ):
                 return _constraint_error(constraint, "DISTANCE_RANGE_VIOLATED", {"distance_m": actual})
+
+        elif constraint.type == "surface_clearance_range":
+            ids = params.get("entity_ids") or constraint.subjects
+            if (
+                not isinstance(ids, (list, tuple))
+                or len(ids) != 2
+                or any(item not in transforms for item in ids)
+            ):
+                return _constraint_error(
+                    constraint,
+                    "CONSTRAINT_REFERENCE_MISSING",
+                    None,
+                )
+            actual_ratio, clearance_m, characteristic_extent_m = (
+                surface_clearance_ratio(
+                    state.entities[ids[0]].proxy,
+                    transforms[ids[0]],
+                    state.entities[ids[1]].proxy,
+                    transforms[ids[1]],
+                    ground_plane=params.get("space", "ground_plane")
+                    == "ground_plane",
+                )
+            )
+            if not _within_range(
+                actual_ratio,
+                float(params.get("minimum_ratio", 0.0)),
+                float(params.get("maximum_ratio", math.inf)),
+                profile.numeric_tolerance,
+            ):
+                return _constraint_error(
+                    constraint,
+                    "SURFACE_CLEARANCE_RANGE_VIOLATED",
+                    {
+                        "clearance_ratio": actual_ratio,
+                        "surface_clearance_m": clearance_m,
+                        "characteristic_extent_m": characteristic_extent_m,
+                        "measurement_space": params.get(
+                            "space",
+                            "ground_plane",
+                        ),
+                    },
+                )
 
         elif constraint.type in {"screen_region", "projected_size", "keep_in_frame"}:
             entity_id = params.get("entity_id")

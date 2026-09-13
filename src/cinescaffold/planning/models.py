@@ -667,27 +667,64 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
     constraints: list[dict[str, Any]] = []
     for index, relationship in enumerate(objective.scene_design.get("relationships", [])):
         source_ref = f"content.scene_design.relationships[{index}]"
-        relation = str(relationship.get("type", "")).lower()
+        relation = " ".join(
+            str(relationship.get(name, ""))
+            for name in ("type", "strength")
+        ).lower()
         subject_id = relationship.get("subject_id")
         reference_id = relationship.get("reference_id")
         if subject_id and reference_id and any(marker in relation for marker in ("远", "far", "background")):
-            constraints.append(
-                {
-                    "constraint_id": f"depth_{index + 1:02d}",
-                    "type": "depth_order",
-                    "strength": "hard" if relationship.get("source_status") == "explicit" else "soft",
-                    "weight": 1.0,
-                    "subjects": [reference_id, subject_id],
-                    "time_range_seconds": [0.0, _duration(objective)],
-                    "parameters": {
-                        "near_entity_id": reference_id,
-                        "far_entity_id": subject_id,
-                        "camera_id": "camera_main",
-                        "minimum_depth_gap_meters": 20.0,
+            constraints.extend(
+                [
+                    {
+                        "constraint_id": f"depth_{index + 1:02d}",
+                        "type": "depth_order",
+                        "strength": (
+                            "hard"
+                            if relationship.get("source_status") == "explicit"
+                            else "soft"
+                        ),
+                        "weight": 1.0,
+                        "subjects": [reference_id, subject_id],
+                        "time_range_seconds": [0.0, _duration(objective)],
+                        "parameters": {
+                            "near_entity_id": reference_id,
+                            "far_entity_id": subject_id,
+                            "camera_id": "camera_main",
+                            "minimum_depth_gap_meters": 20.0,
+                        },
+                        "source_status": relationship.get(
+                            "source_status",
+                            "inferred",
+                        ),
+                        "source_ref": source_ref,
                     },
-                    "source_status": relationship.get("source_status", "inferred"),
-                    "source_ref": source_ref,
-                }
+                    {
+                        "constraint_id": f"clearance_{index + 1:02d}",
+                        "type": "surface_clearance_range",
+                        "strength": (
+                            "hard"
+                            if relationship.get("source_status") == "explicit"
+                            else "soft"
+                        ),
+                        "weight": 1.0,
+                        "subjects": [reference_id, subject_id],
+                        "time_range_seconds": [0.0, _duration(objective)],
+                        "parameters": {
+                            "entity_ids": [reference_id, subject_id],
+                            "minimum_ratio": 0.5,
+                            "preferred_ratio": 1.0,
+                            "maximum_ratio": 2.0,
+                            "scale_basis": "larger_directional_extent",
+                            "space": "ground_plane",
+                        },
+                        "source_status": relationship.get(
+                            "source_status",
+                            "inferred",
+                        ),
+                        "source_ref": source_ref,
+                    },
+                ]
             )
 
     motion_tracks: list[dict[str, Any]] = []

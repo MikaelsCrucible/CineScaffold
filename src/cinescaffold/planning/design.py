@@ -22,7 +22,9 @@ from cinescaffold.planning.domain import (
 )
 from cinescaffold.planning.geometry import (
     look_at_camera_quaternion,
+    normalize,
     sample_transform_track,
+    surface_clearance_target_distance,
 )
 from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import canonical_hash
@@ -805,7 +807,26 @@ def _place_entities(
         subject_position = list(subject.solved_transform.translation_m or (0.0, 0.0, 0.0))
         reference_position = reference.solved_transform.translation_m or (0.0, 0.0, 0.0)
         if relation.kind == "camera_depth_order":
-            subject_position[1] = reference_position[1] + profile.default_depth_gap_m
+            # A fixed center gap collapses for large proxies. Place explicit
+            # foreground/background relations by edge clearance relative to size.
+            direction = normalize(
+                (
+                    subject_position[0] - reference_position[0],
+                    profile.default_depth_gap_m,
+                    0.0,
+                )
+            )
+            center_distance = surface_clearance_target_distance(
+                reference.proxy,
+                reference.solved_transform,
+                subject.proxy,
+                subject.solved_transform,
+                direction,
+                profile.far_clearance_preferred_ratio,
+            )
+            x_delta = subject_position[0] - reference_position[0]
+            y_delta = math.sqrt(max(center_distance**2 - x_delta**2, 0.0))
+            subject_position[1] = reference_position[1] + y_delta
         elif relation.kind == "relative_position" and relation.direction:
             axis, sign = {
                 "left": (0, -1.0),
@@ -846,48 +867,73 @@ def _build_relation_constraints(
             "source_status": relation.source_status,
             "source_ref": relation.source_ref,
         }
+        payloads: list[dict[str, Any]] = []
         if relation.kind == "camera_depth_order":
-            payload = common | {
-                "type": "depth_order",
-                "parameters": {
-                    "near_entity_id": relation.reference_id,
-                    "far_entity_id": relation.subject_id,
-                    "camera_id": "camera_main",
-                    "minimum_depth_gap_meters": profile.default_depth_gap_m * 0.5,
+            minimum_ratio, maximum_ratio = profile.far_clearance_ratio_range
+            payloads = [
+                common | {
+                    "type": "depth_order",
+                    "parameters": {
+                        "near_entity_id": relation.reference_id,
+                        "far_entity_id": relation.subject_id,
+                        "camera_id": "camera_main",
+                        "minimum_depth_gap_meters": profile.default_depth_gap_m * 0.5,
+                    },
                 },
-            }
+                common | {
+                    "constraint_id": f"skeleton_{relation.relation_id}_clearance",
+                    "type": "surface_clearance_range",
+                    "parameters": {
+                        "entity_ids": [relation.reference_id, relation.subject_id],
+                        "minimum_ratio": minimum_ratio,
+                        "preferred_ratio": profile.far_clearance_preferred_ratio,
+                        "maximum_ratio": maximum_ratio,
+                        "scale_basis": "larger_directional_extent",
+                        "space": "ground_plane",
+                    },
+                },
+            ]
         elif relation.kind == "relative_position":
-            payload = common | {
-                "type": "relative_position",
-                "parameters": {
-                    "subject_id": relation.subject_id,
-                    "reference_id": relation.reference_id,
-                    "relation": relation.direction,
-                    "space": "world",
-                    "minimum_gap": 0.5,
-                    "maximum_gap": profile.default_depth_gap_m * 2.0,
-                },
-            }
+            payloads = [
+                common
+                | {
+                    "type": "relative_position",
+                    "parameters": {
+                        "subject_id": relation.subject_id,
+                        "reference_id": relation.reference_id,
+                        "relation": relation.direction,
+                        "space": "world",
+                        "minimum_gap": 0.5,
+                        "maximum_gap": profile.default_depth_gap_m * 2.0,
+                    },
+                }
+            ]
         elif relation.kind == "proximity":
-            payload = common | {
-                "type": "distance_range",
-                "parameters": {
-                    "entity_ids": [relation.subject_id, relation.reference_id],
-                    "minimum_meters": 0.0,
-                    "maximum_meters": 3.0,
-                },
-            }
+            payloads = [
+                common
+                | {
+                    "type": "distance_range",
+                    "parameters": {
+                        "entity_ids": [relation.subject_id, relation.reference_id],
+                        "minimum_meters": 0.0,
+                        "maximum_meters": 3.0,
+                    },
+                }
+            ]
         elif relation.kind == "scale_dominance":
-            payload = common | {
-                "type": "projected_scale_ratio",
-                "parameters": {
-                    "numerator_entity_id": relation.subject_id,
-                    "denominator_entity_id": relation.reference_id,
-                    "measurement": "height",
-                    "minimum_ratio": 2.0,
-                    "maximum_ratio": 20.0,
-                },
-            }
+            payloads = [
+                common
+                | {
+                    "type": "projected_scale_ratio",
+                    "parameters": {
+                        "numerator_entity_id": relation.subject_id,
+                        "denominator_entity_id": relation.reference_id,
+                        "measurement": "height",
+                        "minimum_ratio": 2.0,
+                        "maximum_ratio": 20.0,
+                    },
+                }
+            ]
         elif relation.kind == "orbit_around":
             subject = candidate.entities[relation.subject_id]
             reference = candidate.entities[relation.reference_id]
@@ -897,18 +943,22 @@ def _build_relation_constraints(
                 + _proxy_bounding_radius(reference)
                 + 2.0,
             )
-            payload = common | {
-                "type": "distance_range",
-                "parameters": {
-                    "entity_ids": [relation.subject_id, relation.reference_id],
-                    "minimum_meters": radius * 0.95,
-                    "maximum_meters": radius * 1.05,
-                },
-            }
+            payloads = [
+                common
+                | {
+                    "type": "distance_range",
+                    "parameters": {
+                        "entity_ids": [relation.subject_id, relation.reference_id],
+                        "minimum_meters": radius * 0.95,
+                        "maximum_meters": radius * 1.05,
+                    },
+                }
+            ]
         else:
             continue
-        constraint = ConstraintSpec.model_validate(payload)
-        constraints[constraint.constraint_id] = constraint
+        for payload in payloads:
+            constraint = ConstraintSpec.model_validate(payload)
+            constraints[constraint.constraint_id] = constraint
 
     for phase in skeleton.motion_phases:
         common = {
@@ -1637,6 +1687,17 @@ def _numeric_envelopes(
         for item in candidate.constraints.values()
         if item.type == "depth_order"
     ]
+    clearance_ratios = [
+        {
+            "entity_ids": list(item.parameters.entity_ids),
+            "minimum": item.parameters.minimum_ratio,
+            "preferred": item.parameters.preferred_ratio,
+            "maximum": item.parameters.maximum_ratio,
+            "scale_basis": item.parameters.scale_basis,
+        }
+        for item in candidate.constraints.values()
+        if item.type == "surface_clearance_range"
+    ]
     motion_speeds = [
         item.get("speed_range_mps")
         for item in (objective.translation_parameters or {}).get("motions", [])
@@ -1649,6 +1710,7 @@ def _numeric_envelopes(
             relative_margin=0.15,
         ),
         "depth_gap_m": _range_around(depth_gaps),
+        "surface_clearance_ratios": clearance_ratios,
         "motion_speed_ranges_mps": motion_speeds,
         "entity_size_ranges_m": {
             entity_id: (
