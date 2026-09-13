@@ -632,7 +632,7 @@ def build_design_candidate(
         strategy,
         size_requests or {},
     )
-    _place_entities(candidate, skeleton, profile, strategy)
+    _place_entities(candidate, skeleton, profile)
     orbit_radii = _orbit_radius_map(candidate, skeleton, profile)
     candidate.constraints = _build_relation_constraints(
         objective,
@@ -640,7 +640,6 @@ def build_design_candidate(
         candidate,
         profile,
         orbit_radii,
-        strategy,
     )
     candidate.motion_tracks = _build_motion(
         objective,
@@ -877,21 +876,24 @@ def _validate_requested_dimensions(
 
 def _camera_yaw_degrees(
     view: str,
-    strategy: str,
     *,
     subject_motion_readability_applicable: bool = True,
+    minimum_motion_obliqueness_degrees: float = 20.0,
 ) -> float:
-    if view == "unspecified" and not subject_motion_readability_applicable:
-        # Camera motion does not create a subject-motion axis. Static or
-        # state-only scenes therefore keep the ordinary oblique default even
-        # when a caller requests the motion-readability strategy.
-        return 35.0
+    if view == "unspecified":
+        # A static scene has no motion axis that could justify an arbitrary
+        # oblique view. Align it with canonical scene depth; moving scenes use
+        # only the validator's frozen minimum until the Agent selects a view.
+        return (
+            minimum_motion_obliqueness_degrees
+            if subject_motion_readability_applicable
+            else 0.0
+        )
     return {
         "front": 0.0,
         "rear": 180.0,
         "side": 90.0,
         "three_quarter": 45.0,
-        "unspecified": 55.0 if strategy == "maximize_motion_readability" else 35.0,
     }[view]
 
 
@@ -930,7 +932,6 @@ def _place_entities(
     candidate: CandidateState,
     skeleton: SceneSkeleton,
     profile: PlanningProfile,
-    strategy: str,
 ) -> None:
     for index, entity in enumerate(candidate.entities.values()):
         if entity.proxy.type == "plane":
@@ -1043,7 +1044,6 @@ def _build_relation_constraints(
     candidate: CandidateState,
     profile: PlanningProfile,
     orbit_radii: dict[tuple[str, str], float],
-    strategy: str,
 ) -> dict[str, ConstraintSpec]:
     constraints: dict[str, ConstraintSpec] = {}
     duration = candidate.timeline.duration_seconds
@@ -1624,10 +1624,12 @@ def _build_camera(
     view = skeleton.camera_intent.view_relation_to_motion
     yaw = _camera_yaw_degrees(
         view,
-        strategy,
         subject_motion_readability_applicable=any(
             item.kind in {"linear_move", "orbit", "carried"}
             for item in skeleton.motion_phases
+        ),
+        minimum_motion_obliqueness_degrees=(
+            profile.minimum_view_subject_motion_obliqueness_degrees
         ),
     )
     start = _camera_position(focus_point, start_distance, height, yaw)
@@ -2285,9 +2287,9 @@ def _design_assumptions(
     assumptions = [
         f"数值策略采用 {strategy}",
         (
-            "存在主体空间运动；未明确机位由 Toolkit 选择斜侧可读方向"
+            "存在主体空间运动；未明确机位只采用 Validator 冻结的最小可读斜角"
             if has_subject_translation
-            else "不存在主体空间运动；摄影机自身运动不触发运动可读性附加斜角"
+            else "不存在主体空间运动；未明确机位沿规范场景纵深轴观察"
         ),
         "所有范围都保留 explicit > inferred > default 的来源优先级",
     ]

@@ -368,7 +368,7 @@ class PlanningDesignTest(unittest.TestCase):
             (1.0, 0.0, 0.0, 0.0),
         )
 
-    def test_static_scene_rejects_motion_readability_strategy_and_uses_regular_yaw(self) -> None:
+    def test_static_scene_rejects_motion_readability_strategy_and_aligns_scene_depth(self) -> None:
         toolkit = _desert_toolkit()
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
             update={
@@ -401,9 +401,14 @@ class PlanningDesignTest(unittest.TestCase):
                 -(camera_position[1] - focus_position[1]),
             )
         )
-        self.assertAlmostEqual(yaw, 35.0)
+        self.assertAlmostEqual(yaw, 0.0)
+        ship_position = state.entities["ship_01"].solved_transform.translation_m
+        self.assertAlmostEqual(camera_position[0], focus_position[0])
+        self.assertAlmostEqual(ship_position[0], focus_position[0])
+        self.assertLess(camera_position[1], focus_position[1])
+        self.assertGreater(ship_position[1], focus_position[1])
         self.assertTrue(
-            any("不存在主体空间运动" in item for item in option["assumptions"])
+            any("沿规范场景纵深轴" in item for item in option["assumptions"])
         )
 
     def test_non_explicit_projected_size_does_not_force_camera_retreat(self) -> None:

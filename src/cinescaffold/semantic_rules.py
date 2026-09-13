@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-TRANSLATION_PARAMETERS_VERSION = "0.4"
+TRANSLATION_PARAMETERS_VERSION = "0.5"
 
 
 def load_translation_rules(path: Path) -> dict[str, Any]:
@@ -31,6 +31,7 @@ def apply_translation_rules(
     _validate_rule_table(rules)
     content = deepcopy(model_content)
     _apply_semantic_defaults(content, rules)
+    _normalize_spatial_layer_relationships(content)
     _normalize_motion_metadata(content)
     _apply_timeline_rules(content, rules, source_prompt)
     _apply_scene_dynamics(content)
@@ -103,11 +104,6 @@ def _apply_emotion_semantics(
         "lens_intent",
         _annotated(f"{camera_profile['focal_length_mm']:g} mm", status, source_text),
     )
-    _set_unless_explicit(
-        camera,
-        "view_angle",
-        _annotated(f"俯仰 {camera_profile['pitch_degrees']:+g}°", status, source_text),
-    )
     focus_target = _focus_target(content, camera_profile["focus"])
     _set_unless_explicit(
         camera,
@@ -149,11 +145,6 @@ def _apply_emotion_semantics(
             source_text,
         ),
         _statement(
-            f"地平线距画幅底部 {composition_profile['horizon_from_bottom_ratio'] * 100:g}%",
-            status,
-            source_text,
-        ),
-        _statement(
             f"主要物体占画幅 {_percent_range(composition_profile['major_object_frame_ratio'])}",
             status,
             source_text,
@@ -164,20 +155,6 @@ def _apply_emotion_semantics(
         composition["screen_placements"] = _keep_explicit(
             composition.get("screen_placements", [])
         )
-        if not any(
-            item.get("subject_id") == primary_id
-            for item in composition["screen_placements"]
-            if isinstance(item, dict)
-        ):
-            composition["screen_placements"].append(
-                {
-                    "subject_id": primary_id,
-                    "horizontal": _annotated(
-                        composition_profile["subject_horizontal"], status, source_text
-                    ),
-                    "vertical": _annotated(None, "unknown"),
-                }
-            )
         composition["visual_scales"] = _keep_explicit(
             composition.get("visual_scales", [])
         )
@@ -383,6 +360,70 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
             f"subject_motion[{subject_id}]",
             defaults["action_label"],
         )
+
+
+def _normalize_spatial_layer_relationships(content: dict[str, Any]) -> None:
+    """Turn an explicit far/background layer into the relation Planning consumes."""
+
+    scene = content.get("scene_design")
+    if not isinstance(scene, dict):
+        return
+    layers = scene.get("spatial_layers")
+    relationships = scene.setdefault("relationships", [])
+    if not isinstance(layers, list) or not isinstance(relationships, list):
+        return
+    subject_ids = [
+        subject.get("id")
+        for subject in content.get("subjects", [])
+        if isinstance(subject, dict) and isinstance(subject.get("id"), str)
+    ]
+    known_ids = set(subject_ids)
+    far_markers = ("远", "后景", "far", "background", "distant")
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
+        layer_name = str(layer.get("layer") or "").lower()
+        if not any(marker in layer_name for marker in far_markers):
+            continue
+        far_ids = [
+            entity_id
+            for entity_id in layer.get("content_ids", [])
+            if entity_id in known_ids
+        ]
+        reference_id = next(
+            (entity_id for entity_id in subject_ids if entity_id not in far_ids),
+            None,
+        )
+        if reference_id is None:
+            continue
+        for far_id in far_ids:
+            already_mapped = any(
+                isinstance(relationship, dict)
+                and relationship.get("subject_id") == far_id
+                and relationship.get("reference_id") == reference_id
+                and any(
+                    marker
+                    in str(
+                        relationship.get("type")
+                        or relationship.get("strength")
+                        or ""
+                    ).lower()
+                    for marker in far_markers
+                )
+                for relationship in relationships
+            )
+            if already_mapped:
+                continue
+            relationships.append(
+                {
+                    "type": "far_from",
+                    "subject_id": far_id,
+                    "reference_id": reference_id,
+                    "strength": "scene_relative",
+                    "source_status": layer.get("source_status", "inferred"),
+                    "source_text": layer.get("source_text"),
+                }
+            )
 
 
 def _apply_timeline_rules(

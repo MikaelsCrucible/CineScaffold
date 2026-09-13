@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/semantic_translation_parameters.schema.json",
-  "title": "Semantic Translation Parameters v0.4",
+  "title": "Semantic Translation Parameters v0.5",
   "type": "object",
   "properties": {
-    "schema_version": {"type": "string", "const": "0.4"},
+    "schema_version": {"type": "string", "const": "0.5"},
     "rules_version": {"type": "string"},
     "coordinate_system": {"$ref": "#/$defs/coordinateSystem"},
     "input_slots": {"$ref": "#/$defs/inputSlots"},
@@ -203,10 +203,9 @@
         "start_distance_m": {"type": "number"},
         "end_distance_m": {"$ref": "#/$defs/nullableNumber"},
         "focus": {"type": "string"},
-        "pitch_degrees": {"type": "number"},
         "source_status": {"$ref": "#/$defs/sourceStatus"}
       },
-      "required": ["height_m", "focal_length_mm", "movement", "speed_mps", "start_distance_m", "end_distance_m", "focus", "pitch_degrees", "source_status"],
+      "required": ["height_m", "focal_length_mm", "movement", "speed_mps", "start_distance_m", "end_distance_m", "focus", "source_status"],
       "additionalProperties": false
     },
     "compositionParameters": {
@@ -214,12 +213,10 @@
       "properties": {
         "subject_frame_ratio": {"$ref": "#/$defs/numberPair"},
         "negative_space_ratio": {"$ref": "#/$defs/numberPair"},
-        "horizon_from_bottom_ratio": {"type": "number"},
-        "subject_horizontal": {"type": "string"},
         "major_object_frame_ratio": {"$ref": "#/$defs/numberPair"},
         "source_status": {"$ref": "#/$defs/sourceStatus"}
       },
-      "required": ["subject_frame_ratio", "negative_space_ratio", "horizon_from_bottom_ratio", "subject_horizontal", "major_object_frame_ratio", "source_status"],
+      "required": ["subject_frame_ratio", "negative_space_ratio", "major_object_frame_ratio", "source_status"],
       "additionalProperties": false
     },
     "lightingParameters": {

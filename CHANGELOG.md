@@ -19,6 +19,8 @@
 
 ### Changed
 
+- Toolkit v0.35 移除未指定机位时没有规范来源的 35°/55° 偏航。静态或仅状态变化的场景沿规范场景纵深轴观察；有主体空间运动但 Agent 未选择具体观察关系时，只采用 Validator 冻结的最小可读斜角。情绪量化表正式移除未被下游兑现且会与机位高度、注视点或左右语义冲突的固定俯仰、地平线百分比和主体水平位置；用户 explicit 构图语义仍保留。
+- Semantic Translation v0.5 / Rules v0.9 会把只出现在 `spatial_layers` 的明确远景/后景主体归一化为带近景参照的 `far_from` 关系，避免 Semantic 模型没有重复填写 `relationships` 时丢失纵深意图。
 - Toolkit v0.34 统一 Semantic、Planning Prompt、Scene Skeleton Schema、Design Options 和 Repair 的运动术语：`scene_dynamics` 只判断主体状态，`subject_spatial_motion` 只表示主体位移，`camera_motion` 独立。无主体位移时不再暴露或采用 `maximize_motion_readability`，未明确观察关系的静态主体场景恢复为普通 35° 斜侧机位。
 - Agent 骨架的方向枚举由容易误解成屏幕坐标的 `screen_left_to_right/screen_right_to_left` 改为真实执行语义 `world_right/world_left`；目标、载体、路径族、静止阶段和方向字段的矛盾组合在数值 Design 前直接拒绝。
 - 情绪表生成的主要物体画幅比例无论整组 composition 来源如何都保持 inferred；只有字段级 explicit 画幅要求可主动移动摄影机。开放环境代理地面按摄影机轨迹扩展为至少 1000 m 的渲染背景，语义场景范围和主体距离不变。
@@ -41,6 +43,7 @@
 
 ### Fixed
 
+- 修复静态前景—远景场景在用户未指定水平机位时仍被固定 35° 偏航拍成侧面，以及“远处”只写入空间层时 Planning 没有获得纵深关系的问题。
 - 修复未指定视角时的默认斜侧摄影机被错误复用为世界空间背景方向，导致背景飞船和人物形成无语义依据的斜向排列；飞船自身朝向仍保持独立。
 - 修复“远处”净空随单个巨物尺寸同比放大，导致越强调巨大越被推离镜头的问题；同时修复语义层已有 `major_object_frame_ratio` 与 `negative_space_ratio`，Design 却只落实人物画幅比例、允许主要物体全程处于画外的问题。
 - 修复明确要求“缓慢推近”时，语义文本保留推近但量化相机仍继承中性情绪的 `static / 0 m/s`，导致 Planning 长时间求解不可能速度约束的问题。
@@ -59,6 +62,7 @@
 
 ### Verification
 
+- Python 3.12 完整离线回归 317 项通过；新增回归覆盖静态纵深对齐、远景层确定性关系归一化和退役字段不再进入量化快照。
 - Python 3.12 完整离线回归 309 项通过；新增回归覆盖斜侧镜头下背景主体仍沿场景正后方摆放，且实体朝向不受摄影机影响。
 - `setup.py sdist bdist_wheel` 成功生成 Core 0.8.15 的 sdist 与 wheel；隔离式 `uv build` 因当前沙箱不能访问 PyPI 的 setuptools 构建依赖而未作为本轮验证入口。
 - Python 3.12 完整离线回归 308 项通过；新增回归证明放大背景代理不会同比扩大表面净空，荒漠静态构图同时满足人物 1%–5%、主要物体 10%–30%、实际入框与至少 70% 负空间。

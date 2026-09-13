@@ -64,6 +64,11 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(parameters["camera"]["speed_mps"], 1.0)
         self.assertEqual(normalized["camera"]["movement"]["speed"]["value"], "1 m/s")
         self.assertEqual(parameters["composition"]["subject_frame_ratio"], [0.01, 0.05])
+        self.assertNotIn("pitch_degrees", parameters["camera"])
+        self.assertNotIn("horizon_from_bottom_ratio", parameters["composition"])
+        self.assertNotIn("subject_horizontal", parameters["composition"])
+        self.assertEqual(normalized["camera"]["view_angle"]["source_status"], "unknown")
+        self.assertEqual(normalized["composition"]["screen_placements"], [])
         self.assertEqual(parameters["scene"]["asset_key"], "desert")
         self.assertEqual(parameters["subjects"][0]["reference_height_m"], 1.75)
         self.assertEqual(parameters["subjects"][0]["facing_direction_world"], [0.0, -1.0, 0.0])
@@ -197,6 +202,49 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertIsNone(motion["direction_vector_world"])
         self.assertEqual(parameters["subjects"][1]["minimum_footprint_m"], [10.0, 10.0])
         self.assertEqual(parameters["subjects"][1]["default_scene_depth_ratio"], 0.5)
+
+    def test_far_spatial_layer_is_normalized_into_planning_relationship(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": "man",
+                "category": self._annotated("男人", "一个男人"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+            {
+                "id": "ship",
+                "category": self._annotated("飞船", "巨大的飞船"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+        ]
+        content["scene_design"]["spatial_layers"] = [
+            {
+                "layer": "远景",
+                "content_ids": ["ship"],
+                "source_status": "explicit",
+                "source_text": "远处有巨大的飞船",
+            }
+        ]
+
+        normalized, _ = apply_translation_rules(content, self.rules)
+
+        self.assertEqual(
+            normalized["scene_design"]["relationships"],
+            [
+                {
+                    "type": "far_from",
+                    "subject_id": "ship",
+                    "reference_id": "man",
+                    "strength": "scene_relative",
+                    "source_status": "explicit",
+                    "source_text": "远处有巨大的飞船",
+                }
+            ],
+        )
 
     def test_inferred_narrative_verbs_do_not_create_motion_targets(self) -> None:
         content = valid_model_output()

@@ -28,7 +28,7 @@ class SemanticParserConfig:
     model_output_schema_path: Path
     translation_rules_path: Path
     translation_parameters_schema_path: Path
-    prompt_version: str = "semantic-parser-v0.7"
+    prompt_version: str = "semantic-parser-v0.8"
 
 
 @dataclass(frozen=True)
