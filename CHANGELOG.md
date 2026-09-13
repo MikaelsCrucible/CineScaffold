@@ -55,7 +55,8 @@
 
 ### Verification
 
-- Python 3.12 完整离线回归覆盖斜侧镜头下背景主体仍沿场景正后方摆放，且实体朝向不受摄影机影响。
+- Python 3.12 完整离线回归 309 项通过；新增回归覆盖斜侧镜头下背景主体仍沿场景正后方摆放，且实体朝向不受摄影机影响。
+- `setup.py sdist bdist_wheel` 成功生成 Core 0.8.15 的 sdist 与 wheel；隔离式 `uv build` 因当前沙箱不能访问 PyPI 的 setuptools 构建依赖而未作为本轮验证入口。
 - Python 3.12 完整离线回归 308 项通过；新增回归证明放大背景代理不会同比扩大表面净空，荒漠静态构图同时满足人物 1%–5%、主要物体 10%–30%、实际入框与至少 70% 负空间。
 - `uv build` 成功生成 Core 0.8.14 的 sdist 与 wheel。
 - Python 3.12 完整离线回归 307 项通过；荒漠飞船、道路接车、嵌套公转三条标准场景均直接 hard pass 并通过 Commit Gate，未调用 Provider。
