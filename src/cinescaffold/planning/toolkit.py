@@ -53,22 +53,26 @@ from cinescaffold.planning.geometry import (
     subtract,
     surface_clearance_ratio,
     surface_clearance_target_distance,
+    surface_clearance_target_distance_m,
 )
 from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.31"
+TOOLKIT_VERSION = "0.32"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
     "distance_range",
     "surface_clearance_range",
+    "collision_clearance",
     "depth_order",
     "screen_region",
     "projected_size",
     "projected_scale_ratio",
     "keep_in_frame",
+    "visibility_fraction",
+    "negative_space",
     "look_at",
     "camera_distance",
     "focal_length_range",
@@ -138,8 +142,10 @@ ENTITY_SINGLETON_TRACK_TYPES = {"transform", "path_follow", "visibility", "look_
 REPAIRABLE_VIOLATION_CODES = {
     "CAMERA_MOTION_NEAR_COLLINEAR",
     "ENTITY_OUT_OF_FRAME",
+    "NEGATIVE_SPACE_VIOLATED",
     "PROJECTED_MOTION_UNREADABLE",
     "PROJECTED_SIZE_VIOLATED",
+    "VISIBILITY_FRACTION_VIOLATED",
 }
 REPAIR_PREFERENCES = {
     "balanced",
@@ -151,6 +157,7 @@ PER_FRAME_CONSTRAINTS = {
     "relative_position",
     "distance_range",
     "surface_clearance_range",
+    "collision_clearance",
     "depth_order",
     "screen_region",
     "projected_size",
@@ -589,7 +596,14 @@ class ScenePlanningToolkit:
             "semantic_distinctions": {
                 "relative_position_front_behind": "规范世界 -Y/+Y；不表示摄影机深度",
                 "camera_depth_order": "使用 depth_order；深度沿摄影机 -Z 前向取正值",
+                "far_scene_reference": (
+                    "远处净空按环境/场景参考范围冻结；主体尺寸只参与表面边界，"
+                    "不会同比放大远近语义"
+                ),
                 "keep_in_frame": "只验证自身投影包围盒入框比例，不验证被其他实体遮挡的比例",
+                "composition_bundle": (
+                    "主体与主要物体投影尺度、有效入框时间和屏幕负空间联合衡量构图"
+                ),
                 "look_at_precedence": "生效的 look_at Track 覆盖摄影机 Transform Track 的旋转",
                 "path_follow_precedence": (
                     "生效的 path_follow 生成位置并覆盖同实体静态求解位置；"
@@ -647,6 +661,9 @@ class ScenePlanningToolkit:
                     "required": ["entity_ids", "minimum_meters", "maximum_meters"],
                 },
                 "surface_clearance_range": {
+                    "semantic_scope": (
+                        "仅用于明确要求按物体自身尺度归一化的排布；不得表示 far/background"
+                    ),
                     "required": [
                         "entity_ids",
                         "minimum_ratio",
@@ -665,6 +682,12 @@ class ScenePlanningToolkit:
                         "scale_basis": "larger_directional_extent",
                         "space": "ground_plane",
                     },
+                },
+                "collision_clearance": {
+                    "required": ["entity_ids", "minimum_meters"],
+                    "optional": ["space"],
+                    "allowed_values": {"space": ["world", "ground_plane"]},
+                    "defaults": {"space": "ground_plane"},
                 },
                 "depth_order": {
                     "required": ["near_entity_id", "far_entity_id"],
@@ -693,6 +716,17 @@ class ScenePlanningToolkit:
                 },
                 "keep_in_frame": {
                     "required": ["entity_id", "minimum_inside_fraction"],
+                },
+                "visibility_fraction": {
+                    "required": ["entity_id", "minimum_time_fraction"],
+                    "optional": ["minimum_inside_fraction"],
+                },
+                "negative_space": {
+                    "required": [
+                        "entity_ids",
+                        "minimum_fraction",
+                        "maximum_fraction",
+                    ],
                 },
                 "look_at": {
                     "required": ["observer_id", "target_id"],
@@ -794,8 +828,6 @@ class ScenePlanningToolkit:
         gaps = [
             "compound_proxy_geometry",
             "occlusion_fraction_validator",
-            "collision_clearance_solver",
-            "negative_space_validator",
             "event_synchronization_solver",
         ]
         return _envelope(state.revision, state.revision, data=data, capability_gaps=gaps)
@@ -972,6 +1004,12 @@ class ScenePlanningToolkit:
             )
             options.append(option)
             self._design_options[option_id] = option
+        options.sort(
+            key=lambda item: (
+                -float(item.predicted.get("soft_score", 0.0)),
+                order.index(item.strategy),
+            )
+        )
         return _envelope(
             revision,
             revision,
@@ -1842,6 +1880,7 @@ class ScenePlanningToolkit:
             "depth_order",
             "distance_range",
             "surface_clearance_range",
+            "collision_clearance",
         }
         unsupported_constraints = sorted(
             constraint.constraint_id
@@ -1907,6 +1946,7 @@ class ScenePlanningToolkit:
                         "depth_order",
                         "distance_range",
                         "surface_clearance_range",
+                        "collision_clearance",
                     }:
                         if _apply_layout_constraint(state, constraint, self.profile):
                             changes.append({"operation": "solve", "path": f"constraints.{constraint.constraint_id}"})
@@ -2718,7 +2758,12 @@ def _camera_repair_parameter_grid(
                 (0.5, 1.6),
             )
         )
-    if codes & {"ENTITY_OUT_OF_FRAME", "PROJECTED_SIZE_VIOLATED"}:
+    if codes & {
+        "ENTITY_OUT_OF_FRAME",
+        "NEGATIVE_SPACE_VIOLATED",
+        "PROJECTED_SIZE_VIOLATED",
+        "VISIBILITY_FRACTION_VIOLATED",
+    }:
         framing_pairs = (
             (1.4, 0.7),
             (1.2, 0.85),
@@ -3192,6 +3237,21 @@ def _proxy_topology(geometry) -> tuple[str, str | None]:
     return geometry.type, getattr(geometry, "axis", None)
 
 
+def _camera_ground_forward(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> tuple[float, float, float]:
+    camera = _camera_state_at(state, 0.0, profile)
+    if camera is None:
+        return (0.0, 1.0, 0.0)
+    forward = rotate_vector(
+        camera[0].rotation_quaternion_wxyz,
+        (0.0, 0.0, -1.0),
+    )
+    ground = normalize((forward[0], forward[1], 0.0))
+    return ground if length(ground) >= profile.numeric_tolerance else (0.0, 1.0, 0.0)
+
+
 def _apply_layout_constraint(
     state: CandidateState,
     constraint: ConstraintSpec,
@@ -3206,18 +3266,22 @@ def _apply_layout_constraint(
         near = _complete_transform(state.entities[near_id].solved_transform)
         far = _complete_transform(state.entities[far_id].solved_transform)
         gap = float(params.get("minimum_depth_gap_meters") or profile.default_depth_gap_m)
-        volume_margin = (
-            geometry_bounding_radius(state.entities[near_id].proxy)
-            + geometry_bounding_radius(state.entities[far_id].proxy)
+        direction = _camera_ground_forward(state, profile)
+        center_distance = surface_clearance_target_distance_m(
+            state.entities[near_id].proxy,
+            near,
+            state.entities[far_id].proxy,
+            far,
+            direction,
+            gap,
         )
-        # 使用体积余量，避免只满足中心点关系却让巨型代理穿过摄影机。
         state.entities[far_id].solved_transform = far.model_copy(
             update={
-                "translation_m": (
-                    far.translation_m[0],
-                    near.translation_m[1] + gap + volume_margin,
-                    far.translation_m[2],
-                )
+                "translation_m": add(
+                    near.translation_m,
+                    tuple(component * center_distance for component in direction),
+                )[:2]
+                + (far.translation_m[2],)
             }
         )
         return True
@@ -3304,6 +3368,43 @@ def _apply_layout_constraint(
                 target_center[1],
                 second.translation_m[2],
             )
+        state.entities[ids[1]].solved_transform = second.model_copy(
+            update={"translation_m": target_center}
+        )
+        return True
+    if constraint.type == "collision_clearance":
+        ids = params.get("entity_ids") or constraint.subjects
+        if (
+            not isinstance(ids, (list, tuple))
+            or len(ids) != 2
+            or any(item not in state.entities for item in ids)
+        ):
+            return False
+        first_entity = state.entities[ids[0]]
+        second_entity = state.entities[ids[1]]
+        first = _complete_transform(first_entity.solved_transform)
+        second = _complete_transform(second_entity.solved_transform)
+        ground_plane = params.get("space", "ground_plane") == "ground_plane"
+        delta = subtract(second.translation_m, first.translation_m)
+        if ground_plane:
+            delta = (delta[0], delta[1], 0.0)
+        direction = normalize(delta)
+        if length(direction) < profile.numeric_tolerance:
+            direction = _camera_ground_forward(state, profile)
+        center_distance = surface_clearance_target_distance_m(
+            first_entity.proxy,
+            first,
+            second_entity.proxy,
+            second,
+            direction,
+            float(params.get("minimum_meters", 0.0)),
+        )
+        target_center = add(
+            first.translation_m,
+            tuple(component * center_distance for component in direction),
+        )
+        if ground_plane:
+            target_center = (target_center[0], target_center[1], second.translation_m[2])
         state.entities[ids[1]].solved_transform = second.model_copy(
             update={"translation_m": target_center}
         )
@@ -5232,10 +5333,10 @@ def _required_constraint_types(
         marker in relation
         for marker in ("远", "far", "background", "远景", "后景")
     ):
-        # “远处”同时需要物体表面净空和摄影机深度；只验证中心点会让
-        # 巨型代理在数值上很远、几何上却贴住前景主体。
+        # “远处”需要摄影机深度与绝对表面净空。净空由场景参考系
+        # 冻结，不能随任一主体自身尺寸同比膨胀。
         return (
-            {"depth_order", "surface_clearance_range"}
+            {"depth_order", "collision_clearance"}
             if has_entity_pair
             else set()
         )
@@ -5338,6 +5439,49 @@ def _constraint_violation(
     profile: PlanningProfile,
 ) -> Violation | None:
     params = _parameters(constraint)
+    if constraint.type == "visibility_fraction":
+        entity_id = params.get("entity_id")
+        if entity_id not in state.entities:
+            return _constraint_error(constraint, "CONSTRAINT_REFERENCE_MISSING", None)
+        frame_times = _timeline_frame_times(
+            state.timeline,
+            start=constraint.time_range_seconds[0],
+            end=constraint.time_range_seconds[1],
+        )
+        minimum_inside = float(params.get("minimum_inside_fraction", 0.01))
+        visible_samples = 0
+        for time_seconds in frame_times:
+            if not _entity_visibility_at(state, entity_id, time_seconds):
+                continue
+            resolver = _WorldTransformResolver(state, time_seconds, profile)
+            camera = resolver.camera()
+            if camera is None:
+                continue
+            camera_transform, focal_length = camera
+            bounds = _projection_bounds(
+                state,
+                entity_id,
+                {entity_id: resolver.entity(entity_id)},
+                camera_transform,
+                focal_length,
+                profile,
+            )
+            if bounds[4] > 0 and _bounds_inside_fraction(bounds) >= minimum_inside:
+                visible_samples += 1
+        actual_fraction = visible_samples / len(frame_times) if frame_times else 0.0
+        minimum_time = float(params.get("minimum_time_fraction", 0.0))
+        if actual_fraction + profile.numeric_tolerance < minimum_time:
+            return _constraint_error(
+                constraint,
+                "VISIBILITY_FRACTION_VIOLATED",
+                {
+                    "visible_time_fraction": actual_fraction,
+                    "visible_sample_count": visible_samples,
+                    "sample_count": len(frame_times),
+                    "minimum_inside_fraction": minimum_inside,
+                },
+            )
+        return None
     sample_times = _constraint_sample_times(constraint, state.timeline)
     for time_seconds in sample_times:
         resolver = _WorldTransformResolver(state, time_seconds, profile)
@@ -5492,6 +5636,36 @@ def _constraint_violation(
                     },
                 )
 
+        elif constraint.type == "collision_clearance":
+            ids = params.get("entity_ids") or constraint.subjects
+            if (
+                not isinstance(ids, (list, tuple))
+                or len(ids) != 2
+                or any(item not in transforms for item in ids)
+            ):
+                return _constraint_error(
+                    constraint,
+                    "CONSTRAINT_REFERENCE_MISSING",
+                    None,
+                )
+            _, clearance_m, _ = surface_clearance_ratio(
+                state.entities[ids[0]].proxy,
+                transforms[ids[0]],
+                state.entities[ids[1]].proxy,
+                transforms[ids[1]],
+                ground_plane=params.get("space", "ground_plane") == "ground_plane",
+            )
+            minimum_meters = float(params.get("minimum_meters", 0.0))
+            if clearance_m + profile.numeric_tolerance < minimum_meters:
+                return _constraint_error(
+                    constraint,
+                    "COLLISION_CLEARANCE_VIOLATED",
+                    {
+                        "surface_clearance_m": clearance_m,
+                        "measurement_space": params.get("space", "ground_plane"),
+                    },
+                )
+
         elif constraint.type in {"screen_region", "projected_size", "keep_in_frame"}:
             entity_id = params.get("entity_id")
             if entity_id not in transforms:
@@ -5542,6 +5716,52 @@ def _constraint_violation(
                         "ENTITY_OUT_OF_FRAME",
                         {"inside_fraction": inside, "projected_bounds": bounds[:4]},
                     )
+
+        elif constraint.type == "negative_space":
+            entity_ids = params.get("entity_ids") or constraint.subjects
+            if not isinstance(entity_ids, (list, tuple)) or any(
+                item not in transforms for item in entity_ids
+            ):
+                return _constraint_error(
+                    constraint,
+                    "CONSTRAINT_REFERENCE_MISSING",
+                    None,
+                )
+            rectangles = []
+            for entity_id in entity_ids:
+                if not _entity_visibility_at(state, entity_id, time_seconds):
+                    continue
+                bounds = _projection_bounds(
+                    state,
+                    entity_id,
+                    transforms,
+                    camera_transform,
+                    focal_length,
+                    profile,
+                )
+                if bounds[4] <= 0:
+                    continue
+                left, top, right, bottom = bounds[:4]
+                clipped = (
+                    max(0.0, left),
+                    max(0.0, top),
+                    min(1.0, right),
+                    min(1.0, bottom),
+                )
+                if clipped[0] < clipped[2] and clipped[1] < clipped[3]:
+                    rectangles.append(clipped)
+            negative_fraction = 1.0 - _rectangle_union_area(rectangles)
+            if not _within_range(
+                negative_fraction,
+                float(params.get("minimum_fraction", 0.0)),
+                float(params.get("maximum_fraction", 1.0)),
+                profile.numeric_tolerance,
+            ):
+                return _constraint_error(
+                    constraint,
+                    "NEGATIVE_SPACE_VIOLATED",
+                    {"negative_space_fraction": negative_fraction},
+                )
 
         elif constraint.type == "projected_scale_ratio":
             first_id = params.get("numerator_entity_id") or params.get("subject_id")
@@ -6054,6 +6274,39 @@ def _bounds_inside_fraction(bounds: tuple[float, float, float, float, float]) ->
     inside_width = max(0.0, min(1.0, right) - max(0.0, left))
     inside_height = max(0.0, min(1.0, bottom) - max(0.0, top))
     return min(1.0, inside_width * inside_height / (width * height))
+
+
+def _rectangle_union_area(
+    rectangles: list[tuple[float, float, float, float]],
+) -> float:
+    """Return the exact union area of normalized axis-aligned screen bounds."""
+
+    if not rectangles:
+        return 0.0
+    x_edges = sorted({edge for rectangle in rectangles for edge in (rectangle[0], rectangle[2])})
+    area = 0.0
+    for left, right in zip(x_edges, x_edges[1:]):
+        if right <= left:
+            continue
+        intervals = sorted(
+            (top, bottom)
+            for rect_left, top, rect_right, bottom in rectangles
+            if rect_left < right and rect_right > left
+        )
+        covered = 0.0
+        current_start = current_end = None
+        for start, end in intervals:
+            if current_start is None:
+                current_start, current_end = start, end
+            elif start <= current_end:
+                current_end = max(current_end, end)
+            else:
+                covered += current_end - current_start
+                current_start, current_end = start, end
+        if current_start is not None:
+            covered += current_end - current_start
+        area += (right - left) * covered
+    return min(1.0, max(0.0, area))
 
 
 def _projected_measurement(bounds, measurement: str) -> float:

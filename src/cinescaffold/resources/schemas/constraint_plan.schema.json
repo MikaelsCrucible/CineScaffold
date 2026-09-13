@@ -222,7 +222,7 @@
             }
           ],
           "default": null,
-          "description": "缺省观察目标；look_at Track 在其生效区间内覆盖它",
+          "description": "初始取景目标；只有 look_at Track 才会逐帧跟踪动态目标",
           "title": "Focus Target Id"
         },
         "source_refs": {
@@ -514,6 +514,45 @@
       "title": "CirclePathSpec",
       "type": "object"
     },
+    "CollisionClearanceParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_ids": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "minimum_meters": {
+          "minimum": 0,
+          "title": "Minimum Meters",
+          "type": "number"
+        },
+        "space": {
+          "default": "ground_plane",
+          "enum": [
+            "world",
+            "ground_plane"
+          ],
+          "title": "Space",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_ids",
+        "minimum_meters"
+      ],
+      "title": "CollisionClearanceParameters",
+      "type": "object"
+    },
     "ConeGeometry": {
       "additionalProperties": false,
       "properties": {
@@ -651,6 +690,9 @@
               "$ref": "#/$defs/SurfaceClearanceRangeParameters"
             },
             {
+              "$ref": "#/$defs/CollisionClearanceParameters"
+            },
+            {
               "$ref": "#/$defs/DepthOrderParameters"
             },
             {
@@ -664,6 +706,12 @@
             },
             {
               "$ref": "#/$defs/KeepInFrameParameters"
+            },
+            {
+              "$ref": "#/$defs/VisibilityFractionParameters"
+            },
+            {
+              "$ref": "#/$defs/NegativeSpaceParameters"
             },
             {
               "$ref": "#/$defs/LookAtParameters"
@@ -1626,6 +1674,38 @@
         "direction"
       ],
       "title": "MotionDirectionParameters",
+      "type": "object"
+    },
+    "NegativeSpaceParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "minimum_fraction": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Minimum Fraction",
+          "type": "number"
+        },
+        "maximum_fraction": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Maximum Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "entity_ids",
+        "minimum_fraction",
+        "maximum_fraction"
+      ],
+      "title": "NegativeSpaceParameters",
       "type": "object"
     },
     "PlaneGeometry": {
@@ -2680,6 +2760,34 @@
         "message"
       ],
       "title": "Violation",
+      "type": "object"
+    },
+    "VisibilityFractionParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "minimum_time_fraction": {
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Minimum Time Fraction",
+          "type": "number"
+        },
+        "minimum_inside_fraction": {
+          "default": 0.01,
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Minimum Inside Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "entity_id",
+        "minimum_time_fraction"
+      ],
+      "title": "VisibilityFractionParameters",
       "type": "object"
     }
   },

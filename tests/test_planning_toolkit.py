@@ -938,7 +938,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         )
         self.assertEqual(
             violation["expected"]["constraint_types"],
-            ["depth_order", "surface_clearance_range"],
+            ["collision_clearance", "depth_order"],
         )
 
     def test_surface_clearance_uses_rotated_proxy_edges_not_center_distance(self) -> None:
@@ -948,7 +948,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             ship = state.entities["ship_01"]
             ship.solved_transform = ship.solved_transform.model_copy(
                 update={
-                    "translation_m": (0.0, 50.0, 7.5),
+                        "translation_m": (0.0, 10.0, 7.5),
                     "rotation_quaternion_wxyz": (
                         0.70710678,
                         0.0,
@@ -964,12 +964,11 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         violation = next(
             item
             for item in validation["violations"]
-            if item["code"] == "SURFACE_CLEARANCE_RANGE_VIOLATED"
+            if item["code"] == "COLLISION_CLEARANCE_VIOLATED"
         )
 
         self.assertFalse(validation["data"]["hard_pass"])
-        self.assertLess(violation["actual"]["surface_clearance_m"], 10.0)
-        self.assertLess(violation["actual"]["clearance_ratio"], 0.5)
+        self.assertLess(violation["actual"]["surface_clearance_m"], 1.0)
 
     def test_entity_fully_below_horizontal_ground_is_rejected(self) -> None:
         toolkit = _toolkit()
@@ -1238,7 +1237,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             [
                 {
                     "constraint_id": "cloth_01",
-                    "type": "collision_clearance",
+                    "type": "occlusion_order",
                     "strength": "hard",
                     "weight": 1.0,
                     "subjects": [],
@@ -1253,7 +1252,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "unsupported")
         self.assertEqual(result["revision_after"], 0)
-        self.assertIn("constraint:collision_clearance", result["capability_gaps"])
+        self.assertIn("constraint:occlusion_order", result["capability_gaps"])
 
     def test_commit_gate_bakes_complete_scene_ir(self) -> None:
         toolkit = _solved_toolkit()
@@ -1501,16 +1500,14 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 },
                 {
                     "constraint_id": "ship_clear_of_man",
-                    "type": "surface_clearance_range",
+                    "type": "collision_clearance",
                     "strength": "hard",
                     "weight": 1.0,
                     "subjects": ["man_01", "ship_01"],
                     "time_range_seconds": [0.0, 6.0],
                     "parameters": {
                         "entity_ids": ["man_01", "ship_01"],
-                        "minimum_ratio": 0.5,
-                        "preferred_ratio": 1.0,
-                        "maximum_ratio": 2.0,
+                        "minimum_meters": 1.0,
                         "space": "ground_plane",
                     },
                     "source_status": "explicit",
@@ -2342,16 +2339,14 @@ def _solved_toolkit() -> ScenePlanningToolkit:
             },
             {
                 "constraint_id": "ship_clear_of_man",
-                "type": "surface_clearance_range",
+                "type": "collision_clearance",
                 "strength": "hard",
                 "weight": 1.0,
                 "subjects": ["man_01", "ship_01"],
                 "time_range_seconds": [0.0, 6.0],
                 "parameters": {
                     "entity_ids": ["man_01", "ship_01"],
-                    "minimum_ratio": 0.5,
-                    "preferred_ratio": 1.0,
-                    "maximum_ratio": 2.0,
+                    "minimum_meters": 1.0,
                     "space": "ground_plane",
                 },
                 "source_status": "explicit",

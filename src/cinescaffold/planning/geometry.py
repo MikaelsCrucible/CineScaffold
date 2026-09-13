@@ -534,6 +534,31 @@ def surface_clearance_target_distance(
     )
 
 
+def surface_clearance_target_distance_m(
+    first_geometry: ProxyGeometry,
+    first_transform: TransformValue,
+    second_geometry: ProxyGeometry,
+    second_transform: TransformValue,
+    direction: Vec3,
+    clearance_m: float,
+) -> float:
+    """Return a center distance for an absolute edge-to-edge clearance."""
+
+    return (
+        directional_support_extent(
+            first_geometry,
+            first_transform,
+            direction,
+        )
+        + directional_support_extent(
+            second_geometry,
+            second_transform,
+            direction,
+        )
+        + clearance_m
+    )
+
+
 def rotate_vector(quaternion: Quaternion, vector: Vec3) -> Vec3:
     pure: Quaternion = (0.0, *vector)
     rotated = quaternion_multiply(quaternion_multiply(quaternion, pure), quaternion_conjugate(quaternion))

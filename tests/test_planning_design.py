@@ -262,7 +262,7 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertEqual(size_range["selected_xyz"], [35.0, 11.0, 5.5])
         self.assertEqual(suggested["data"]["custom_size_request_count"], 1)
 
-    def test_large_proxy_is_placed_by_surface_clearance_not_center_gap(self) -> None:
+    def test_far_gap_uses_scene_reference_not_large_proxy_extent(self) -> None:
         toolkit = _desert_toolkit()
         toolkit.submit_scene_skeleton(_desert_skeleton())
 
@@ -274,7 +274,7 @@ class PlanningDesignTest(unittest.TestCase):
                     "minimum_xyz_m": [60.0, 18.0, 8.0],
                     "maximum_xyz_m": [80.0, 30.0, 12.0],
                     "preferred_xyz_m": [70.0, 24.0, 10.0],
-                    "rationale": "验证巨型代理仍按边缘净空而非固定中心距离摆放",
+                    "rationale": "验证远景净空来自场景参考系而非巨型代理自身尺寸",
                 }
             ],
         )
@@ -290,9 +290,69 @@ class PlanningDesignTest(unittest.TestCase):
             state.entities["ship_01"].solved_transform,
             ground_plane=True,
         )
-        self.assertGreaterEqual(ratio, 0.5)
-        self.assertGreater(clearance_m, 0.0)
+        constraint = next(
+            item
+            for item in state.constraints.values()
+            if item.type == "collision_clearance"
+        )
+        self.assertAlmostEqual(clearance_m, constraint.parameters.minimum_meters)
+        self.assertLess(ratio, 0.5)
         self.assertGreater(characteristic_extent_m, 20.0)
+
+    def test_static_composition_keeps_small_subject_and_major_object_visible(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "scene_dynamics": {
+                    "mode": "static",
+                    "source_status": "inferred",
+                    "reason": "静态构图回归",
+                },
+                "composition": {
+                    "patterns": [],
+                    "visual_scales": [
+                        {
+                            "subject_id": "man_01",
+                            "scale": {
+                                "value": "画面中小比例",
+                                "source_status": "inferred",
+                                "source_text": "人物小比例",
+                            },
+                        },
+                        {
+                            "subject_id": "ship_01",
+                            "scale": {
+                                "value": "相对男人巨大",
+                                "source_status": "explicit",
+                                "source_text": "巨大的飞船",
+                            },
+                        },
+                    ],
+                    "visibility_requirements": [],
+                },
+                "translation_parameters": {
+                    "composition": {
+                        "subject_frame_ratio": [0.01, 0.05],
+                        "major_object_frame_ratio": [0.1, 0.3],
+                        "negative_space_ratio": [0.7, 1.0],
+                        "source_status": "inferred",
+                    }
+                },
+            }
+        )
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+
+        result = toolkit.request_design_options(max_options=1)
+        option = result["data"]["options"][0]
+        state = toolkit._design_options[option["option_id"]].candidate
+
+        self.assertEqual(option["predicted"]["soft_score"], 1.0)
+        self.assertEqual(
+            state.constraints["design_major_object_projected_size"].subjects,
+            ["ship_01"],
+        )
+        self.assertIn("design_negative_space", state.constraints)
+        self.assertIn("design_composition_presence_ship_01", state.constraints)
 
     def test_custom_size_request_rejects_unknown_entity(self) -> None:
         toolkit = _desert_toolkit()

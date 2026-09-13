@@ -4,6 +4,7 @@
 
 ### Added
 
+- Toolkit v0.32 实现 `collision_clearance`、`visibility_fraction` 与 `negative_space` Validator；静态构图会把主要巨物画幅比例、至少一次实际入框和负空间与主体画幅比例一起建立为可验证约束。
 - Toolkit v0.29 新增 `surface_clearance_range`：按两代理沿关系方向的外边界测量净空，并以较大代理的方向完整尺寸归一化；支持有界最小、偏好和最大比例以及 world/ground-plane 测量空间。
 - Cinematic Brief v0.6 增加主体静态/动态分类、稳定动作 ID、关键叙事标记、按实体独立的稀疏动作时间线和类型化事件关系；顺序描述不再机械等分总时长。
 - 新增 Narrative Fidelity Gate，简化交付仍必须保留类型化动作、容纳/显隐后置状态和全部 explicit 要求。
@@ -18,6 +19,8 @@
 
 ### Changed
 
+- “远处/背景”不再使用较大主体尺寸归一化净空。Design 沿冻结摄影机方向布置前后景，以环境代理的方向范围确定场景级绝对净空；主体尺寸只用于把中心位置换算为真实表面边界。静态摄影机根据全部 projected-size 上界整体后移，保持原推镜行程与速度。
+- Design Options 先按完整 Validator 的 soft score 排序，再使用请求的策略顺序破同分；构图与实际入框问题也可进入确定性摄影机 Repair 搜索。
 - 显式摄影机运动现在先选择匹配的确定性运动模板，并覆盖冲突的情绪缺省数值；旧版带量化快照的 Brief 在 Planning 投影时也会重新对齐。
 - Design Options 按实际 Candidate 状态去重；相同 Design 硬失败连续两次后熔断当前完整 thinking 会话，以紧凑 RepairPacket 开始新的恢复轮次。
 - 嵌套公转半径按完整子系统包络递归计算，并预留冻结的表面净空。
@@ -33,6 +36,7 @@
 
 ### Fixed
 
+- 修复“远处”净空随单个巨物尺寸同比放大，导致越强调巨大越被推离镜头的问题；同时修复语义层已有 `major_object_frame_ratio` 与 `negative_space_ratio`，Design 却只落实人物画幅比例、允许主要物体全程处于画外的问题。
 - 修复明确要求“缓慢推近”时，语义文本保留推近但量化相机仍继承中性情绪的 `static / 0 m/s`，导致 Planning 长时间求解不可能速度约束的问题。
 - 修复内层轨道只按直接父子实体尺寸定半径、外层轨道没有容纳整个子系统，因而月亮可能穿过太阳的问题；解析公转新增实体相交 hard 检查。
 - 修复无摄影机指令的多主体动态场景仍被迫绑定首个/任意实体，以及 `static` 镜头位置不动却逐帧旋转追踪该实体的问题。
@@ -49,6 +53,8 @@
 
 ### Verification
 
+- Python 3.12 完整离线回归 308 项通过；新增回归证明放大背景代理不会同比扩大表面净空，荒漠静态构图同时满足人物 1%–5%、主要物体 10%–30%、实际入框与至少 70% 负空间。
+- `uv build` 成功生成 Core 0.8.14 的 sdist 与 wheel。
 - Python 3.12 完整离线回归 307 项通过；荒漠飞船、道路接车、嵌套公转三条标准场景均直接 hard pass 并通过 Commit Gate，未调用 Provider。
 - `uv build` 成功生成 Core 0.8.13 的 sdist 与 wheel。
 - Python 3.12 完整离线回归 301 项通过；新增回归覆盖 Scene Skeleton 空焦点、静态实体焦点不隐式跟踪、固定场景锚点编译和 visual-scale 主体 ID 映射。

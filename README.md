@@ -43,7 +43,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 支持 OpenAI、DeepSeek 和离线 Mock Provider。
 - 使用 LLM 提取“谁、在哪、做什么、感觉”，再通过版本化规则表生成可复现的主体、运动、场景、摄影机、构图和光源量化快照。
 - 将 Cinematic Brief 中的客观空间、运动、构图和摄影机要求交给规划 Agent。
-- 规划 Agent 先做符号化拆解，包括相对大小、flat/wide/tall 等形体比例，以及必要时跨完整主体时间线选择的最少路径点；路径点只把运动阶段边界绑定到已有空间关系，可选引用场景中已有道路、轨道或平台的主轴，不填写坐标。Toolkit 再联合冻结 Profile 与完整 Validator 求解坐标并给出少量数值候选、可行范围和任务相关接口。内置比例不足时，Agent 可向建议接口提交受约束的三轴尺寸范围，候选仍由 Toolkit 原子物化，避免绕过门禁直接改 IR。明确的“远处/背景”关系同时生成摄影机深度与按代理方向尺寸归一化的表面净空 hard 约束；首次生成、Solver 和 Validator 共用同一几何测量，巨型或旋转物体不能再用中心点距离伪装成真正分离。未指定拍摄主体时 Scene Skeleton 可保留空焦点，由 Toolkit 选择固定场景锚点；静态摄影机不会把初始取景主体变成逐帧跟踪目标。构图投影比例始终按 Cinematic Brief 的 `visual_scales.subject_id` 绑定，不依赖 Skeleton 实体顺序。
+- 规划 Agent 先做符号化拆解，包括相对大小、flat/wide/tall 等形体比例，以及必要时跨完整主体时间线选择的最少路径点；路径点只把运动阶段边界绑定到已有空间关系，可选引用场景中已有道路、轨道或平台的主轴，不填写坐标。Toolkit 再联合冻结 Profile 与完整 Validator 求解坐标并给出少量数值候选、可行范围和任务相关接口。内置比例不足时，Agent 可向建议接口提交受约束的三轴尺寸范围，候选仍由 Toolkit 原子物化，避免绕过门禁直接改 IR。明确的“远处/背景”关系同时生成摄影机深度与绝对表面净空 hard 约束；净空按环境代理所表达的场景参考范围冻结，主体尺寸只用于求出真实表面边界，不再把“远”随某个巨物自身同比放大。静态构图会联合落实主体画幅比例、主要巨物画幅比例、有效入框时间和负空间，并在不改变推镜行程的前提下调整整套摄影机距离。未指定拍摄主体时 Scene Skeleton 可保留空焦点，由 Toolkit 选择固定场景锚点；静态摄影机不会把初始取景主体变成逐帧跟踪目标。
 - Cinematic Brief v0.6 先区分主体静态/动态场景；动态场景按实体记录稀疏、独立的动作区间，并用类型化时间关系表达相接、先后、包含和重叠，不再按全场事件数量机械等分总时长。稳定 `motion_id` 和 `narrative_required` 会贯穿规划与恢复交付。
 - 复合叙事动作不会扩张为场景专用实体、专用执行原语或隐含几何方向。`action_kind` 只保留 hold/locomotion/interact/other；“驶来、离开、接走、上车”等文字本身不会生成朝向人物、远离人物或撞入载体中心的轨迹。接载点由事件末端空间关系表达，上车可由隐藏/容纳/随载体状态表达。规划器先联合读取同一实体的完整时间线，再为未明确转向的连续运动选取一致路线，静止阶段不会清除既有行进方向。等待/停留仍写入保持关键点，已隐藏的被运载代理无需生成重叠的可见跟随轨道。独立主体时间段发生重叠时，Semantic 层会把模型误用的 `before/after/meets` 规范化为与数值区间一致的开始、结束或重叠关系；模型推断的零间隔不会阻止纠正，用户明确给出的数值间隔仍严格校验。
 - 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
@@ -124,7 +124,7 @@ python -c "import cinescaffold; print(cinescaffold.__version__)"
 生产环境应依赖正式 tag 或完整 commit，而不是 `main`：
 
 ```text
-cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.13
+cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.14
 ```
 
 嵌入式调用只依赖 [`cinescaffold.api`](src/cinescaffold/api.py) 的公共入口；`planning`、`execution` 等子模块属于内部实现：

@@ -499,6 +499,12 @@ class SurfaceClearanceRangeParameters(StrictModel):
         return self
 
 
+class CollisionClearanceParameters(StrictModel):
+    entity_ids: tuple[str, str]
+    minimum_meters: float = Field(ge=0)
+    space: Literal["world", "ground_plane"] = "ground_plane"
+
+
 class DepthOrderParameters(StrictModel):
     near_entity_id: str
     far_entity_id: str
@@ -529,6 +535,24 @@ class ProjectedScaleRatioParameters(StrictModel):
 class KeepInFrameParameters(StrictModel):
     entity_id: str
     minimum_inside_fraction: float = Field(ge=0, le=1)
+
+
+class VisibilityFractionParameters(StrictModel):
+    entity_id: str
+    minimum_time_fraction: float = Field(gt=0, le=1)
+    minimum_inside_fraction: float = Field(default=0.01, gt=0, le=1)
+
+
+class NegativeSpaceParameters(StrictModel):
+    entity_ids: list[str] = Field(min_length=1)
+    minimum_fraction: float = Field(ge=0, le=1)
+    maximum_fraction: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_fraction_range(self) -> NegativeSpaceParameters:
+        if self.maximum_fraction < self.minimum_fraction:
+            raise ValueError("negative_space 比例上下界颠倒")
+        return self
 
 
 class LookAtParameters(StrictModel):
@@ -599,11 +623,14 @@ ConstraintParameters = (
     RelativePositionParameters
     | DistanceRangeParameters
     | SurfaceClearanceRangeParameters
+    | CollisionClearanceParameters
     | DepthOrderParameters
     | ScreenRegionParameters
     | ProjectedSizeParameters
     | ProjectedScaleRatioParameters
     | KeepInFrameParameters
+    | VisibilityFractionParameters
+    | NegativeSpaceParameters
     | LookAtParameters
     | CameraDistanceParameters
     | FocalLengthRangeParameters
@@ -636,11 +663,14 @@ class ConstraintSpec(StrictModel):
             "relative_position": RelativePositionParameters,
             "distance_range": DistanceRangeParameters,
             "surface_clearance_range": SurfaceClearanceRangeParameters,
+            "collision_clearance": CollisionClearanceParameters,
             "depth_order": DepthOrderParameters,
             "screen_region": ScreenRegionParameters,
             "projected_size": ProjectedSizeParameters,
             "projected_scale_ratio": ProjectedScaleRatioParameters,
             "keep_in_frame": KeepInFrameParameters,
+            "visibility_fraction": VisibilityFractionParameters,
+            "negative_space": NegativeSpaceParameters,
             "look_at": LookAtParameters,
             "camera_distance": CameraDistanceParameters,
             "focal_length_range": FocalLengthRangeParameters,
@@ -796,9 +826,8 @@ class PlanningProfile(StrictModel):
     default_focal_length_mm: float = 35.0
     default_camera_distance_m: float = 12.0
     default_depth_gap_m: float = 12.0
+    far_scene_extent_ratio: float = Field(default=0.1, gt=0, le=1)
     orbit_surface_clearance_m: float = Field(default=2.0, gt=0)
-    far_clearance_ratio_range: tuple[float, float] = (0.5, 2.0)
-    far_clearance_preferred_ratio: float = 1.0
     stationary_speed_max_mps: float = 0.0001
     slow_speed_range_mps: tuple[float, float] = (0.01, 2.0)
     medium_speed_range_mps: tuple[float, float] = (0.5, 4.0)
@@ -813,21 +842,6 @@ class PlanningProfile(StrictModel):
     )
     numeric_tolerance: float = Field(default=1e-8, gt=0)
     random_seed: int = 0
-
-    @model_validator(mode="after")
-    def validate_far_clearance_profile(self) -> PlanningProfile:
-        minimum, maximum = self.far_clearance_ratio_range
-        if (
-            not math.isfinite(minimum)
-            or not math.isfinite(maximum)
-            or minimum < 0
-            or maximum < minimum
-        ):
-            raise ValueError("far_clearance_ratio_range 必须是合法有限范围")
-        if not minimum <= self.far_clearance_preferred_ratio <= maximum:
-            raise ValueError("far_clearance_preferred_ratio 必须位于范围内")
-        return self
-
 
 class CommitRequest(StrictModel):
     type: Literal["commit_request"]

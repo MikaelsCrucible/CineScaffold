@@ -22,10 +22,12 @@ from cinescaffold.planning.domain import (
     TransformValue,
 )
 from cinescaffold.planning.geometry import (
+    directional_support_extent,
     look_at_camera_quaternion,
     normalize,
+    project_geometry_bounds,
     sample_transform_track,
-    surface_clearance_target_distance,
+    surface_clearance_target_distance_m,
 )
 from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import canonical_hash
@@ -566,7 +568,7 @@ def build_design_candidate(
         strategy,
         size_requests or {},
     )
-    _place_entities(candidate, skeleton, profile)
+    _place_entities(candidate, skeleton, profile, strategy)
     orbit_radii = _orbit_radius_map(candidate, skeleton, profile)
     candidate.constraints = _build_relation_constraints(
         objective,
@@ -574,6 +576,7 @@ def build_design_candidate(
         candidate,
         profile,
         orbit_radii,
+        strategy,
     )
     candidate.motion_tracks = _build_motion(
         objective,
@@ -591,6 +594,8 @@ def build_design_candidate(
     )
     _add_speed_constraints(objective, skeleton, candidate, profile)
     _add_composition_constraints(objective, skeleton, candidate)
+    if objective.scene_dynamics.get("mode") == "static":
+        _fit_static_camera_to_composition(candidate, skeleton, profile)
     assumptions = _design_assumptions(
         objective,
         skeleton,
@@ -798,10 +803,59 @@ def _validate_requested_dimensions(
         raise ValueError("自定义尺寸与 Brief 明确的参考高度冲突")
 
 
+def _camera_yaw_degrees(view: str, strategy: str) -> float:
+    return {
+        "front": 0.0,
+        "rear": 180.0,
+        "side": 90.0,
+        "three_quarter": 45.0,
+        "unspecified": 55.0 if strategy == "maximize_motion_readability" else 35.0,
+    }[view]
+
+
+def _camera_forward_ground_direction(
+    skeleton: SceneSkeleton,
+    strategy: str,
+) -> tuple[float, float, float]:
+    yaw = math.radians(
+        _camera_yaw_degrees(
+            skeleton.camera_intent.view_relation_to_motion,
+            strategy,
+        )
+    )
+    return normalize((-math.sin(yaw), math.cos(yaw), 0.0))
+
+
+def _scene_reference_clearance_m(
+    candidate: CandidateState,
+    direction: tuple[float, float, float],
+    profile: PlanningProfile,
+) -> float:
+    """Scale a far/background gap from the enclosing scene, never one subject."""
+
+    scene_extents = [
+        2.0
+        * directional_support_extent(
+            entity.proxy,
+            entity.solved_transform,
+            direction,
+        )
+        for entity in candidate.entities.values()
+        if entity.proxy.type == "plane" or "environment" in entity.tags
+    ]
+    if not scene_extents:
+        return profile.default_depth_gap_m
+    return max(
+        profile.default_depth_gap_m,
+        max(scene_extents) * profile.far_scene_extent_ratio,
+    )
+
+
 def _place_entities(
     candidate: CandidateState,
     skeleton: SceneSkeleton,
     profile: PlanningProfile,
+    strategy: str,
 ) -> None:
     for index, entity in enumerate(candidate.entities.values()):
         if entity.proxy.type == "plane":
@@ -820,26 +874,25 @@ def _place_entities(
         subject_position = list(subject.solved_transform.translation_m or (0.0, 0.0, 0.0))
         reference_position = reference.solved_transform.translation_m or (0.0, 0.0, 0.0)
         if relation.kind == "camera_depth_order":
-            # A fixed center gap collapses for large proxies. Place explicit
-            # foreground/background relations by edge clearance relative to size.
-            direction = normalize(
-                (
-                    subject_position[0] - reference_position[0],
-                    profile.default_depth_gap_m,
-                    0.0,
-                )
+            # "Far" belongs to the scene/camera reference frame. Object size only
+            # contributes its surface support; it must never enlarge the requested
+            # empty gap merely because the object itself is large.
+            direction = _camera_forward_ground_direction(skeleton, strategy)
+            clearance_m = _scene_reference_clearance_m(
+                candidate,
+                direction,
+                profile,
             )
-            center_distance = surface_clearance_target_distance(
+            center_distance = surface_clearance_target_distance_m(
                 reference.proxy,
                 reference.solved_transform,
                 subject.proxy,
                 subject.solved_transform,
                 direction,
-                profile.far_clearance_preferred_ratio,
+                clearance_m,
             )
-            x_delta = subject_position[0] - reference_position[0]
-            y_delta = math.sqrt(max(center_distance**2 - x_delta**2, 0.0))
-            subject_position[1] = reference_position[1] + y_delta
+            subject_position[0] = reference_position[0] + direction[0] * center_distance
+            subject_position[1] = reference_position[1] + direction[1] * center_distance
         elif relation.kind == "relative_position" and relation.direction:
             axis, sign = {
                 "left": (0, -1.0),
@@ -915,6 +968,7 @@ def _build_relation_constraints(
     candidate: CandidateState,
     profile: PlanningProfile,
     orbit_radii: dict[tuple[str, str], float],
+    strategy: str,
 ) -> dict[str, ConstraintSpec]:
     constraints: dict[str, ConstraintSpec] = {}
     duration = candidate.timeline.duration_seconds
@@ -937,7 +991,12 @@ def _build_relation_constraints(
         }
         payloads: list[dict[str, Any]] = []
         if relation.kind == "camera_depth_order":
-            minimum_ratio, maximum_ratio = profile.far_clearance_ratio_range
+            direction = _camera_forward_ground_direction(skeleton, strategy)
+            clearance_m = _scene_reference_clearance_m(
+                candidate,
+                direction,
+                profile,
+            )
             payloads = [
                 common | {
                     "type": "depth_order",
@@ -949,14 +1008,11 @@ def _build_relation_constraints(
                     },
                 },
                 common | {
-                    "constraint_id": f"skeleton_{relation.relation_id}_clearance",
-                    "type": "surface_clearance_range",
+                    "constraint_id": f"skeleton_{relation.relation_id}_collision_clearance",
+                    "type": "collision_clearance",
                     "parameters": {
                         "entity_ids": [relation.reference_id, relation.subject_id],
-                        "minimum_ratio": minimum_ratio,
-                        "preferred_ratio": profile.far_clearance_preferred_ratio,
-                        "maximum_ratio": maximum_ratio,
-                        "scale_basis": "larger_directional_extent",
+                        "minimum_meters": clearance_m,
                         "space": "ground_plane",
                     },
                 },
@@ -1489,13 +1545,7 @@ def _build_camera(
         # 缺省轨道镜头提高俯视夹角，避免圆轨道投影成直线往返。
         height = focus_height + start_distance * 0.75
     view = skeleton.camera_intent.view_relation_to_motion
-    yaw = {
-        "front": 0.0,
-        "rear": 180.0,
-        "side": 90.0,
-        "three_quarter": 45.0,
-        "unspecified": 55.0 if strategy == "maximize_motion_readability" else 35.0,
-    }[view]
+    yaw = _camera_yaw_degrees(view, strategy)
     start = _camera_position(focus_point, start_distance, height, yaw)
     end = _camera_position(focus_point, end_distance, height, yaw)
     duration = candidate.timeline.duration_seconds
@@ -1566,9 +1616,11 @@ def _add_composition_constraints(
         candidate,
         parameters,
     )
+    projected_ids: set[str] = set()
     for index, (subject_id, minimum, maximum, source_status, source_ref) in enumerate(
         projected_sizes
     ):
+        projected_ids.add(subject_id)
         constraint = ConstraintSpec.model_validate(
             {
                 "constraint_id": (
@@ -1588,6 +1640,104 @@ def _add_composition_constraints(
                 },
                 "source_status": source_status,
                 "source_ref": source_ref,
+            }
+        )
+        candidate.constraints[constraint.constraint_id] = constraint
+
+    major_ratio = parameters.get("major_object_frame_ratio")
+    major_id = _major_composition_entity_id(objective, skeleton, candidate)
+    if (
+        major_id is not None
+        and major_id not in projected_ids
+        and isinstance(major_ratio, (list, tuple))
+        and len(major_ratio) == 2
+    ):
+        source_status = parameters.get("source_status", "inferred")
+        if source_status not in {"explicit", "inferred", "default"}:
+            source_status = "inferred"
+        constraint = ConstraintSpec.model_validate(
+            {
+                "constraint_id": "design_major_object_projected_size",
+                "type": "projected_size",
+                "strength": "soft",
+                "subjects": [major_id],
+                "time_range_seconds": [0.0, duration],
+                "parameters": {
+                    "entity_id": major_id,
+                    "measurement": "diameter",
+                    "minimum": float(major_ratio[0]),
+                    "maximum": float(major_ratio[1]),
+                },
+                "source_status": source_status,
+                "source_ref": "translation_parameters.composition.major_object_frame_ratio",
+            }
+        )
+        candidate.constraints[constraint.constraint_id] = constraint
+        projected_ids.add(major_id)
+
+    # A composition target is meaningless if it remains outside the frame for
+    # its complete narrative window. Require at least one sampled frame of actual
+    # presence; stronger user-authored visibility requirements are handled below.
+    for entity_id in sorted(projected_ids):
+        presence_range = _entity_composition_time_range(
+            objective,
+            entity_id,
+            duration,
+        )
+        frame_step = (
+            candidate.timeline.fps_denominator
+            / candidate.timeline.fps_numerator
+        )
+        sample_count = max(
+            1,
+            int(math.ceil((presence_range[1] - presence_range[0]) / frame_step)),
+        )
+        constraint = ConstraintSpec.model_validate(
+            {
+                "constraint_id": f"design_composition_presence_{entity_id}",
+                "type": "visibility_fraction",
+                "strength": "soft",
+                "subjects": [entity_id],
+                "time_range_seconds": presence_range,
+                "parameters": {
+                    "entity_id": entity_id,
+                    "minimum_time_fraction": 1.0 / sample_count,
+                    "minimum_inside_fraction": 0.01,
+                },
+                "source_status": "inferred",
+                "source_ref": "content.composition",
+            }
+        )
+        candidate.constraints[constraint.constraint_id] = constraint
+
+    negative_space = parameters.get("negative_space_ratio")
+    composed_ids = [
+        entity.entity_id
+        for entity in candidate.entities.values()
+        if entity.proxy.type != "plane" and "environment" not in entity.tags
+    ]
+    if (
+        composed_ids
+        and isinstance(negative_space, (list, tuple))
+        and len(negative_space) == 2
+    ):
+        source_status = parameters.get("source_status", "inferred")
+        if source_status not in {"explicit", "inferred", "default"}:
+            source_status = "inferred"
+        constraint = ConstraintSpec.model_validate(
+            {
+                "constraint_id": "design_negative_space",
+                "type": "negative_space",
+                "strength": "soft",
+                "subjects": composed_ids,
+                "time_range_seconds": [0.0, duration],
+                "parameters": {
+                    "entity_ids": composed_ids,
+                    "minimum_fraction": float(negative_space[0]),
+                    "maximum_fraction": float(negative_space[1]),
+                },
+                "source_status": source_status,
+                "source_ref": "translation_parameters.composition.negative_space_ratio",
             }
         )
         candidate.constraints[constraint.constraint_id] = constraint
@@ -1621,6 +1771,30 @@ def _add_composition_constraints(
             }
         )
         candidate.constraints[constraint.constraint_id] = constraint
+
+
+def _entity_composition_time_range(
+    objective: ObjectivePlanningBrief,
+    entity_id: str,
+    duration: float,
+) -> tuple[float, float]:
+    ranges = []
+    for motion in objective.subject_motion:
+        if not isinstance(motion, dict) or motion.get("subject_id") != entity_id:
+            continue
+        start = motion.get("start_time_seconds")
+        end = motion.get("end_time_seconds")
+        if (
+            isinstance(start, (int, float))
+            and not isinstance(start, bool)
+            and isinstance(end, (int, float))
+            and not isinstance(end, bool)
+            and 0.0 <= float(start) < float(end) <= duration
+        ):
+            ranges.append((float(start), float(end)))
+    if not ranges:
+        return (0.0, duration)
+    return (min(item[0] for item in ranges), max(item[1] for item in ranges))
 
 
 def _add_speed_constraints(
@@ -1701,6 +1875,114 @@ def _add_speed_constraints(
     candidate.constraints[constraint.constraint_id] = constraint
 
 
+def _fit_static_camera_to_composition(
+    candidate: CandidateState,
+    skeleton: SceneSkeleton,
+    profile: PlanningProfile,
+) -> None:
+    """Move a static-scene camera rig back without changing its push distance."""
+
+    if candidate.camera is None:
+        return
+    projected = [
+        item
+        for item in candidate.constraints.values()
+        if item.type == "projected_size"
+    ]
+    if not projected:
+        return
+    focus_point, _ = _camera_focus(candidate, skeleton)
+    transform_track = next(
+        (
+            item
+            for item in candidate.camera.tracks.values()
+            if item.type == "transform"
+        ),
+        None,
+    )
+
+    def camera_samples() -> list[TransformValue]:
+        if transform_track is None:
+            return [candidate.camera.solved_transform]
+        return [
+            item.value
+            for item in transform_track.keyframes
+            if isinstance(item.value, TransformValue)
+        ]
+
+    # Projection is approximately inverse-depth. Two passes absorb the small
+    # pitch and proxy-bound differences while preserving the original dolly span.
+    for _ in range(2):
+        required_offset = 0.0
+        for camera_transform in camera_samples():
+            if camera_transform.translation_m is None:
+                continue
+            for constraint in projected:
+                entity_id = constraint.parameters.entity_id
+                entity = candidate.entities.get(entity_id)
+                if entity is None:
+                    continue
+                bounds = project_geometry_bounds(
+                    entity.proxy,
+                    entity.solved_transform,
+                    camera_transform.translation_m,
+                    camera_transform.rotation_quaternion_wxyz
+                    or (1.0, 0.0, 0.0, 0.0),
+                    candidate.camera.static.focal_length_mm
+                    or profile.default_focal_length_mm,
+                    candidate.camera.static.sensor_width_mm,
+                    profile.resolution_x / profile.resolution_y,
+                )
+                width = bounds[2] - bounds[0]
+                height = bounds[3] - bounds[1]
+                measurement = constraint.parameters.measurement
+                size = {
+                    "width": width,
+                    "height": height,
+                    "diameter": max(width, height),
+                }[measurement]
+                maximum = constraint.parameters.maximum
+                if bounds[4] > 0.0 and size > maximum:
+                    required_offset = max(
+                        required_offset,
+                        bounds[4] * (size / maximum - 1.0),
+                    )
+        if required_offset <= profile.numeric_tolerance:
+            break
+        def shifted(value: TransformValue) -> TransformValue:
+            position = value.translation_m
+            if position is None:
+                return value
+            backward = normalize(
+                (position[0] - focus_point[0], position[1] - focus_point[1], 0.0)
+            )
+            if abs(backward[0]) + abs(backward[1]) <= profile.numeric_tolerance:
+                backward = (0.0, -1.0, 0.0)
+            moved = (
+                position[0] + backward[0] * required_offset,
+                position[1] + backward[1] * required_offset,
+                position[2],
+            )
+            return value.model_copy(
+                update={
+                    "translation_m": moved,
+                    "rotation_quaternion_wxyz": look_at_camera_quaternion(
+                        moved,
+                        focus_point,
+                    ),
+                }
+            )
+
+        candidate.camera.solved_transform = shifted(candidate.camera.solved_transform)
+        if transform_track is not None:
+            transform_track.keyframes = [
+                item.model_copy(update={"value": shifted(item.value)})
+                if isinstance(item.value, TransformValue)
+                else item
+                for item in transform_track.keyframes
+            ]
+
+
 def _speed_range(
     intent: str,
     profile: PlanningProfile,
@@ -1754,6 +2036,15 @@ def _numeric_envelopes(
         for item in candidate.constraints.values()
         if item.type == "surface_clearance_range"
     ]
+    collision_clearances = [
+        {
+            "entity_ids": list(item.parameters.entity_ids),
+            "minimum_meters": item.parameters.minimum_meters,
+            "space": item.parameters.space,
+        }
+        for item in candidate.constraints.values()
+        if item.type == "collision_clearance"
+    ]
     motion_speeds = [
         item.get("speed_range_mps")
         for item in (objective.translation_parameters or {}).get("motions", [])
@@ -1767,6 +2058,7 @@ def _numeric_envelopes(
         ),
         "depth_gap_m": _range_around(depth_gaps),
         "surface_clearance_ratios": clearance_ratios,
+        "scene_reference_clearances_m": collision_clearances,
         "motion_speed_ranges_mps": motion_speeds,
         "entity_size_ranges_m": {
             entity_id: (
@@ -2003,6 +2295,58 @@ def _composition_projected_sizes(
             "translation_parameters.composition.subject_frame_ratio",
         )
     ]
+
+
+def _major_composition_entity_id(
+    objective: ObjectivePlanningBrief,
+    skeleton: SceneSkeleton,
+    candidate: CandidateState,
+) -> str | None:
+    """Resolve the Brief's major visual object without relying on entity order."""
+
+    for item in objective.composition.get("visual_scales", []):
+        if not isinstance(item, dict):
+            continue
+        entity_id = item.get("subject_id")
+        scale = item.get("scale")
+        value = scale.get("value") if isinstance(scale, dict) else None
+        if (
+            isinstance(entity_id, str)
+            and entity_id in candidate.entities
+            and isinstance(value, str)
+            and any(marker in value.lower() for marker in ("巨大", "巨物", "giant", "huge"))
+        ):
+            return entity_id
+
+    for relation in skeleton.relations:
+        if relation.kind == "scale_dominance":
+            return relation.subject_id
+
+    primary_id = next(
+        (
+            str(item.get("id"))
+            for item in objective.subjects
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ),
+        None,
+    )
+    ranks = {"tiny": 0, "small": 1, "human": 2, "unspecified": 2, "large": 3, "huge": 4}
+    eligible = [
+        item
+        for item in skeleton.entities
+        if item.entity_id in candidate.entities
+        and candidate.entities[item.entity_id].proxy.type != "plane"
+        and (item.entity_id != primary_id or len(candidate.entities) == 1)
+    ]
+    if not eligible:
+        return primary_id
+    return max(
+        eligible,
+        key=lambda item: (
+            ranks[item.scale_intent],
+            _proxy_bounding_radius(candidate.entities[item.entity_id]),
+        ),
+    ).entity_id
 
 
 def _percentage_range(value: Any) -> tuple[float, float] | None:

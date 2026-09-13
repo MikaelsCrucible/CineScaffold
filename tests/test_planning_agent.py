@@ -391,7 +391,7 @@ class PlanningProtocolTest(unittest.TestCase):
                 max_options=1,
                 custom_size_requests=[
                     {
-                        "entity_id": "ship_01",
+                        "entity_id": "man_01",
                         "minimum_xyz_m": [1.0, 1.0, 1.0],
                         "maximum_xyz_m": [1.0, 1.0, 1.0],
                         "preferred_xyz_m": [1.0, 1.0, 1.0],

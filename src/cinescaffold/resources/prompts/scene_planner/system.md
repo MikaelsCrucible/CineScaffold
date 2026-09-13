@@ -29,7 +29,7 @@
    - `push_in` / `pull_out` 表示摄影机到观察目标的距离减少 / 增加，不等于固定世界轴方向。
    - “缓慢/快速”使用 `speed_range` 映射；不得用 `camera_distance` 或“平滑”替代速度语义。
    - “静止/保持不变”必须按语义选择 `hold.components`，并覆盖要求持续的完整时间段；不能仅靠省略 Motion Track 来声称已验证。位移、旋转、缩放与可见性是彼此独立的保持分量。
-   - “远处 / 后景”不能只用欧氏 `distance_range` 表达，至少还要用 `depth_order` 证明该主体在当前摄影机下位于参照主体之后。
+   - “远处 / 后景”不能只用欧氏 `distance_range` 表达，至少还要用 `depth_order` 证明该主体在当前摄影机下位于参照主体之后。表面安全距离由 Toolkit 依据场景参考范围冻结；不得按某个主体自身尺寸同比放大“远”的净空。人物小比例、主要巨物画幅占比、实际入框时间与负空间由构图约束共同验证。
    - 代理体必须使用与主体类别和形体比例相称的几何表达尺寸；除明确的 ground plane 外，代理体必须有真实三维厚度。实体建立后代理体类型与自身轴向不可更换。不得为了投影比例或“露出多个面”更换形状、擅自改变 Brief 未指定的朝向；实际网格体积由执行期 Validator 检查。
    - 每个实体都要选择类型化 `ground_interaction`。缺省 `must_be_above` 禁止穿地；贴地使用 `must_touch`。只有 Brief 明确描述埋入、插入、半露出或地下状态时，才可用 `may_intersect`、`embedded` 或 `unconstrained`，并必须填写对应 explicit `source_ref`；不得通过这些模式规避“远处”等空间语义，也不得削短代理体伪装成埋入。
    - 相对运动使用 `path_follow.path.space=target_relative` 与 `path.target_id`。允许递归嵌套，例如 B 相对 A、C 再相对 B；不得自行把复合运动手算成世界坐标折线。普通 `orbit_around` 必须使用解析式 `circle` 或 `ellipse`；只有 Brief 明确要求折线或异形轨迹时才能改用其他表示。S 形等经过一组 waypoint 的平滑运动使用 `catmull_rom`，∞/8 字闭环使用 `lemniscate`，`polyline` 只表达有意的直线段和折角。父级局部运动使用 `space=local`，摄影机相对实体运动使用 `space=camera`。
