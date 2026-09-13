@@ -394,6 +394,25 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
         self.assertEqual(parameters["scene_dynamics"]["mode"], "static")
 
+    def test_explicit_push_in_overrides_neutral_static_numeric_profile(self) -> None:
+        content = valid_model_output()
+        content["camera"]["movement"]["type"] = self._annotated(
+            "缓慢推近",
+            "镜头慢慢推近",
+        )
+        content["timeline"].update(
+            {"duration_seconds": 10.0, "duration_source_status": "explicit"}
+        )
+
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        camera = parameters["camera"]
+        self.assertEqual(camera["movement"], "push_in")
+        self.assertEqual(camera["source_status"], "explicit")
+        self.assertLess(camera["end_distance_m"], camera["start_distance_m"])
+        self.assertGreater(camera["speed_mps"], 0.0)
+        self.assertEqual(normalized["camera"]["movement"]["trajectory"]["value"], "直线")
+
     def test_overlapping_before_relation_is_normalized_to_starts_before(self) -> None:
         content = valid_model_output()
         content["timeline"].update(

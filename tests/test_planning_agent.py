@@ -21,6 +21,7 @@ from pydantic_ai.tools import ToolDefinition
 
 from cinescaffold.planning.agent import (
     ConstraintPatchInput,
+    DesignSearchStalled,
     NON_TOOL_TEXT_MARKER,
     PathPatchInput,
     PlanningDeps,
@@ -172,6 +173,30 @@ class PlanningProtocolTest(unittest.TestCase):
 
         self.assertEqual(payload[0]["reasoning_content"], "reasoning-sentinel")
         self.assertEqual(payload[0]["tool_calls"][0]["id"], "call_1")
+
+    def test_repeated_design_failure_starts_a_fresh_recovery_round(self) -> None:
+        failure = {
+            "status": "no_change",
+            "data": {
+                "failure_signature": "sha256:stable",
+                "failure_codes": ["SPEED_RANGE_VIOLATED"],
+                "failure_reasons": ["Design Option 未通过全部硬约束"],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), _toolkit())
+            deps._observe_design_search(failure)
+            deps._observe_design_search(failure)
+
+            with self.assertRaises(DesignSearchStalled) as raised:
+                _compact_tool_call_history(_context(deps), [])
+
+        self.assertEqual(raised.exception.failure["repeat_count"], 2)
+        self.assertEqual(
+            raised.exception.failure["failure_codes"],
+            ["SPEED_RANGE_VIOLATED"],
+        )
+        self.assertIsNone(deps.pending_design_stall)
 
     def test_tool_history_compacts_pure_text_response_once(self) -> None:
         response = ModelResponse(

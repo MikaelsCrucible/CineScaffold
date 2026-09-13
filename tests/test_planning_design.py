@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -153,6 +154,29 @@ class PlanningDesignTest(unittest.TestCase):
             result["data"]["options"][0]["numeric_envelopes"],
         )
         self.assertIn("hard_pass", result["data"]["options"][0]["predicted"])
+
+    def test_identical_design_candidates_are_exposed_only_once(self) -> None:
+        source = _desert_toolkit()
+        source.submit_scene_skeleton(_desert_skeleton())
+        first = source.request_design_options(max_options=1)
+        source_option = source._design_options[first["data"]["options"][0]["option_id"]]
+
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+        fixed_result = (
+            source_option.candidate,
+            source_option.numeric_envelopes,
+            source_option.assumptions,
+        )
+        with patch(
+            "cinescaffold.planning.toolkit.build_design_candidate",
+            return_value=fixed_result,
+        ):
+            result = toolkit.request_design_options(max_options=3)
+
+        self.assertEqual(len(result["data"]["options"]), 1)
+        self.assertEqual(result["data"]["collapsed_duplicate_count"], 2)
+        self.assertEqual(len(result["data"]["duplicate_strategies"]), 2)
 
     def test_apply_design_option_materializes_atomically(self) -> None:
         toolkit = _desert_toolkit()
@@ -408,6 +432,18 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertGreater(
             state.entities["earth"].proxy.radius_m,
             state.entities["moon"].proxy.radius_m,
+        )
+        earth_orbit = state.motion_tracks["design_orbit_earth"].path.radius_m
+        moon_orbit = state.motion_tracks["design_orbit_moon"].path.radius_m
+        minimum_moon_sun_clearance = (
+            earth_orbit
+            - moon_orbit
+            - state.entities["sun"].proxy.radius_m
+            - state.entities["moon"].proxy.radius_m
+        )
+        self.assertGreaterEqual(
+            minimum_moon_sun_clearance,
+            toolkit.profile.orbit_surface_clearance_m,
         )
 
     def test_unspecified_camera_focus_uses_fixed_scene_anchor(self) -> None:

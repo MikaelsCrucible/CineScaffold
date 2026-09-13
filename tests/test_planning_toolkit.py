@@ -13,6 +13,7 @@ from cinescaffold.planning.toolkit import (
     ScenePlanningToolkit,
     _direction_matches,
     _entity_transform_at,
+    _orbit_entity_intersection_violations,
 )
 from tests.helpers import valid_model_output
 
@@ -90,6 +91,22 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 space="world",
             )
         )
+
+    def test_orbit_intersection_is_reported_once_per_entity_pair(self) -> None:
+        toolkit = _relative_motion_toolkit()
+        state = toolkit.store.get().model_copy(deep=True)
+        state.motion_tracks["earth_orbit"].path.radius_m = 1.5
+
+        violations = _orbit_entity_intersection_violations(state, toolkit.profile)
+        matches = [
+            item
+            for item in violations
+            if item.code == "ORBIT_ENTITY_INTERSECTION"
+            and set(item.entity_ids) == {"earth", "sun"}
+        ]
+
+        self.assertEqual(len(matches), 1)
+        self.assertLess(matches[0].actual["minimum_surface_clearance_m"], 0.0)
 
     def test_target_motion_cannot_substitute_for_approaching_actor(self) -> None:
         toolkit = _toolkit()

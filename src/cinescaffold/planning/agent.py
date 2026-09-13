@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -474,6 +475,10 @@ def _compact_tool_call_history(
 ) -> list[ModelMessage]:
     """保留必要协议字段；允许时再裁剪为近期完整工具轮。"""
 
+    stalled = ctx.deps.consume_design_stall()
+    if stalled is not None:
+        raise DesignSearchStalled(stalled)
+
     compacted: list[ModelMessage] = []
     for message in messages:
         if isinstance(message, ModelResponse):
@@ -531,6 +536,9 @@ class PlanningDeps:
     inspected_calls: set[str] = field(default_factory=set)
     compacted_non_tool_responses: set[str] = field(default_factory=set)
     preserve_complete_thinking_history: bool = False
+    last_design_failure_signature: str | None = None
+    design_failure_repeat_count: int = 0
+    pending_design_stall: dict[str, Any] | None = None
 
     def call_tool(self, name: str, arguments: dict[str, Any], operation) -> dict[str, Any]:
         if (
@@ -587,6 +595,8 @@ class PlanningDeps:
             self.capabilities_read = True
         if name == "inspect_candidate" and result.get("status") == "ok":
             self.inspected_calls.add(self._inspect_key(arguments, revision_before))
+        if name == "request_design_options":
+            self._observe_design_search(result)
         if self.checkpoint_writer is not None and current_revision_after != revision_before:
             checkpoint_path = self.checkpoint_writer(self.toolkit.store.get())
             self.trace.record(
@@ -612,6 +622,36 @@ class PlanningDeps:
                 authoritative_revision=current_revision_after,
             )
         return agent_result
+
+    def _observe_design_search(self, result: dict[str, Any]) -> None:
+        data = result.get("data")
+        if result.get("status") == "ok" and isinstance(data, dict) and data.get("options"):
+            self.last_design_failure_signature = None
+            self.design_failure_repeat_count = 0
+            self.pending_design_stall = None
+            return
+        if result.get("status") != "no_change" or not isinstance(data, dict):
+            return
+        signature = data.get("failure_signature")
+        if not isinstance(signature, str) or not signature:
+            return
+        if signature == self.last_design_failure_signature:
+            self.design_failure_repeat_count += 1
+        else:
+            self.last_design_failure_signature = signature
+            self.design_failure_repeat_count = 1
+        if self.design_failure_repeat_count >= 2:
+            self.pending_design_stall = {
+                "failure_signature": signature,
+                "failure_codes": data.get("failure_codes", []),
+                "failure_reasons": data.get("failure_reasons", []),
+                "repeat_count": self.design_failure_repeat_count,
+            }
+
+    def consume_design_stall(self) -> dict[str, Any] | None:
+        stalled = self.pending_design_stall
+        self.pending_design_stall = None
+        return stalled
 
     def _protocol_rejection(
         self,
@@ -696,6 +736,12 @@ class PlanningDeps:
             current_revision if arguments.get("revision") is None else arguments["revision"]
         )
         return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+class DesignSearchStalled(AgentRunError):
+    def __init__(self, failure: dict[str, Any]) -> None:
+        self.failure = deepcopy(failure)
+        super().__init__("相同的 Design 硬失败已连续出现，切换到新的 RepairPacket 恢复轮次")
 
 
 def _protocol_rejected(revision: int, message: str, next_actions: list[str]) -> dict[str, Any]:

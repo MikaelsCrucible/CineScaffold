@@ -18,6 +18,9 @@
 
 ### Changed
 
+- 显式摄影机运动现在先选择匹配的确定性运动模板，并覆盖冲突的情绪缺省数值；旧版带量化快照的 Brief 在 Planning 投影时也会重新对齐。
+- Design Options 按实际 Candidate 状态去重；相同 Design 硬失败连续两次后熔断当前完整 thinking 会话，以紧凑 RepairPacket 开始新的恢复轮次。
+- 嵌套公转半径按完整子系统包络递归计算，并预留冻结的表面净空。
 - Scene Skeleton 的摄影机焦点改为可空；未指定拍摄主体时使用稳定场景锚点完成初始取景。静态焦点不再隐式逐帧跟踪运动实体，持续跟踪必须由 `look_at` Track 明确表达。
 - 构图 projected-size Constraint 按 Cinematic Brief `visual_scales[*].subject_id` 和对应百分比建立，不再依赖 Scene Skeleton 的实体插入顺序。
 - 明确的“远处/背景”关系现在必须同时具有 `depth_order` 与 `surface_clearance_range` hard 证据。Design Option、确定性布局 Solver 和逐帧 Validator 共用同一方向包围体计算；距离档位相对物体尺寸而非固定米数，Agent 可在受限 Patch 中调整比例范围但不能绕过门禁直接写最终坐标。
@@ -30,6 +33,8 @@
 
 ### Fixed
 
+- 修复明确要求“缓慢推近”时，语义文本保留推近但量化相机仍继承中性情绪的 `static / 0 m/s`，导致 Planning 长时间求解不可能速度约束的问题。
+- 修复内层轨道只按直接父子实体尺寸定半径、外层轨道没有容纳整个子系统，因而月亮可能穿过太阳的问题；解析公转新增实体相交 hard 检查。
 - 修复无摄影机指令的多主体动态场景仍被迫绑定首个/任意实体，以及 `static` 镜头位置不动却逐帧旋转追踪该实体的问题。
 - 修复语义层已把主体画幅比例绑定到特定 ID，Design 却把该约束错误施加给 Skeleton 第一个非地面实体的问题。
 - 修复巨型代理仅以中心深度满足“远处”，导致中心相距十余米但人物距飞船边缘不足一米仍被 Commit Gate 接受的问题；旋转后的长轴也会进入方向相关净空计算。
@@ -44,6 +49,8 @@
 
 ### Verification
 
+- Python 3.12 完整离线回归 307 项通过；荒漠飞船、道路接车、嵌套公转三条标准场景均直接 hard pass 并通过 Commit Gate，未调用 Provider。
+- `uv build` 成功生成 Core 0.8.13 的 sdist 与 wheel。
 - Python 3.12 完整离线回归 301 项通过；新增回归覆盖 Scene Skeleton 空焦点、静态实体焦点不隐式跟踪、固定场景锚点编译和 visual-scale 主体 ID 映射。
 - Python 3.12 完整离线回归 297 项通过；新增回归覆盖超大自定义代理、旋转长方体、far explicit 双约束完整性、比例范围校验和统一 Solver/Validator 行为。
 - Python 3.12 完整离线回归 290 项通过；旧版道路接车 Brief 的 Mock 端到端规划、inferred zero-gap 时间关系和已取消真实失败结构的离线 Design 重放均成功。

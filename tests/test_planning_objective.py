@@ -91,6 +91,38 @@ class ObjectiveProjectionTest(unittest.TestCase):
         self.assertNotIn("emotion_class", objective.translation_parameters)
         self.assertNotIn("feeling", objective.translation_parameters["input_slots"])
 
+    def test_projection_repairs_legacy_camera_parameters_that_conflict_with_explicit_motion(self) -> None:
+        brief = _valid_brief()
+        brief["content"]["camera"]["movement"]["type"] = {
+            "value": "缓慢推近",
+            "source_status": "explicit",
+            "source_text": "镜头慢慢推近",
+        }
+        normalized, parameters = apply_translation_rules(
+            brief["content"],
+            load_translation_rules(
+                ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
+            ),
+        )
+        parameters["camera"].update(
+            movement="static",
+            speed_mps=0.0,
+            start_distance_m=15.0,
+            end_distance_m=15.0,
+            source_status="default",
+        )
+        brief["schema_version"] = "0.6"
+        brief["content"] = normalized
+        brief["translation_parameters"] = parameters
+        brief["provenance"]["translation_rules_sha256"] = "1" * 64
+
+        camera = project_objective_brief(brief).objective_brief.translation_parameters["camera"]
+
+        self.assertEqual(camera["movement"], "push_in")
+        self.assertLess(camera["end_distance_m"], camera["start_distance_m"])
+        self.assertGreater(camera["speed_mps"], 0.0)
+        self.assertEqual(camera["source_status"], "explicit")
+
 
 def _valid_brief() -> dict:
     return {

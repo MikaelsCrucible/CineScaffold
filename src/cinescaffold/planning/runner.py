@@ -6,6 +6,7 @@ import json
 import os
 import time
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +17,7 @@ from pydantic_ai.exceptions import AgentRunError, UsageLimitExceeded
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from cinescaffold.planning.agent import (
+    DesignSearchStalled,
     PlanningDeps,
     compact_agent_payload,
     create_planning_agent,
@@ -372,6 +374,29 @@ class InterpreterRunner:
                         )
                     except UsageLimitExceeded:
                         raise
+                    except DesignSearchStalled as error:
+                        error_payload = {
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        }
+                        recovery_context = _recovery_context(
+                            toolkit,
+                            stage="design_search",
+                            failure_class="no_progress",
+                            attempts_remaining=_attempts_remaining(self.config, attempt),
+                            design_failure=error.failure,
+                        )
+                        trace.record(
+                            "planning_recovery_requested",
+                            attempt=attempt,
+                            error=error_payload,
+                            recovery_context=recovery_context,
+                        )
+                        if _can_retry(self.config, attempt):
+                            prompt = _recovery_prompt(recovery_context)
+                            continue
+                        status = "failed"
+                        break
                     except AgentRunError as error:
                         error_payload = {
                             "type": type(error).__name__,
@@ -738,6 +763,7 @@ def _recovery_context(
     failure_class: str,
     attempts_remaining: int,
     violations: list[dict[str, Any]] | None = None,
+    design_failure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current = toolkit.store.get()
     validation = toolkit.validate_candidate(
@@ -792,6 +818,7 @@ def _recovery_context(
         "hard_pass": validation["data"]["hard_pass"],
         "soft_score": validation["data"]["soft_score"],
         "violations": effective_violations,
+        "design_failure": deepcopy(design_failure) if design_failure else None,
         "capability_gaps": validation["capability_gaps"],
         "repair_search_exhausted": toolkit.has_exhausted_repair_search,
         "attempts_remaining": attempts_remaining,

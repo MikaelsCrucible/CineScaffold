@@ -567,17 +567,20 @@ def build_design_candidate(
         size_requests or {},
     )
     _place_entities(candidate, skeleton, profile)
+    orbit_radii = _orbit_radius_map(candidate, skeleton, profile)
     candidate.constraints = _build_relation_constraints(
         objective,
         skeleton,
         candidate,
         profile,
+        orbit_radii,
     )
     candidate.motion_tracks = _build_motion(
         objective,
         skeleton,
         candidate,
         profile,
+        orbit_radii,
     )
     candidate.camera = _build_camera(
         objective,
@@ -852,11 +855,66 @@ def _place_entities(
         )
 
 
+def _orbit_radius_map(
+    candidate: CandidateState,
+    skeleton: SceneSkeleton,
+    profile: PlanningProfile,
+) -> dict[tuple[str, str], float]:
+    """为整棵嵌套轨道预留包络，避免内层天体穿过外层中心天体。"""
+    pairs = {
+        (relation.subject_id, relation.reference_id)
+        for relation in skeleton.relations
+        if relation.kind == "orbit_around"
+    }
+    pairs.update(
+        (phase.subject_id, phase.target_id)
+        for phase in skeleton.motion_phases
+        if phase.kind == "orbit" and phase.target_id is not None
+    )
+    parent_by_child: dict[str, str] = {}
+    children: dict[str, list[str]] = {}
+    for child_id, parent_id in sorted(pairs):
+        previous_parent = parent_by_child.get(child_id)
+        if previous_parent is not None and previous_parent != parent_id:
+            raise ValueError(f"Orbit Entity 不能同时围绕多个目标：{child_id}")
+        parent_by_child[child_id] = parent_id
+        children.setdefault(parent_id, []).append(child_id)
+
+    radii: dict[tuple[str, str], float] = {}
+    extents: dict[str, float] = {}
+    visiting: set[str] = set()
+
+    def subsystem_extent(entity_id: str) -> float:
+        if entity_id in extents:
+            return extents[entity_id]
+        if entity_id in visiting:
+            raise ValueError(f"Orbit 关系形成循环：{entity_id}")
+        visiting.add(entity_id)
+        body_extent = _proxy_bounding_radius(candidate.entities[entity_id])
+        envelope = body_extent
+        for child_id in children.get(entity_id, []):
+            child_extent = subsystem_extent(child_id)
+            radius = max(
+                2.0,
+                body_extent + child_extent + profile.orbit_surface_clearance_m,
+            )
+            radii[(child_id, entity_id)] = radius
+            envelope = max(envelope, radius + child_extent)
+        visiting.remove(entity_id)
+        extents[entity_id] = envelope
+        return envelope
+
+    for entity_id in sorted(candidate.entities):
+        subsystem_extent(entity_id)
+    return radii
+
+
 def _build_relation_constraints(
     objective: ObjectivePlanningBrief,
     skeleton: SceneSkeleton,
     candidate: CandidateState,
     profile: PlanningProfile,
+    orbit_radii: dict[tuple[str, str], float],
 ) -> dict[str, ConstraintSpec]:
     constraints: dict[str, ConstraintSpec] = {}
     duration = candidate.timeline.duration_seconds
@@ -945,14 +1003,7 @@ def _build_relation_constraints(
                 }
             ]
         elif relation.kind == "orbit_around":
-            subject = candidate.entities[relation.subject_id]
-            reference = candidate.entities[relation.reference_id]
-            radius = max(
-                2.0,
-                _proxy_bounding_radius(subject)
-                + _proxy_bounding_radius(reference)
-                + 2.0,
-            )
+            radius = orbit_radii[(relation.subject_id, relation.reference_id)]
             payloads = [
                 common
                 | {
@@ -1062,6 +1113,7 @@ def _build_motion(
     skeleton: SceneSkeleton,
     candidate: CandidateState,
     profile: PlanningProfile,
+    orbit_radii: dict[tuple[str, str], float],
 ) -> dict[str, TrackSpec]:
     tracks: dict[str, TrackSpec] = {}
     duration = candidate.timeline.duration_seconds
@@ -1087,12 +1139,7 @@ def _build_motion(
         orbit = next((item for item in phases if item.kind == "orbit"), None)
         if orbit is not None and orbit.target_id is not None:
             depth = 2 if orbit.target_id in orbit_subjects else 1
-            subject = candidate.entities[subject_id]
-            reference = candidate.entities[orbit.target_id]
-            radius = max(
-                2.0,
-                _proxy_bounding_radius(subject) + _proxy_bounding_radius(reference) + 2.0,
-            )
+            radius = orbit_radii[(subject_id, orbit.target_id)]
             track = TrackSpec.model_validate(
                 {
                     "track_id": f"design_orbit_{subject_id}",

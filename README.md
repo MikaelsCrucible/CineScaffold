@@ -49,9 +49,9 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
 - Validator 按冻结时间线逐帧复验地面、投影、点式空间约束和类型化运动语义；明确要求的来源不仅要映射到正确字段，还必须绑定 Brief 指定的实体。Commit Gate 会再核对编译后逐帧 Scene IR 与已验证 Candidate 的位置、旋转、尺度、显隐、摄影机和焦距等价。
 - 用户明确要求“可见”时，白模阶段以 hard `keep_in_frame` 证明代理几何至少部分进入画面；这不等价于已验证真实遮挡、材质透明或最终生成视频的可见性。
-- Design Option 在交给 Agent 前必须通过完整 Validator 的全部 hard 约束以及 Agent 自己声明的全部符号路径点，应用时再次复验；已知错误候选不再作为“安全基线”暴露。
+- Design Option 在交给 Agent 前必须通过完整 Validator 的全部 hard 约束以及 Agent 自己声明的全部符号路径点，应用时再次复验；已知错误候选不再作为“安全基线”暴露，数值状态完全相同的策略候选会折叠为一个。
 - Validator 对靠近、抵达、离开、进入/退出和绕行动作同时记录世界空间结果与屏幕质心、方向性尺度、出入画或显隐结果。动作主体的世界位移和状态改变是 hard，目标自身移动不能替代主体动作；屏幕表现默认作为 warning，不会为了可读性篡改真实动作。
-- 默认规划的外层恢复轮次不再回放上一轮完整 thinking；每轮获得新的紧凑 `RepairPacket`，只含冻结目标时间线、关键动作、当前 Candidate 摘要、压缩 violation、能力缺口和剩余尝试。第一次出现确定性工具不支持的 hard violation 就立即开放受 Schema 和 Validator 限制的原子 Candidate Patch。
+- 默认规划的外层恢复轮次不再回放上一轮完整 thinking；每轮获得新的紧凑 `RepairPacket`，只含冻结目标时间线、关键动作、当前 Candidate 摘要、压缩 violation、能力缺口和剩余尝试。同一种 Design 硬失败连续出现两次时，当前长上下文会被熔断并进入新恢复轮次。第一次出现确定性工具不支持的 hard violation 就立即开放受 Schema 和 Validator 限制的原子 Candidate Patch。
 - 逐帧 Validator 仍在 Candidate、checkpoint 和诊断产物中保留完整证据；发给 Agent 的工具返回与 RepairPacket 会按错误签名和相邻帧合并为连续时间段，只携带首个、最严重和最后样本，且去除 Envelope 中重复的 validation 列表，避免同一连续错误耗尽上下文。
 - Toolkit 采用渐进披露而不是删掉解题信息：Design Option 在选择前给出任务相关能力；遇到确定性工具不支持的 hard error 时，Agent 获得一个可跨实体、约束、运动和摄影机联合修改的原子 Candidate Patch。建议修复领域只负责排序注意力，不限制可用字段；完整压缩错误仍保留，提案还会先在不可见副本中验证，退化时不写入 revision。
 - Agent 的 Entity Patch 不再清空其 Schema 中不可见的已求解 Transform；Design 生成的 `ground_plane` 自动携带语言无关的环境地面身份。Design Option、全部 Mutation、历史恢复和 Validator 现在共用同一组引用、地面、时间、轨道唯一性与参考系不变量，避免一个入口生成、另一个入口拒绝同一状态。
@@ -59,6 +59,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 完整修复用尽后，规划器优先保留并提交同时通过执行安全与叙事完整性门禁的最佳 Candidate；若还没有合格 Candidate，则从已类型 Objective Brief 确定性生成简化方案，不再请求 Provider。简化交付可以放宽构图和屏幕表现，但仍必须保留全部关键动作、显隐/容纳后置状态和 explicit 要求。
 - 支持世界、局部、目标相对和摄影机相对参考系。
 - 支持直线、圆、椭圆、平滑样条和 8 字等代理运动轨迹。
+- 嵌套公转按完整子系统包络计算外层轨道半径；Validator 会逐帧检查公转实体与所有非地面代理的相交，并把连续帧汇总为实体对级错误。
 - Agent 可见接口固定右手 Z-up、路径方向和屏幕坐标约定；推断机位下的解析轨道需通过投影可读性门禁。
 - 每个量化为移动的主体阶段都会经过通用投影结果检查；仅有世界坐标位移、但屏幕轨迹和尺度变化都过小时记录 warning，供后续质量优化和评测使用。
 - 未明确要求迎面或背面跟拍时，线性主体运动与摄影机视线必须保留至少 20° 的中位斜视夹角，避免 Agent 仅靠迎面尺寸变化通过运动可读性门禁；明确机位保留用户要求并记录 warning。
@@ -123,7 +124,7 @@ python -c "import cinescaffold; print(cinescaffold.__version__)"
 生产环境应依赖正式 tag 或完整 commit，而不是 `main`：
 
 ```text
-cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.12
+cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.13
 ```
 
 嵌入式调用只依赖 [`cinescaffold.api`](src/cinescaffold/api.py) 的公共入口；`planning`、`execution` 等子模块属于内部实现：

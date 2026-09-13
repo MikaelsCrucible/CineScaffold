@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from statistics import median
@@ -57,7 +58,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.30"
+TOOLKIT_VERSION = "0.31"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -888,6 +889,8 @@ class ScenePlanningToolkit:
         skeleton_sha256 = skeleton_hash(self._scene_skeleton)
         options: list[DesignOption] = []
         option_errors: list[str] = []
+        seen_candidate_hashes: dict[str, str] = {}
+        duplicate_strategies: dict[str, str] = {}
         for strategy in order:
             try:
                 candidate, envelopes, assumptions = build_design_candidate(
@@ -942,6 +945,11 @@ class ScenePlanningToolkit:
             except (ValidationError, ValueError) as error:
                 option_errors.append(f"{strategy}: {_error_message(error)}")
                 continue
+            candidate_hash = _candidate_hash(candidate)
+            if candidate_hash in seen_candidate_hashes:
+                duplicate_strategies[strategy] = seen_candidate_hashes[candidate_hash]
+                continue
+            seen_candidate_hashes[candidate_hash] = strategy
             option_id = design_option_id(
                 skeleton_sha256=skeleton_sha256,
                 base_revision=revision,
@@ -975,6 +983,9 @@ class ScenePlanningToolkit:
                     "先保留 explicit，再比较 hard violation、soft score 与策略偏好"
                 ),
                 "custom_size_request_count": len(size_requests),
+                "collapsed_duplicate_count": len(duplicate_strategies),
+                "duplicate_strategies": duplicate_strategies,
+                **(_design_failure_payload(option_errors) if not options else {}),
                 "next_tool": "apply_design_option" if options else None,
             },
             warnings=(
@@ -2305,6 +2316,7 @@ class ScenePlanningToolkit:
                     self.objective_brief,
                 )
             )
+            violations.extend(_orbit_entity_intersection_violations(state, self.profile))
         if "motion" in checks:
             violations.extend(
                 _nested_orbit_readability_violations(
@@ -2373,6 +2385,28 @@ def _candidate_hash(state: CandidateState) -> str:
     return canonical_hash(
         state.model_dump(mode="json", exclude={"revision", "validation"})
     )
+
+
+def _design_failure_payload(option_errors: list[str]) -> dict[str, Any]:
+    reasons = sorted(
+        {
+            error.split(": ", 1)[1] if ": " in error else error
+            for error in option_errors
+        }
+    )
+    codes = sorted(
+        {
+            code
+            for reason in reasons
+            for code in re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", reason)
+        }
+    )
+    signature_basis = codes or reasons or ["unknown_design_failure"]
+    return {
+        "failure_signature": canonical_hash(signature_basis),
+        "failure_codes": codes,
+        "failure_reasons": reasons,
+    }
 
 
 def _camera_repair_capability_gap(state: CandidateState) -> str | None:
@@ -4386,6 +4420,75 @@ def _orbit_trajectory_violations(
                     adjustable_variables=[f"motion_tracks.{track.track_id}.path"],
                 )
             )
+    return violations
+
+
+def _orbit_entity_intersection_violations(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    """逐帧检查解析公转与场景中其他实体的相交，并按实体对汇总。"""
+    orbit_tracks = [
+        track
+        for track in state.motion_tracks.values()
+        if track.type == "path_follow"
+        and track.path is not None
+        and track.path.space == "target_relative"
+        and track.path.closed
+        and track.path.representation in {"circle", "ellipse"}
+        and track.target_entity_id is not None
+    ]
+    worst: dict[tuple[str, str], tuple[float, float, str]] = {}
+    for track in orbit_tracks:
+        subject_id = track.target_entity_id
+        subject = state.entities.get(subject_id)
+        if subject is None or subject.proxy.type == "plane":
+            continue
+        start, end = track.time_range_seconds
+        for time_seconds in _timeline_frame_times(state.timeline, start=start, end=end):
+            if not _entity_visibility_at(state, subject_id, time_seconds):
+                continue
+            resolver = _WorldTransformResolver(state, time_seconds, profile)
+            subject_transform = resolver.entity(subject_id)
+            for other_id, other in sorted(state.entities.items()):
+                if other_id == subject_id or other.proxy.type == "plane":
+                    continue
+                if not _entity_visibility_at(state, other_id, time_seconds):
+                    continue
+                _, clearance_m, _ = surface_clearance_ratio(
+                    subject.proxy,
+                    subject_transform,
+                    other.proxy,
+                    resolver.entity(other_id),
+                    ground_plane=False,
+                )
+                pair = tuple(sorted((subject_id, other_id)))
+                previous = worst.get(pair)
+                if previous is None or clearance_m < previous[0]:
+                    worst[pair] = (clearance_m, time_seconds, track.track_id)
+
+    violations: list[Violation] = []
+    for (first_id, second_id), (clearance_m, time_seconds, track_id) in sorted(worst.items()):
+        if clearance_m >= -profile.numeric_tolerance:
+            continue
+        violations.append(
+            _violation(
+                "ORBIT_ENTITY_INTERSECTION",
+                f"公转轨迹使实体相交：{first_id} / {second_id}",
+                entity_ids=[first_id, second_id],
+                time_range_seconds=(time_seconds, time_seconds),
+                expected={"minimum_surface_clearance_m": 0.0},
+                actual={
+                    "minimum_surface_clearance_m": clearance_m,
+                    "sample_time_seconds": time_seconds,
+                    "orbit_track_id": track_id,
+                },
+                adjustable_variables=[
+                    f"motion_tracks.{track_id}.path",
+                    "entity proxy dimensions",
+                ],
+            )
+        )
     return violations
 
 

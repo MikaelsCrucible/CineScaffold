@@ -126,7 +126,7 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
         schema_version=schema_version,
         source_brief_sha256=_canonical_sha256(brief),
         translation_parameters=(
-            objective_translation_parameters(translation_parameters)
+            objective_translation_parameters(translation_parameters, content)
             if schema_version in {"0.2", "0.3", "0.4", "0.5", "0.6"}
             else None
         ),

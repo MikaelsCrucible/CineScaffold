@@ -787,7 +787,7 @@ class CandidateState(StrictModel):
 
 
 class PlanningProfile(StrictModel):
-    profile_id: str = "research_default_v0.7"
+    profile_id: str = "research_default_v0.8"
     fps_numerator: int = 24
     fps_denominator: int = 1
     resolution_x: int = 1280
@@ -796,6 +796,7 @@ class PlanningProfile(StrictModel):
     default_focal_length_mm: float = 35.0
     default_camera_distance_m: float = 12.0
     default_depth_gap_m: float = 12.0
+    orbit_surface_clearance_m: float = Field(default=2.0, gt=0)
     far_clearance_ratio_range: tuple[float, float] = (0.5, 2.0)
     far_clearance_preferred_ratio: float = 1.0
     stationary_speed_max_mps: float = 0.0001

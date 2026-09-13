@@ -38,8 +38,13 @@ def apply_translation_rules(
     emotion = _classify_emotion(content, rules)
     profile = rules["emotion_classes"][emotion["class_id"]]
     resolved_profile = deepcopy(profile)
-    resolved_profile["camera"] = _resolve_camera_profile(
+    resolved_profile["camera"] = _camera_profile_for_explicit_movement(
+        content,
+        rules,
         profile["camera"],
+    )
+    resolved_profile["camera"] = _resolve_camera_profile(
+        resolved_profile["camera"],
         float(content["timeline"]["duration_seconds"]),
     )
     _apply_emotion_semantics(content, resolved_profile, emotion)
@@ -76,7 +81,7 @@ def apply_translation_rules(
         "explicit_override_paths": explicit_overrides,
         "precedence": ["explicit", "inferred", "default"],
     }
-    return content, parameters
+    return content, reconcile_translation_parameters(content, parameters)
 
 
 def _apply_emotion_semantics(
@@ -219,11 +224,19 @@ def _apply_emotion_semantics(
         ]
 
 
-def objective_translation_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+def objective_translation_parameters(
+    parameters: dict[str, Any],
+    content: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Agent 1 只接收空间、运动、构图和摄影机量化结果。"""
+    reconciled = (
+        reconcile_translation_parameters(content, parameters)
+        if content is not None
+        else deepcopy(parameters)
+    )
     objective = {
         key: deepcopy(value)
-        for key, value in parameters.items()
+        for key, value in reconciled.items()
         if key not in {"lighting", "emotion_class"}
     }
     slots = objective.get("input_slots")
@@ -235,6 +248,44 @@ def objective_translation_parameters(parameters: dict[str, Any]) -> dict[str, An
             path for path in overrides if not path.startswith("mood.")
         ]
     return objective
+
+
+def reconcile_translation_parameters(
+    content: dict[str, Any],
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    """让显式摄影机语义覆盖旧 Brief 中与之矛盾的缺省量化值。"""
+    reconciled = deepcopy(parameters)
+    movement_node = content.get("camera", {}).get("movement", {}).get("type")
+    if _status(movement_node) != "explicit":
+        return reconciled
+    movement = _camera_movement_kind(_value(movement_node))
+    camera = reconciled.get("camera")
+    if movement is None or not isinstance(camera, dict):
+        return reconciled
+
+    duration = _number_or(content.get("timeline", {}).get("duration_seconds"), 15.0)
+    duration = max(duration, 1e-6)
+    start = _number_or(camera.get("start_distance_m"), 15.0)
+    end_value = camera.get("end_distance_m")
+    end = float(end_value) if _is_number(end_value) else None
+
+    camera["movement"] = movement
+    camera["source_status"] = "explicit"
+    if movement == "push_in":
+        if end is None or end >= start:
+            end = max(start * 0.5, 0.1)
+        camera["end_distance_m"] = end
+        camera["speed_mps"] = abs(start - end) / duration
+    elif movement == "pull_out":
+        if end is None or end <= start:
+            end = max(start * 1.5, start + 0.1)
+        camera["end_distance_m"] = end
+        camera["speed_mps"] = abs(end - start) / duration
+    elif movement == "static":
+        camera["end_distance_m"] = start
+        camera["speed_mps"] = 0.0
+    return reconciled
 
 
 def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> None:
@@ -1000,6 +1051,56 @@ def _resolve_camera_profile(
         end = float(resolved["end_distance_m"])
         resolved["speed_mps"] = abs(end - start) / duration_seconds
     return resolved
+
+
+def _camera_profile_for_explicit_movement(
+    content: dict[str, Any],
+    rules: dict[str, Any],
+    base_camera: dict[str, Any],
+) -> dict[str, Any]:
+    """选择与显式运镜一致的运动模板，同时保留当前情绪的镜头造型。"""
+    movement_node = content.get("camera", {}).get("movement", {}).get("type")
+    if _status(movement_node) != "explicit":
+        return deepcopy(base_camera)
+    movement = _camera_movement_kind(_value(movement_node))
+    if movement is None:
+        return deepcopy(base_camera)
+
+    resolved = deepcopy(base_camera)
+    motion_fields = {
+        "movement",
+        "speed_policy",
+        "speed_mps",
+        "start_distance_m",
+        "end_distance_m",
+    }
+    for emotion_profile in rules["emotion_classes"].values():
+        template = emotion_profile["camera"]
+        if template.get("movement") == movement:
+            for field in motion_fields:
+                resolved[field] = deepcopy(template.get(field))
+            return resolved
+
+    resolved["movement"] = movement
+    return resolved
+
+
+def _camera_movement_kind(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = (
+        ("push_in", ("push_in", "pushin", "dolly_in", "推近", "推进")),
+        ("pull_out", ("pull_out", "pullout", "dolly_out", "拉远", "后拉", "拉开")),
+        ("orbit", ("orbit", "环绕", "绕拍")),
+        ("follow", ("follow", "跟随", "跟拍")),
+        ("lateral", ("lateral", "truck", "横移", "侧移")),
+        ("static", ("static", "fixed", "静止", "固定")),
+    )
+    for kind, markers in aliases:
+        if any(marker in normalized for marker in markers):
+            return kind
+    return None
 
 
 def _camera_trajectory(movement: str) -> str:
