@@ -62,7 +62,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.36"
+TOOLKIT_VERSION = "0.37"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -2515,7 +2515,7 @@ class ScenePlanningToolkit:
         if "transforms" in checks or "rebuildability" in checks:
             violations.extend(_transform_violations(state, self.profile))
         if "camera" in checks or "rebuildability" in checks:
-            violations.extend(_camera_violations(state))
+            violations.extend(_camera_violations(state, self.profile))
         if "projection" in checks:
             violations.extend(_projection_violations(state, self.profile))
         if "motion" in checks or "narrative_motion" in checks:
@@ -5174,7 +5174,10 @@ def _ground_interaction_violation(
     )
 
 
-def _camera_violations(state: CandidateState) -> list[Violation]:
+def _camera_violations(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> list[Violation]:
     if state.camera is None:
         return [_violation("CAMERA_MISSING", "缺少活动透视摄影机")]
     transform = state.camera.solved_transform
@@ -5195,7 +5198,68 @@ def _camera_violations(state: CandidateState) -> list[Violation]:
                 adjustable_variables=["camera tracks", "remove_track_ids"],
             )
         )
+    violations.extend(_camera_ground_clearance_violations(state, profile))
     return violations
+
+
+def _camera_ground_clearance_violations(
+    state: CandidateState,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    """Reject a camera path below a horizontal environment plane as one range."""
+
+    ground_ids = [
+        entity.entity_id
+        for entity in state.entities.values()
+        if entity.proxy.type == "plane" and _is_environment_entity(entity)
+    ]
+    if not ground_ids or state.camera is None:
+        return []
+
+    minimum_clearance_m = 0.05
+    invalid_samples: list[tuple[float, float, float, str]] = []
+    for time_seconds in _timeline_frame_times(state.timeline):
+        resolver = _WorldTransformResolver(state, time_seconds, profile)
+        camera = resolver.camera()
+        if camera is None:
+            continue
+        camera_transform, _ = camera
+        horizontal_grounds: list[tuple[str, float]] = []
+        for ground_id in ground_ids:
+            transform = resolver.entity(ground_id)
+            normal = rotate_vector(
+                transform.rotation_quaternion_wxyz,
+                (0.0, 0.0, 1.0),
+            )
+            if abs(normal[2]) >= 0.999:
+                horizontal_grounds.append((ground_id, transform.translation_m[2]))
+        if not horizontal_grounds:
+            continue
+        ground_id, ground_z = max(horizontal_grounds, key=lambda item: item[1])
+        camera_z = camera_transform.translation_m[2]
+        clearance = camera_z - ground_z
+        if clearance + profile.numeric_tolerance < minimum_clearance_m:
+            invalid_samples.append((time_seconds, clearance, camera_z, ground_id))
+
+    if not invalid_samples:
+        return []
+    worst = min(invalid_samples, key=lambda item: item[1])
+    return [
+        _violation(
+            "CAMERA_GROUND_CLEARANCE_VIOLATED",
+            "摄影机路径进入环境地面或低于安全净空",
+            entity_ids=[worst[3]],
+            time_range_seconds=(invalid_samples[0][0], invalid_samples[-1][0]),
+            expected={"minimum_ground_clearance_m": minimum_clearance_m},
+            actual={
+                "minimum_ground_clearance_m": worst[1],
+                "camera_z_at_worst_sample": worst[2],
+                "worst_time_seconds": worst[0],
+                "invalid_sample_count": len(invalid_samples),
+            },
+            adjustable_variables=["camera transform"],
+        )
+    ]
 
 
 def _hard_semantic_violations(

@@ -48,7 +48,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - Cinematic Brief v0.6 先区分主体静态/动态场景；动态场景按实体记录稀疏、独立的动作区间，并用类型化时间关系表达相接、先后、包含和重叠，不再按全场事件数量机械等分总时长。全流程明确区分“主体状态发生变化”“主体发生空间位移”和“摄影机发生运动”：运镜不能把主体静态场景变成动态，也不能触发主体运动可读性策略；只有 `linear_move/orbit/carried` 才属于主体空间运动。局部互动必须物化为可观察的旋转/尺度变化，不能用静止轨道假装完成；抛物线路径会物化为带弧顶的变换关键点。稳定 `motion_id` 不仅要存在，还必须由与类型化动作相容的阶段实现。
 - 复合叙事动作不会扩张为场景专用实体、专用执行原语或隐含几何方向。`action_kind` 只保留 hold/locomotion/interact/other；“驶来、离开、接走、上车”等文字本身不会生成朝向人物、远离人物或撞入载体中心的轨迹。接载点由事件末端空间关系表达，上车可由隐藏/容纳/随载体状态表达。规划器先联合读取同一实体的完整时间线，再为未明确转向的连续运动选取一致路线，静止阶段不会清除既有行进方向。等待/停留仍写入保持关键点，已隐藏的被运载代理无需生成重叠的可见跟随轨道。独立主体时间段发生重叠时，Semantic 层会把模型误用的 `before/after/meets` 规范化为与数值区间一致的开始、结束或重叠关系；模型推断的零间隔不会阻止纠正，用户明确给出的数值间隔仍严格校验。
 - 通过类型化 Toolkit、候选 revision、Solver、Validator 和 Commit Gate 生成 Scene IR。
-- Validator 按冻结时间线逐帧复验地面、投影、点式空间约束和类型化运动语义；明确要求的来源不仅要映射到正确字段，还必须绑定 Brief 指定的实体。Commit Gate 会再核对编译后逐帧 Scene IR 与已验证 Candidate 的位置、旋转、尺度、显隐、摄影机和焦距等价。
+- Validator 按冻结时间线逐帧复验地面、投影、点式空间约束和类型化运动语义；摄影机也必须在整段轨迹中保持在水平环境地面的安全侧，连续穿地只形成一条时间段错误。静态构图后移在用户未明确俯仰时保持绝对机位高度，不能因高大背景主体抬升场景焦点而把镜头拉入地下。明确要求的来源不仅要映射到正确字段，还必须绑定 Brief 指定的实体。Commit Gate 会再核对编译后逐帧 Scene IR 与已验证 Candidate 的位置、旋转、尺度、显隐、摄影机和焦距等价。
 - 用户明确要求“可见”时，白模阶段以 hard `keep_in_frame` 证明代理几何至少部分进入画面；这不等价于已验证真实遮挡、材质透明或最终生成视频的可见性。
 - Design Option 在交给 Agent 前必须通过完整 Validator 的全部 hard 约束以及 Agent 自己声明的全部符号路径点，应用时再次复验；已知错误候选绝不混入正常 `options`。如果首次求解没有合法 Option，Toolkit 只保留一个已通过 Execution Safety 的最佳失败候选，并以明确不可交付的 `repair_baseline` 暴露；Agent 物化后立即进入受限原子 Patch。数值状态完全相同的策略候选会折叠为一个。
 - Validator 对靠近、抵达、离开、进入/退出和绕行动作同时记录世界空间结果与屏幕质心、方向性尺度、出入画或显隐结果。动作主体的世界位移和状态改变是 hard，目标自身移动不能替代主体动作；屏幕表现默认作为 warning，不会为了可读性篡改真实动作。
@@ -125,7 +125,7 @@ python -c "import cinescaffold; print(cinescaffold.__version__)"
 生产环境应依赖正式 tag 或完整 commit，而不是 `main`：
 
 ```text
-cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.17
+cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.18
 ```
 
 嵌入式调用只依赖 [`cinescaffold.api`](src/cinescaffold/api.py) 的公共入口；`planning`、`execution` 等子模块属于内部实现：

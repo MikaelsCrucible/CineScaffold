@@ -2460,12 +2460,17 @@ def _fit_static_camera_to_composition(
             )
             if abs(backward[0]) + abs(backward[1]) <= profile.numeric_tolerance:
                 backward = (0.0, -1.0, 0.0)
-            preserve_height = _explicit_camera_height(objective) is not None
+            # A default camera height is an absolute height above the scene's
+            # ground, not an angle relative to a possibly elevated focus point.
+            # Only an explicit view angle authorizes changing Z while fitting
+            # distance; otherwise a large/tall background object could pull the
+            # averaged focus upward and drive the camera below the ground.
+            preserve_pitch = _explicit_camera_pitch_degrees(objective) is not None
             moved = (
                 position[0] + backward[0] * required_offset,
                 position[1] + backward[1] * required_offset,
                 position[2]
-                if preserve_height
+                if not preserve_pitch
                 else position[2]
                 + required_offset
                 * (position[2] - focus_point[2])

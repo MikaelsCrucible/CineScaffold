@@ -823,6 +823,83 @@ class PlanningDesignTest(unittest.TestCase):
                     option["predicted"]["violation_codes"],
                 )
 
+    def test_static_camera_fit_keeps_default_height_above_open_ground(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "scene_dynamics": {
+                    "mode": "static",
+                    "source_status": "inferred",
+                    "reason": "主体静止，只有摄影机推近",
+                },
+                "translation_parameters": _static_desert_translation_parameters(
+                    composition_source_status="default",
+                    major_object_frame_ratio=[0.15, 0.3],
+                ),
+            }
+        )
+        skeleton = _desert_skeleton()
+        skeleton["camera_intent"]["focus_target_id"] = None
+        toolkit.submit_scene_skeleton(skeleton)
+
+        result = toolkit.request_design_options(max_options=1)
+        candidates = [item.candidate for item in toolkit._design_options.values()]
+        candidates.extend(
+            item.candidate for item in toolkit._design_repair_baselines.values()
+        )
+
+        self.assertTrue(candidates, result)
+        camera = candidates[0].camera
+        self.assertIsNotNone(camera)
+        assert camera is not None
+        transforms = [camera.solved_transform]
+        transforms.extend(
+            keyframe.value
+            for track in camera.tracks.values()
+            if track.type == "transform"
+            for keyframe in track.keyframes
+        )
+        self.assertTrue(
+            all(transform.translation_m[2] >= 1.5 for transform in transforms)
+        )
+
+    def test_camera_below_environment_ground_is_one_hard_violation(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+        result = toolkit.request_design_options(max_options=1)
+        option = result["data"]["options"][0]
+        state = toolkit._design_options[option["option_id"]].candidate.model_copy(
+            deep=True
+        )
+        assert state.camera is not None
+        state.camera.solved_transform.translation_m = (0.0, -10.0, -1.0)
+        for track in state.camera.tracks.values():
+            if track.type != "transform":
+                continue
+            for keyframe in track.keyframes:
+                keyframe.value.translation_m = (
+                    keyframe.value.translation_m[0],
+                    keyframe.value.translation_m[1],
+                    -1.0,
+                )
+
+        report = toolkit._validate(state, ["camera"])
+        violations = [
+            item for item in report.violations
+            if item.code == "CAMERA_GROUND_CLEARANCE_VIOLATED"
+        ]
+
+        self.assertFalse(report.hard_pass)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(
+            violations[0].time_range_seconds,
+            (
+                0.0,
+                state.timeline.duration_seconds
+                - state.timeline.fps_denominator / state.timeline.fps_numerator,
+            ),
+        )
+
     def test_open_ground_grows_to_cover_a_distant_camera_track(self) -> None:
         toolkit = _desert_toolkit()
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
