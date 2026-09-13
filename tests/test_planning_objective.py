@@ -64,6 +64,28 @@ class ObjectiveProjectionTest(unittest.TestCase):
             [item.path for item in result.objective_brief.explicit_requirements],
         )
 
+    def test_environmental_motion_is_not_bound_to_geometry(self) -> None:
+        brief = _valid_brief()
+        brief["content"]["scene_design"]["environmental_motion"] = [
+            {
+                "value": "风沙流动",
+                "source_status": "explicit",
+                "source_text": "风沙缓慢流动",
+            }
+        ]
+
+        result = project_objective_brief(brief)
+
+        self.assertFalse(
+            any(
+                item.path.startswith("content.scene_design.environmental_motion")
+                for item in result.objective_brief.explicit_requirements
+            )
+        )
+        ignored = {item.path: item.reason for item in result.ignored_subjective_fields}
+        self.assertIn("content.scene_design.environmental_motion", ignored)
+        self.assertIn("最终视频生成层", ignored["content.scene_design.environmental_motion"])
+
     def test_v02_passes_quantitative_objectives_but_strips_feeling_and_lighting(self) -> None:
         brief = _valid_brief()
         brief["content"]["mood"]["emotional_tones"] = [

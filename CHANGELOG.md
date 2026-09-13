@@ -4,6 +4,9 @@
 
 ### Added
 
+- Toolkit v0.36 为首次 Design 全部 hard-fail 的情况增加单独 `repair_baseline`：只保留通过 Execution Safety 的最佳失败候选，绝不混入正常 Options；`begin_design_repair` 物化后立即开放受限原子 Candidate Patch。
+- Scene Skeleton 新增 `local_transform` 和 `parabolic` 表达。局部互动会生成可观察的旋转/尺度关键点并由 Validator 复验；抛物线会生成含弧顶的 Transform 轨迹。
+
 - Toolkit v0.32 实现 `collision_clearance`、`visibility_fraction` 与 `negative_space` Validator；静态构图会把主要巨物画幅比例、至少一次实际入框和负空间与主体画幅比例一起建立为可验证约束。
 - Toolkit v0.29 新增 `surface_clearance_range`：按两代理沿关系方向的外边界测量净空，并以较大代理的方向完整尺寸归一化；支持有界最小、偏好和最大比例以及 world/ground-plane 测量空间。
 - Cinematic Brief v0.6 增加主体静态/动态分类、稳定动作 ID、关键叙事标记、按实体独立的稀疏动作时间线和类型化事件关系；顺序描述不再机械等分总时长。
@@ -18,6 +21,18 @@
 - `ExecutionResult.viewer` 与 Pipeline artifact map 公开交互预览状态和产物；GLB 导出或结构校验失败不会阻止白模视频渲染。
 
 ### Changed
+
+- Toolkit v0.36 收紧 Semantic→Skeleton→Design→Validator 契约：动态场景必须真实包含主体状态变化，关键 `motion_id` 必须由相容阶段实现；明确画幅比例和水平/垂直画面位置成为 hard constraint；只有线性主体运动启用缺省 20° 斜视规则。
+- 摄影机 `static/push_in/pull_out/follow/orbit/lateral` 现在均有实际执行实现；明确俯仰、数值高度和常用焦段会改变真实 Camera 并接受 hard 复验。未识别的显式摄影机语义保持未映射并进入修复，而不再仅凭 `source_ref` 假通过。
+- Agent 的 Constraint Patch 枚举收窄为 Toolkit 真正支持的 19 类；屏幕运动不可读保持非阻断 warning，不再错误进入只处理 hard violation 的确定性 Repair 列表。
+
+### Fixed
+
+- 修复 `environmental_motion` 因路径前缀过宽而被错误绑定到地面实体的问题。环境特效运动现在明确留给最终视频生成层，白模规划会记录忽略原因。
+- 修复 deterministic fallback 把局部互动降级为 hold、丢失抛物线路径、只实现 push-in 摄影机以及忽略 `view_relation_to_motion/match_subject` 的跨层漂移。
+- 修复摄影机 `focus_target_id` 与 `view_relation_to_motion` 仅检查来源标签、候选 Patch 后不复验真实机位的问题；相对视角现在按实际主体运动轴求解并做几何 hard 验证。
+- Planning Trace 的 Objective 字段补回 `scene_dynamics`；Studio 可据此把无 `planning` 字样的 Core 规划事件稳定归类到规划阶段。
+- Core 0.8.16 完整离线回归 329 项通过，并成功构建对应 sdist 与 wheel。
 
 - Toolkit v0.35 移除未指定机位时没有规范来源的 35°/55° 偏航。静态或仅状态变化的场景沿规范场景纵深轴观察；有主体空间运动但 Agent 未选择具体观察关系时，只采用 Validator 冻结的最小可读斜角。情绪量化表正式移除未被下游兑现且会与机位高度、注视点或左右语义冲突的固定俯仰、地平线百分比和主体水平位置；用户 explicit 构图语义仍保留。
 - Semantic Translation v0.5 / Rules v0.9 会把只出现在 `spatial_layers` 的明确远景/后景主体归一化为带近景参照的 `far_from` 关系，避免 Semantic 模型没有重复填写 `relationships` 时丢失纵深意图。

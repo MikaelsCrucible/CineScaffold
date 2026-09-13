@@ -148,6 +148,7 @@ class SkeletonMotionPhase(StrictModel):
         "linear_move",
         "orbit",
         "carried",
+        "local_transform",
         "visibility",
     ]
     timeline_event_id: str | None = None
@@ -175,7 +176,12 @@ class SkeletonMotionPhase(StrictModel):
         "ellipse",
         "catmull_rom",
         "lemniscate",
+        "parabolic",
     ] = "stationary"
+    local_components: list[Literal["rotation", "scale"]] = Field(
+        default_factory=list,
+        description="local_transform 的可观察局部变化通道；不表示世界空间位移",
+    )
     speed_intent: Literal[
         "stationary", "slow", "medium", "fast", "unspecified"
     ] = "unspecified"
@@ -204,7 +210,7 @@ class SkeletonMotionPhase(StrictModel):
             raise ValueError("orbit 必须使用 orbit_around 方向语义")
         if self.kind != "orbit" and self.direction_mode == "orbit_around":
             raise ValueError("只有 orbit 可以使用 orbit_around")
-        if self.kind in {"hold", "carried", "visibility"} and self.direction_mode != "none":
+        if self.kind in {"hold", "carried", "local_transform", "visibility"} and self.direction_mode != "none":
             raise ValueError(f"{self.kind} 必须使用 direction_mode=none")
         if self.kind == "orbit" and self.path_family not in {"circle", "ellipse"}:
             raise ValueError("普通 orbit 必须使用 circle 或 ellipse")
@@ -214,12 +220,17 @@ class SkeletonMotionPhase(StrictModel):
             "linear",
             "catmull_rom",
             "lemniscate",
+            "parabolic",
         }:
-            raise ValueError("linear_move 必须使用 linear、catmull_rom 或 lemniscate")
+            raise ValueError("linear_move 必须使用 linear、catmull_rom、lemniscate 或 parabolic")
         if self.kind == "linear_move" and self.speed_intent == "stationary":
             raise ValueError("linear_move 不能使用 stationary 速度")
-        if self.kind in {"carried", "visibility"} and self.path_family != "stationary":
+        if self.kind in {"carried", "local_transform", "visibility"} and self.path_family != "stationary":
             raise ValueError(f"{self.kind} 必须使用 stationary；世界运动由载体或显隐语义负责")
+        if self.kind == "local_transform" and not self.local_components:
+            raise ValueError("local_transform 至少需要 rotation 或 scale 通道")
+        if self.kind != "local_transform" and self.local_components:
+            raise ValueError(f"{self.kind} 不接受 local_components")
         visibility_fields = (self.visibility_state, self.transition_at)
         if self.kind == "visibility" and any(item is None for item in visibility_fields):
             raise ValueError("visibility 必须提供 visibility_state 与 transition_at")
@@ -291,7 +302,7 @@ class SkeletonCameraIntent(StrictModel):
         ),
     )
     speed_intent: Literal[
-        "stationary", "slow", "medium", "fast", "unspecified"
+        "stationary", "slow", "medium", "fast", "match_subject", "unspecified"
     ] = "unspecified"
     speed_source_status: SourceStatus | None = None
     speed_source_ref: str | None = None
@@ -427,7 +438,8 @@ def validate_scene_skeleton(
     if missing:
         raise ValueError(f"Scene Skeleton 遗漏 Brief 主体：{', '.join(missing)}")
 
-    if objective.scene_dynamics.get("mode") == "static":
+    dynamics_mode = objective.scene_dynamics.get("mode")
+    if dynamics_mode == "static":
         changing_phases = [
             item.phase_id
             for item in value.motion_phases
@@ -438,6 +450,12 @@ def validate_scene_skeleton(
                 "scene_dynamics=static 表示主体状态不变，不能提交主体运动或状态转换阶段："
                 + ", ".join(changing_phases)
             )
+    elif dynamics_mode == "dynamic" and not any(
+        item.kind != "hold" for item in value.motion_phases
+    ):
+        raise ValueError(
+            "scene_dynamics=dynamic 必须包含至少一个主体位移、局部变化、显隐或携带阶段"
+        )
 
     known_event_ids = {
         str(item.get("id"))
@@ -471,22 +489,28 @@ def validate_scene_skeleton(
                 raise ValueError(
                     f"Scene Skeleton motion_id 与主体不一致：{phase.motion_id}"
                 )
-        required_motion_ids = {
-            str(item.get("motion_id"))
+        required_motions = {
+            str(item.get("motion_id")): item
             for item in objective.subject_motion
             if isinstance(item, dict)
             and isinstance(item.get("motion_semantics"), dict)
             and item["motion_semantics"].get("narrative_required") is True
         }
-        skeleton_motion_ids = {
-            item.motion_id
-            for item in value.motion_phases
-            if item.motion_id is not None
-        }
-        missing_motion_ids = sorted(required_motion_ids - skeleton_motion_ids)
+        phases_by_motion_id: dict[str, list[SkeletonMotionPhase]] = {}
+        for phase in value.motion_phases:
+            if phase.motion_id is not None:
+                phases_by_motion_id.setdefault(phase.motion_id, []).append(phase)
+        missing_motion_ids = sorted(
+            motion_id
+            for motion_id, motion in required_motions.items()
+            if not any(
+                _phase_matches_motion_semantics(phase, motion.get("motion_semantics", {}))
+                for phase in phases_by_motion_id.get(motion_id, [])
+            )
+        )
         if missing_motion_ids:
             raise ValueError(
-                "Scene Skeleton 遗漏关键叙事动作："
+                "Scene Skeleton 遗漏或错误表达关键叙事动作："
                 + ", ".join(missing_motion_ids)
             )
 
@@ -494,6 +518,69 @@ def validate_scene_skeleton(
     for source_ref, status in _skeleton_sources(value):
         if status == "explicit" and source_ref not in valid_explicit_refs:
             raise ValueError(f"Scene Skeleton explicit source_ref 不存在：{source_ref}")
+
+    camera = objective.camera
+    movement_node = camera.get("movement", {}).get("type")
+    if isinstance(movement_node, dict) and movement_node.get("source_status") == "explicit":
+        expected_movement = _camera_movement_from_value(movement_node.get("value"))
+        if expected_movement is not None and value.camera_intent.movement != expected_movement:
+            raise ValueError(
+                "Scene Skeleton 摄影机运动与 Brief 明确要求不一致："
+                f"{value.camera_intent.movement} != {expected_movement}"
+            )
+    view_node = camera.get("view_relation_to_motion")
+    if isinstance(view_node, dict) and view_node.get("source_status") == "explicit":
+        expected_view = view_node.get("value")
+        if value.camera_intent.view_relation_to_motion != expected_view:
+            raise ValueError(
+                "Scene Skeleton 摄影机观察关系与 Brief 明确要求不一致"
+            )
+        if expected_view != "unspecified" and not any(
+            phase.kind == "linear_move" for phase in value.motion_phases
+        ):
+            raise ValueError("摄影机相对运动视角需要至少一个 linear_move 阶段")
+    focus_node = camera.get("focus_target_id")
+    if isinstance(focus_node, dict) and focus_node.get("source_status") == "explicit":
+        if value.camera_intent.focus_target_id != focus_node.get("value"):
+            raise ValueError("Scene Skeleton 摄影机焦点与 Brief 明确要求不一致")
+
+
+def _phase_matches_motion_semantics(
+    phase: SkeletonMotionPhase,
+    semantics: dict[str, Any],
+) -> bool:
+    """Require a narrative motion ID to be represented by a compatible phase."""
+
+    motion_mode = semantics.get("motion_mode")
+    path_type = semantics.get("path_type")
+    if motion_mode == "stationary":
+        return phase.kind == "hold"
+    if motion_mode == "local_interaction":
+        return phase.kind == "local_transform"
+    if motion_mode == "carried":
+        return phase.kind == "carried"
+    if motion_mode == "self_propelled":
+        if path_type in {"circular", "elliptical"}:
+            return phase.kind == "orbit"
+        return phase.kind == "linear_move"
+    return phase.kind != "hold"
+
+
+def _camera_movement_from_value(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.lower().replace("-", "_").replace(" ", "_")
+    for kind, markers in (
+        ("push_in", ("推近", "推进", "push_in", "dolly_in")),
+        ("pull_out", ("拉远", "后拉", "pull_out", "dolly_out")),
+        ("follow", ("跟随", "跟拍", "follow")),
+        ("orbit", ("环绕", "绕拍", "orbit")),
+        ("lateral", ("横移", "侧移", "lateral", "truck")),
+        ("static", ("静止", "固定", "static", "fixed")),
+    ):
+        if any(marker in normalized for marker in markers):
+            return kind
+    return None
 
 
 def skeleton_hash(value: SceneSkeleton) -> str:
@@ -538,11 +625,18 @@ def task_capability_slice(
         for item in skeleton.motion_phases
         if item.speed_intent not in {"stationary", "unspecified"}
     }
-    if skeleton.camera_intent.speed_intent not in {"stationary", "unspecified"}:
+    if skeleton.camera_intent.speed_intent not in {
+        "stationary",
+        "match_subject",
+        "unspecified",
+    }:
         speed_intents.add(skeleton.camera_intent.speed_intent)
     has_subject_translation = any(
         phase.kind in {"linear_move", "orbit", "carried"}
         for phase in skeleton.motion_phases
+    )
+    has_linear_subject_motion = any(
+        phase.kind == "linear_move" for phase in skeleton.motion_phases
     )
     return {
         "coordinate_system": {
@@ -557,6 +651,14 @@ def task_capability_slice(
         },
         "required_relation_kinds": relation_kinds,
         "required_path_families": path_families,
+        "path_realization": {
+            "linear": "transform keyframes",
+            "parabolic": "transform keyframes with an interior apex",
+            "circle": "analytic path_follow",
+            "ellipse": "analytic path_follow",
+            "catmull_rom": "path_follow",
+            "lemniscate": "analytic path_follow",
+        },
         "route_planning": {
             "decision_owner": "planning_agent",
             "coordinate_owner": "toolkit",
@@ -569,6 +671,11 @@ def task_capability_slice(
             intent: list(_speed_range(intent, profile))
             for intent in sorted(speed_intents)
         },
+        "camera_speed_policy": (
+            "target_relative_follow"
+            if skeleton.camera_intent.speed_intent == "match_subject"
+            else "absolute_range"
+        ),
         "size_design": {
             "scale_intents": [
                 "tiny", "small", "human", "large", "huge", "unspecified"
@@ -605,7 +712,7 @@ def task_capability_slice(
             "minimum_projected_motion_extent": profile.minimum_projected_motion_extent,
             "minimum_view_subject_motion_obliqueness_degrees": (
                 profile.minimum_view_subject_motion_obliqueness_degrees
-                if has_subject_translation
+                if has_linear_subject_motion
                 else None
             ),
         },
@@ -665,7 +772,7 @@ def build_design_candidate(
         objective.scene_dynamics.get("mode") == "static"
         or not has_subject_translation
     ):
-        _fit_static_camera_to_composition(candidate, skeleton, profile)
+        _fit_static_camera_to_composition(objective, candidate, skeleton, profile)
     _fit_open_environment_ground_to_camera(objective, candidate, profile)
     assumptions = _design_assumptions(
         objective,
@@ -706,7 +813,7 @@ def _build_entities(
             source_refs.update(
                 requirement.path
                 for requirement in objective.explicit_requirements
-                if requirement.path.startswith("content.scene_design.environment")
+                if requirement.path == "content.scene_design.environment"
             )
         ground = ground_links.get(item.entity_id)
         ground_interaction = GroundInteractionSpec(
@@ -877,24 +984,69 @@ def _validate_requested_dimensions(
 def _camera_yaw_degrees(
     view: str,
     *,
+    motion_direction_xy: tuple[float, float] | None = None,
     subject_motion_readability_applicable: bool = True,
     minimum_motion_obliqueness_degrees: float = 20.0,
 ) -> float:
+    base_yaw = 0.0
+    if motion_direction_xy is not None:
+        base_yaw = math.degrees(
+            math.atan2(motion_direction_xy[0], -motion_direction_xy[1])
+        )
     if view == "unspecified":
         # A static scene has no motion axis that could justify an arbitrary
         # oblique view. Align it with canonical scene depth; moving scenes use
         # only the validator's frozen minimum until the Agent selects a view.
         return (
-            minimum_motion_obliqueness_degrees
+            base_yaw + minimum_motion_obliqueness_degrees
             if subject_motion_readability_applicable
             else 0.0
         )
-    return {
+    offset = {
         "front": 0.0,
         "rear": 180.0,
         "side": 90.0,
         "three_quarter": 45.0,
     }[view]
+    return base_yaw + offset
+
+
+def _primary_linear_motion_direction_xy(
+    candidate: CandidateState,
+    skeleton: SceneSkeleton,
+) -> tuple[float, float] | None:
+    """Resolve camera-relative wording against realized motion, not world axes."""
+
+    ordered_subjects = [
+        phase.subject_id
+        for phase in skeleton.motion_phases
+        if phase.kind == "linear_move"
+    ]
+    focus_id = skeleton.camera_intent.focus_target_id
+    if focus_id in ordered_subjects:
+        ordered_subjects.remove(focus_id)
+        ordered_subjects.insert(0, focus_id)
+    for subject_id in dict.fromkeys(ordered_subjects):
+        best: tuple[float, float] | None = None
+        best_length = 0.0
+        for track in candidate.motion_tracks.values():
+            if track.target_entity_id != subject_id or track.type != "transform":
+                continue
+            translations = [
+                keyframe.value.translation_m
+                for keyframe in track.keyframes
+                if isinstance(keyframe.value, TransformValue)
+                and keyframe.value.translation_m is not None
+            ]
+            for start, end in zip(translations, translations[1:]):
+                delta = (end[0] - start[0], end[1] - start[1])
+                distance = math.hypot(*delta)
+                if distance > best_length:
+                    best = (delta[0] / distance, delta[1] / distance)
+                    best_length = distance
+        if best is not None:
+            return best
+    return None
 
 
 def _scene_background_ground_direction() -> tuple[float, float, float]:
@@ -1167,6 +1319,14 @@ def _build_relation_constraints(
                 "parameters": {
                     "target_id": phase.subject_id,
                     "components": ["translation", "rotation", "scale"],
+                },
+            }
+        elif phase.kind == "local_transform":
+            payload = common | {
+                "type": "hold",
+                "parameters": {
+                    "target_id": phase.subject_id,
+                    "components": ["translation"],
                 },
             }
         elif phase.kind == "linear_move" and phase.direction_mode in {
@@ -1476,6 +1636,25 @@ def _build_motion(
                         hidden_at_end=hidden_at_end,
                         fallback_direction=previous_direction,
                     )
+                if phase.path_family == "parabolic":
+                    midpoint_time = start + (end - start) * 0.5
+                    horizontal_distance = math.hypot(
+                        position[0] - previous_position[0],
+                        position[1] - previous_position[1],
+                    )
+                    midpoint = (
+                        (previous_position[0] + position[0]) * 0.5,
+                        (previous_position[1] + position[1]) * 0.5,
+                        max(previous_position[2], position[2])
+                        + max(1.0, horizontal_distance * 0.25),
+                    )
+                    keyframes.append(
+                        TrackKeyframe(
+                            time_seconds=midpoint_time,
+                            value=TransformValue(translation_m=midpoint),
+                            interpolation="smooth",
+                        )
+                    )
                 delta_x = position[0] - previous_position[0]
                 delta_y = position[1] - previous_position[1]
                 delta_length = math.hypot(delta_x, delta_y)
@@ -1512,6 +1691,74 @@ def _build_motion(
                 source_ref=moving[0].source_ref,
             )
             tracks[track.track_id] = track
+
+        local_phases = [item for item in phases if item.kind == "local_transform"]
+        if local_phases:
+            track_id = f"design_motion_{subject_id}"
+            existing = tracks.get(track_id)
+            fallback = candidate.entities[subject_id].solved_transform
+            keyframes = list(existing.keyframes) if existing is not None else []
+            for phase in sorted(
+                local_phases,
+                key=lambda item: _phase_range(objective, item, duration)[0],
+            ):
+                start, end = _phase_range(objective, phase, duration)
+                sample_end = _track_end_time(candidate, end)
+                midpoint = start + (sample_end - start) * 0.5
+                baseline_start = sample_transform_track(existing, start, fallback)
+                baseline_mid = sample_transform_track(existing, midpoint, fallback)
+                baseline_end = sample_transform_track(existing, sample_end, fallback)
+                angle = math.radians(15.0) / 2.0
+                changed_rotation = (
+                    (math.cos(angle), math.sin(angle), 0.0, 0.0)
+                    if "rotation" in phase.local_components
+                    else baseline_mid.rotation_quaternion_wxyz
+                )
+                changed_scale = (
+                    (1.08, 1.08, 1.08)
+                    if "scale" in phase.local_components
+                    else baseline_mid.scale
+                )
+                keyframes.extend(
+                    [
+                        TrackKeyframe(
+                            time_seconds=start,
+                            value=baseline_start,
+                            interpolation="smooth",
+                        ),
+                        TrackKeyframe(
+                            time_seconds=midpoint,
+                            value=baseline_mid.model_copy(
+                                update={
+                                    "rotation_quaternion_wxyz": changed_rotation,
+                                    "scale": changed_scale,
+                                }
+                            ),
+                            interpolation="smooth",
+                        ),
+                        TrackKeyframe(
+                            time_seconds=sample_end,
+                            value=baseline_end,
+                            interpolation="smooth",
+                        ),
+                    ]
+                )
+            tracks[track_id] = TrackSpec(
+                track_id=track_id,
+                target_entity_id=subject_id,
+                type="transform",
+                time_range_seconds=(
+                    min(item.time_seconds for item in keyframes),
+                    duration,
+                ),
+                keyframes=_deduplicate_keyframes(keyframes),
+                interpolation="smooth",
+                source_ref=(
+                    existing.source_ref
+                    if existing is not None
+                    else local_phases[0].source_ref
+                ),
+            )
 
         carried_phases = [item for item in phases if item.kind == "carried"]
         for phase in sorted(
@@ -1595,7 +1842,9 @@ def _build_camera(
     strategy: str,
 ) -> CameraCandidate:
     parameters = (objective.translation_parameters or {}).get("camera", {})
-    focal = float(parameters.get("focal_length_mm") or profile.default_focal_length_mm)
+    focal = _explicit_camera_focal_length(objective) or float(
+        parameters.get("focal_length_mm") or profile.default_focal_length_mm
+    )
     movement = skeleton.camera_intent.movement
     start_distance = float(
         parameters.get("start_distance_m") or profile.default_camera_distance_m
@@ -1615,17 +1864,22 @@ def _build_camera(
     }[strategy]
     start_distance *= distance_scale
     end_distance *= distance_scale
-    height = float(parameters.get("height_m") or 1.5)
+    height = _explicit_camera_height(objective) or float(parameters.get("height_m") or 1.5)
     has_orbit = any(item.kind == "orbit" for item in skeleton.motion_phases)
     focus_point, focus_height = _camera_focus(candidate, skeleton)
+    explicit_pitch = _explicit_camera_pitch_degrees(objective)
+    if explicit_pitch is not None:
+        height = focus_point[2] + math.tan(math.radians(explicit_pitch)) * start_distance
     if has_orbit and not _has_explicit_camera_elevation(objective):
         # 缺省轨道镜头提高俯视夹角，避免圆轨道投影成直线往返。
         height = focus_height + start_distance * 0.75
     view = skeleton.camera_intent.view_relation_to_motion
+    motion_direction_xy = _primary_linear_motion_direction_xy(candidate, skeleton)
     yaw = _camera_yaw_degrees(
         view,
+        motion_direction_xy=motion_direction_xy,
         subject_motion_readability_applicable=any(
-            item.kind in {"linear_move", "orbit", "carried"}
+            item.kind == "linear_move"
             for item in skeleton.motion_phases
         ),
         minimum_motion_obliqueness_degrees=(
@@ -1636,9 +1890,25 @@ def _build_camera(
     end = _camera_position(focus_point, end_distance, height, yaw)
     duration = candidate.timeline.duration_seconds
     tracks: dict[str, TrackSpec] = {}
-    if movement in {"push_in", "pull_out"}:
+    if movement in {"push_in", "pull_out", "lateral"}:
         if movement == "pull_out":
             start, end = end, start
+        elif movement == "lateral":
+            travel = max(
+                2.0,
+                _camera_speed_mps(
+                    skeleton.camera_intent,
+                    profile,
+                    configured=parameters.get("speed_mps"),
+                )
+                * duration,
+            )
+            angle = math.radians(yaw + 90.0)
+            end = (
+                start[0] + math.sin(angle) * travel,
+                start[1] - math.cos(angle) * travel,
+                start[2],
+            )
         track = TrackSpec(
             track_id="design_camera_transform",
             type="transform",
@@ -1665,15 +1935,74 @@ def _build_camera(
             source_ref=skeleton.camera_intent.source_ref,
         )
         tracks[track.track_id] = track
-    source_refs = sorted(
-        {
-            skeleton.camera_intent.source_ref,
-            *(
-                item.path
-                for item in objective.explicit_requirements
-                if item.path.startswith("content.camera")
+    elif movement in {"follow", "orbit"}:
+        target_id = skeleton.camera_intent.focus_target_id
+        if target_id is None:
+            raise ValueError(f"{movement} 摄影机必须提供 focus_target_id")
+        target_position = candidate.entities[target_id].solved_transform.translation_m or (
+            0.0,
+            0.0,
+            0.0,
+        )
+        offset = subtract(start, target_position)
+        if movement == "follow":
+            path = {
+                "representation": "polyline",
+                "space": "target_relative",
+                "target_id": target_id,
+                "closed": False,
+                "control_points": [offset, offset],
+            }
+        else:
+            horizontal_radius = max(0.1, math.hypot(offset[0], offset[1]))
+            path = {
+                "representation": "circle",
+                "space": "target_relative",
+                "target_id": target_id,
+                "closed": True,
+                "cycle_count": min(
+                    1.0,
+                    max(
+                        0.02,
+                        _camera_speed_mps(
+                            skeleton.camera_intent,
+                            profile,
+                            configured=parameters.get("speed_mps"),
+                        )
+                        * duration
+                        / (2.0 * math.pi * horizontal_radius),
+                    ),
+                ),
+                "radius_m": horizontal_radius,
+                "center_offset_m": [0.0, 0.0, offset[2]],
+                "initial_phase_degrees": -90.0 + yaw,
+            }
+        tracks["design_camera_path"] = TrackSpec.model_validate(
+            {
+                "track_id": "design_camera_path",
+                "type": "path_follow",
+                "time_range_seconds": [0.0, duration],
+                "path": path,
+                "interpolation": "smooth",
+                "source_ref": skeleton.camera_intent.source_ref,
+            }
+        )
+    if movement in {"follow", "orbit"} and skeleton.camera_intent.focus_target_id:
+        tracks["design_camera_look_at"] = TrackSpec(
+            track_id="design_camera_look_at",
+            type="look_at",
+            time_range_seconds=(0.0, duration),
+            target_id=skeleton.camera_intent.focus_target_id,
+            source_ref=(
+                skeleton.camera_intent.speed_source_ref
+                if skeleton.camera_intent.speed_intent == "match_subject"
+                and skeleton.camera_intent.speed_source_ref is not None
+                else skeleton.camera_intent.source_ref
             ),
-        }
+        )
+    source_refs = sorted(
+        _implemented_camera_static_source_refs(objective, skeleton)
+        | ({skeleton.camera_intent.source_ref} if movement == "static" else set())
     )
     return CameraCandidate(
         static=CameraStatic(
@@ -1715,7 +2044,7 @@ def _add_composition_constraints(
                     else f"design_subject_projected_size_{subject_id}_{index}"
                 ),
                 "type": "projected_size",
-                "strength": "soft",
+                "strength": "hard" if source_status == "explicit" else "soft",
                 "subjects": [subject_id],
                 "time_range_seconds": [0.0, duration],
                 "parameters": {
@@ -1729,6 +2058,50 @@ def _add_composition_constraints(
             }
         )
         candidate.constraints[constraint.constraint_id] = constraint
+
+    for index, placement in enumerate(objective.composition.get("screen_placements", [])):
+        if not isinstance(placement, dict):
+            continue
+        entity_id = placement.get("subject_id")
+        if entity_id not in candidate.entities:
+            continue
+        horizontal = placement.get("horizontal")
+        vertical = placement.get("vertical")
+        horizontal_region = _screen_axis_region(
+            horizontal.get("value") if isinstance(horizontal, dict) else None,
+            axis="horizontal",
+        )
+        vertical_region = _screen_axis_region(
+            vertical.get("value") if isinstance(vertical, dict) else None,
+            axis="vertical",
+        )
+        for axis, node, region in (
+            ("horizontal", horizontal, horizontal_region),
+            ("vertical", vertical, vertical_region),
+        ):
+            if region is None:
+                continue
+            explicit = isinstance(node, dict) and node.get("source_status") == "explicit"
+            left, right = region if axis == "horizontal" else (0.0, 1.0)
+            top, bottom = region if axis == "vertical" else (0.0, 1.0)
+            constraint = ConstraintSpec.model_validate(
+                {
+                    "constraint_id": f"design_screen_placement_{index + 1:02d}_{axis}",
+                    "type": "screen_region",
+                    "strength": "hard" if explicit else "soft",
+                    "subjects": [entity_id],
+                    "time_range_seconds": [0.0, duration],
+                    "parameters": {
+                        "entity_id": entity_id,
+                        "region": [left, top, right, bottom],
+                    },
+                    "source_status": "explicit" if explicit else "inferred",
+                    "source_ref": (
+                        f"content.composition.screen_placements[{index}].{axis}"
+                    ),
+                }
+            )
+            candidate.constraints[constraint.constraint_id] = constraint
 
     major_ratio = parameters.get("major_object_frame_ratio")
     major_id = _major_composition_entity_id(objective, skeleton, candidate)
@@ -1943,9 +2316,23 @@ def _add_speed_constraints(
         candidate.constraints[constraint.constraint_id] = constraint
 
     camera = skeleton.camera_intent
-    if camera.speed_intent == "unspecified":
+    if camera.speed_intent == "match_subject":
         return
-    minimum, maximum = _speed_range(camera.speed_intent, profile)
+    configured_camera_speed = (objective.translation_parameters or {}).get(
+        "camera", {}
+    ).get("speed_mps")
+    if camera.speed_intent == "unspecified":
+        if camera.speed_source_status != "explicit" or not isinstance(
+            configured_camera_speed, (int, float)
+        ):
+            return
+        numeric_speed = float(configured_camera_speed)
+        minimum, maximum = (
+            max(0.0, numeric_speed * 0.95),
+            max(profile.numeric_tolerance, numeric_speed * 1.05),
+        )
+    else:
+        minimum, maximum = _speed_range(camera.speed_intent, profile)
     constraint = ConstraintSpec.model_validate(
         {
             "constraint_id": "skeleton_camera_speed",
@@ -1967,6 +2354,7 @@ def _add_speed_constraints(
 
 
 def _fit_static_camera_to_composition(
+    objective: ObjectivePlanningBrief,
     candidate: CandidateState,
     skeleton: SceneSkeleton,
     profile: PlanningProfile,
@@ -2072,10 +2460,22 @@ def _fit_static_camera_to_composition(
             )
             if abs(backward[0]) + abs(backward[1]) <= profile.numeric_tolerance:
                 backward = (0.0, -1.0, 0.0)
+            preserve_height = _explicit_camera_height(objective) is not None
             moved = (
                 position[0] + backward[0] * required_offset,
                 position[1] + backward[1] * required_offset,
-                position[2],
+                position[2]
+                if preserve_height
+                else position[2]
+                + required_offset
+                * (position[2] - focus_point[2])
+                / max(
+                    math.hypot(
+                        position[0] - focus_point[0],
+                        position[1] - focus_point[1],
+                    ),
+                    profile.numeric_tolerance,
+                ),
             )
             return value.model_copy(
                 update={
@@ -2577,6 +2977,33 @@ def _percentage_range(value: Any) -> tuple[float, float] | None:
     return minimum, maximum
 
 
+def _screen_axis_region(
+    value: Any,
+    *,
+    axis: Literal["horizontal", "vertical"],
+) -> tuple[float, float] | None:
+    if not isinstance(value, str):
+        return None
+    lowered = value.lower()
+    regions = (
+        (
+            (("左", "left"), (0.0, 0.45)),
+            (("居中", "中央", "center", "centre"), (0.3, 0.7)),
+            (("右", "right"), (0.55, 1.0)),
+        )
+        if axis == "horizontal"
+        else (
+            (("上", "top", "upper"), (0.0, 0.45)),
+            (("居中", "中央", "center", "middle"), (0.3, 0.7)),
+            (("下", "bottom", "lower"), (0.55, 1.0)),
+        )
+    )
+    return next(
+        (region for markers, region in regions if any(marker in lowered for marker in markers)),
+        None,
+    )
+
+
 def _event_range(
     objective: ObjectivePlanningBrief,
     event_id: str | None,
@@ -2875,6 +3302,105 @@ def _camera_position(
         focus[1] - math.cos(angle) * distance,
         height,
     )
+
+
+def _camera_speed_mps(
+    intent: SkeletonCameraIntent,
+    profile: PlanningProfile,
+    *,
+    configured: Any = None,
+) -> float:
+    if intent.speed_intent == "match_subject":
+        return profile.medium_speed_range_mps[0]
+    if isinstance(configured, (int, float)) and not isinstance(configured, bool):
+        return max(0.0, float(configured))
+    if intent.speed_intent in {"slow", "medium", "fast"}:
+        minimum, maximum = _speed_range(intent.speed_intent, profile)
+        return (minimum + maximum) * 0.5
+    return profile.slow_speed_range_mps[0]
+
+
+def _explicit_camera_value(
+    objective: ObjectivePlanningBrief,
+    field: str,
+) -> Any:
+    node = objective.camera.get(field)
+    if isinstance(node, dict) and node.get("source_status") == "explicit":
+        return node.get("value")
+    return None
+
+
+def _explicit_camera_height(objective: ObjectivePlanningBrief) -> float | None:
+    value = _explicit_camera_value(objective, "camera_height")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:m\b|米)", value.lower())
+    return float(match.group(1)) if match else None
+
+
+def _explicit_camera_focal_length(objective: ObjectivePlanningBrief) -> float | None:
+    value = _explicit_camera_value(objective, "lens_intent")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    lowered = value.lower()
+    match = re.search(r"(\d+(?:\.\d+)?)\s*mm\b", lowered)
+    if match:
+        return float(match.group(1))
+    if any(marker in lowered for marker in ("广角", "wide")):
+        return 35.0
+    if any(marker in lowered for marker in ("长焦", "telephoto")):
+        return 85.0
+    if any(marker in lowered for marker in ("标准", "normal")):
+        return 50.0
+    return None
+
+
+def _explicit_camera_pitch_degrees(objective: ObjectivePlanningBrief) -> float | None:
+    value = _explicit_camera_value(objective, "view_angle")
+    if not isinstance(value, str):
+        return None
+    lowered = value.lower()
+    if any(marker in lowered for marker in ("垂直俯", "正俯", "top_down", "top-down", "overhead")):
+        return 80.0
+    if any(marker in lowered for marker in ("俯拍", "高角度", "high_angle", "high-angle")):
+        return 30.0
+    if any(marker in lowered for marker in ("仰拍", "低角度", "low_angle", "low-angle")):
+        return -10.0
+    if any(marker in lowered for marker in ("平视", "eye_level", "eye-level")):
+        return 0.0
+    return None
+
+
+def _implemented_camera_static_source_refs(
+    objective: ObjectivePlanningBrief,
+    skeleton: SceneSkeleton,
+) -> set[str]:
+    refs: set[str] = set()
+    if _explicit_camera_pitch_degrees(objective) is not None:
+        refs.add("content.camera.view_angle")
+    if _explicit_camera_height(objective) is not None:
+        refs.add("content.camera.camera_height")
+    if _explicit_camera_focal_length(objective) is not None:
+        refs.add("content.camera.lens_intent")
+    focus = objective.camera.get("focus_target_id")
+    if (
+        isinstance(focus, dict)
+        and focus.get("source_status") == "explicit"
+        and skeleton.camera_intent.focus_target_id is not None
+    ):
+        refs.add("content.camera.focus_target_id")
+    view = objective.camera.get("view_relation_to_motion")
+    if (
+        isinstance(view, dict)
+        and view.get("source_status") == "explicit"
+        and skeleton.camera_intent.view_relation_to_motion != "unspecified"
+    ):
+        refs.add("content.camera.view_relation_to_motion")
+    return refs
 
 
 def _range_around(

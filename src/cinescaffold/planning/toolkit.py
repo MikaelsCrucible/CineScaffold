@@ -62,7 +62,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.35"
+TOOLKIT_VERSION = "0.36"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -146,7 +146,6 @@ REPAIRABLE_VIOLATION_CODES = {
     "VIEW_SUBJECT_MOTION_NEAR_COLLINEAR",
     "ENTITY_OUT_OF_FRAME",
     "NEGATIVE_SPACE_VIOLATED",
-    "PROJECTED_MOTION_UNREADABLE",
     "PROJECTED_SIZE_VIOLATED",
     "VISIBILITY_FRACTION_VIOLATED",
 }
@@ -194,6 +193,16 @@ class _CameraRepair:
     focal_length_after_mm: float
     change_cost: float
     preserves_explicit_requirements: bool
+
+
+@dataclass(frozen=True)
+class _DesignRepairBaseline:
+    baseline_id: str
+    base_revision: int
+    skeleton_hash: str
+    strategy: str
+    candidate: CandidateState
+    report: ValidationReport
 
 
 def _commit_ready(report: ValidationReport | None, profile: PlanningProfile) -> bool:
@@ -293,6 +302,7 @@ class ScenePlanningToolkit:
         self._repair_search_exhausted_revision: int | None = None
         self._scene_skeleton: SceneSkeleton | None = None
         self._design_options: dict[str, DesignOption] = {}
+        self._design_repair_baselines: dict[str, _DesignRepairBaseline] = {}
         self._last_design_request_hash: str | None = None
 
     @property
@@ -302,6 +312,10 @@ class ScenePlanningToolkit:
     @property
     def has_design_options(self) -> bool:
         return bool(self._design_options)
+
+    @property
+    def has_design_repair_baselines(self) -> bool:
+        return bool(self._design_repair_baselines)
 
     @property
     def design_search_failed(self) -> bool:
@@ -875,6 +889,7 @@ class ScenePlanningToolkit:
             return _rejected(revision, _error_message(error))
         self._scene_skeleton = parsed
         self._design_options.clear()
+        self._design_repair_baselines.clear()
         self._last_design_request_hash = None
         return _envelope(
             revision,
@@ -946,6 +961,7 @@ class ScenePlanningToolkit:
             )
         self._last_design_request_hash = request_hash
         self._design_options.clear()
+        self._design_repair_baselines.clear()
         applicable = set(allowed)
         preference_reason = None
         if not self.has_subject_translation:
@@ -962,6 +978,7 @@ class ScenePlanningToolkit:
         skeleton_sha256 = skeleton_hash(self._scene_skeleton)
         options: list[DesignOption] = []
         option_errors: list[str] = []
+        repair_baselines: list[_DesignRepairBaseline] = []
         seen_candidate_hashes: dict[str, str] = {}
         duplicate_strategies: dict[str, str] = {}
         for strategy in order:
@@ -990,6 +1007,20 @@ class ScenePlanningToolkit:
                     )
                 report = self._validate(candidate, FULL_VALIDATION_CHECKS)
                 if not report.hard_pass:
+                    baseline_id = (
+                        "repair_"
+                        + _candidate_hash(candidate).removeprefix("sha256:")[:16]
+                    )
+                    repair_baselines.append(
+                        _DesignRepairBaseline(
+                            baseline_id=baseline_id,
+                            base_revision=revision,
+                            skeleton_hash=skeleton_sha256,
+                            strategy=strategy,
+                            candidate=candidate.model_copy(deep=True),
+                            report=report.model_copy(deep=True),
+                        )
+                    )
                     codes = ", ".join(
                         sorted(
                             {
@@ -1045,6 +1076,16 @@ class ScenePlanningToolkit:
             )
             options.append(option)
             self._design_options[option_id] = option
+        if not options and repair_baselines:
+            best = min(
+                repair_baselines,
+                key=lambda item: (
+                    sum(v.severity == "hard" for v in item.report.violations),
+                    -item.report.soft_score,
+                    item.strategy,
+                ),
+            )
+            self._design_repair_baselines[best.baseline_id] = best
         options.sort(
             key=lambda item: (
                 -float(item.predicted.get("soft_score", 0.0)),
@@ -1071,7 +1112,22 @@ class ScenePlanningToolkit:
                 "collapsed_duplicate_count": len(duplicate_strategies),
                 "duplicate_strategies": duplicate_strategies,
                 **(_design_failure_payload(option_errors) if not options else {}),
-                "next_tool": "apply_design_option" if options else None,
+                "repair_baselines": [
+                    {
+                        "baseline_id": item.baseline_id,
+                        "base_revision": item.base_revision,
+                        "strategy": item.strategy,
+                        "predicted": _design_report_summary(item.report, self.profile),
+                    }
+                    for item in self._design_repair_baselines.values()
+                ],
+                "next_tool": (
+                    "apply_design_option"
+                    if options
+                    else "begin_design_repair"
+                    if self._design_repair_baselines
+                    else None
+                ),
             },
             warnings=(
                 []
@@ -1081,6 +1137,54 @@ class ScenePlanningToolkit:
                     *sorted(set(option_errors)),
                 ]
             ),
+        )
+
+    def begin_design_repair(
+        self,
+        base_revision: int,
+        baseline_id: str,
+    ) -> dict[str, Any]:
+        """Materialize the safest failed design only after normal options are exhausted."""
+
+        revision = self.store.current_revision
+        baseline = self._design_repair_baselines.get(baseline_id)
+        if baseline is None:
+            return _rejected(revision, f"Design repair baseline 不存在或已失效：{baseline_id}")
+        if revision != base_revision or baseline.base_revision != base_revision:
+            return _rejected(revision, "Design repair baseline revision 已过期")
+        if (
+            self._scene_skeleton is None
+            or skeleton_hash(self._scene_skeleton) != baseline.skeleton_hash
+        ):
+            return _rejected(revision, "Scene Skeleton 已变化；请重新请求设计")
+        safety = self._validate(baseline.candidate, EXECUTION_SAFETY_CHECKS)
+        if not safety.hard_pass:
+            return _rejected(revision, "Design repair baseline 已失去执行安全条件")
+
+        def mutate(state: CandidateState):
+            state.entities = deepcopy(baseline.candidate.entities)
+            state.motion_tracks = deepcopy(baseline.candidate.motion_tracks)
+            state.constraints = deepcopy(baseline.candidate.constraints)
+            state.camera = deepcopy(baseline.candidate.camera)
+            return (
+                [{"operation": "begin_design_repair", "baseline_id": baseline_id}],
+                ["当前 Candidate 是已知未通过全部硬约束的受限修复基线"],
+            )
+
+        mutation = self.store.apply(mutate)
+        report = self._validate(self.store.get(), FULL_VALIDATION_CHECKS)
+        self.store.save_validation(report)
+        self._design_options.clear()
+        self._design_repair_baselines.clear()
+        return _mutation_envelope(
+            mutation,
+            data={
+                "baseline_id": baseline_id,
+                "strategy": baseline.strategy,
+                "validation": _design_report_summary(report, self.profile),
+                "next_tool": "apply_candidate_patch",
+            },
+            violations=[item.model_dump(mode="json") for item in report.violations],
         )
 
     def apply_design_option(
@@ -2459,7 +2563,9 @@ class ScenePlanningToolkit:
                 )
             )
         if "hard_semantics" in checks:
-            violations.extend(_hard_semantic_violations(state, self.objective_brief))
+            violations.extend(
+                _hard_semantic_violations(state, self.objective_brief, self.profile)
+            )
 
         soft_total = 0.0
         soft_passed = 0.0
@@ -2818,18 +2924,6 @@ def _camera_repair_parameter_grid(
             for yaw in (-30.0, 30.0, -45.0, 45.0, -60.0, 60.0, -90.0, 90.0)
             for distance in (0.85, 1.0, 1.2)
         )
-    if "PROJECTED_MOTION_UNREADABLE" in codes:
-        values.extend(
-            (yaw, distance, focal)
-            for yaw in (-30.0, 30.0, -45.0, 45.0, -60.0, 60.0, -90.0, 90.0)
-            for distance, focal in (
-                (1.0, 1.0),
-                (0.85, 1.0),
-                (0.7, 1.15),
-                (0.5, 1.3),
-                (0.5, 1.6),
-            )
-        )
     if codes & {
         "ENTITY_OUT_OF_FRAME",
         "NEGATIVE_SPACE_VIOLATED",
@@ -3123,10 +3217,13 @@ def _initial_candidate(
         runner_mapped_source_refs=[
             item.path
             for item in brief.explicit_requirements
-            if item.path in {
+            if item.path
+            in {
                 "content.timeline.duration_seconds",
                 "content.timeline.duration_range_seconds",
+                "content.scene_dynamics",
             }
+            or item.path.startswith("content.timeline.relations[")
         ],
     )
 
@@ -3646,12 +3743,11 @@ def _typed_motion_semantic_violations(
         )
         if not sample_times:
             continue
-        positions = [
-            _WorldTransformResolver(state, time_seconds, profile).entity(
-                subject_id
-            ).translation_m
+        resolved = [
+            _WorldTransformResolver(state, time_seconds, profile).entity(subject_id)
             for time_seconds in sample_times
         ]
+        positions = [item.translation_m for item in resolved]
         baseline = positions[0]
         movement_extent = max(length(subtract(item, baseline)) for item in positions)
         motion_mode = semantics.get("motion_mode")
@@ -3663,7 +3759,22 @@ def _typed_motion_semantic_violations(
             end,
         )
         if motion_mode in {"stationary", "local_interaction"}:
-            if movement_extent > stationary_tolerance:
+            overlapping_translation = motion_mode == "local_interaction" and any(
+                isinstance(other, dict)
+                and other is not motion
+                and other.get("subject_id") == subject_id
+                and isinstance(other.get("motion_semantics"), dict)
+                and other["motion_semantics"].get("motion_mode")
+                in {"self_propelled", "carried"}
+                and float(other.get("start_time_seconds") or 0.0) < end
+                and float(
+                    other.get("end_time_seconds")
+                    or state.timeline.duration_seconds
+                )
+                > start
+                for other in objective_brief.subject_motion
+            )
+            if movement_extent > stationary_tolerance and not overlapping_translation:
                 violations.append(
                     _violation(
                         "MOTION_MODE_STATIONARY_VIOLATED",
@@ -3675,6 +3786,41 @@ def _typed_motion_semantic_violations(
                         adjustable_variables=[f"motion_tracks.{subject_id}"],
                     )
                 )
+            if motion_mode == "local_interaction":
+                baseline_rotation = resolved[0].rotation_quaternion_wxyz
+                baseline_scale = resolved[0].scale
+                rotation_change = max(
+                    1.0
+                    - abs(
+                        sum(
+                            left * right
+                            for left, right in zip(
+                                item.rotation_quaternion_wxyz,
+                                baseline_rotation,
+                            )
+                        )
+                    )
+                    for item in resolved
+                )
+                scale_change = max(
+                    max(abs(left - right) for left, right in zip(item.scale, baseline_scale))
+                    for item in resolved
+                )
+                if rotation_change <= 1e-5 and scale_change <= 1e-4:
+                    violations.append(
+                        _violation(
+                            "LOCAL_INTERACTION_STATE_CHANGE_MISSING",
+                            f"局部互动阶段没有产生可观察的姿态或尺度变化：{subject_id}",
+                            entity_ids=[subject_id],
+                            time_range_seconds=(start, end),
+                            expected={"rotation_or_scale_change": True},
+                            actual={
+                                "rotation_change": rotation_change,
+                                "scale_change": scale_change,
+                            },
+                            adjustable_variables=[f"motion_tracks.{subject_id}"],
+                        )
+                    )
         elif motion_mode == "self_propelled":
             if movement_extent + profile.numeric_tolerance < minimum_displacement:
                 violations.append(
@@ -3720,6 +3866,7 @@ def _typed_motion_semantic_violations(
                 start,
                 end,
                 motion_index,
+                profile,
             )
         )
         postconditions = semantics.get("postconditions")
@@ -4061,10 +4208,34 @@ def _typed_path_violations(
     start: float,
     end: float,
     motion_index: int,
+    profile: PlanningProfile,
 ) -> list[Violation]:
     path_type = semantics.get("path_type")
     if path_type in {None, "unspecified", "stationary", "linear"}:
         return []
+    if path_type == "parabolic":
+        sample_times = [start + (end - start) * index / 8.0 for index in range(9)]
+        heights = [
+            _WorldTransformResolver(state, time_seconds, profile).entity(
+                subject_id
+            ).translation_m[2]
+            for time_seconds in sample_times
+        ]
+        interior_peak = max(heights[1:-1], default=max(heights))
+        endpoint_peak = max(heights[0], heights[-1])
+        if interior_peak > endpoint_peak + 0.05:
+            return []
+        return [
+            _violation(
+                "MOTION_PATH_FAMILY_UNMET",
+                f"实体路径没有形成可辨认的抛物线弧顶：{subject_id}",
+                entity_ids=[subject_id],
+                time_range_seconds=(start, end),
+                expected={"path_type": "parabolic", "interior_apex": True},
+                actual={"sampled_heights_m": heights},
+                adjustable_variables=[f"motion_tracks.{subject_id}"],
+            )
+        ]
     expected_representations = {
         "circular": {"circle"},
         "elliptical": {"ellipse"},
@@ -5030,6 +5201,7 @@ def _camera_violations(state: CandidateState) -> list[Violation]:
 def _hard_semantic_violations(
     state: CandidateState,
     objective_brief: ObjectivePlanningBrief,
+    profile: PlanningProfile,
 ) -> list[Violation]:
     locations: dict[str, set[str]] = {}
     for source_ref in state.runner_mapped_source_refs:
@@ -5111,7 +5283,336 @@ def _hard_semantic_violations(
             objective_brief,
         )
     )
+    violations.extend(
+        _explicit_camera_parameter_violations(state, objective_brief, profile)
+    )
     return violations
+
+
+def _explicit_camera_parameter_violations(
+    state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    if state.camera is None:
+        return []
+    required = set(state.required_source_refs)
+    sample_end = max(
+        0.0,
+        state.timeline.duration_seconds
+        - state.timeline.fps_denominator / state.timeline.fps_numerator,
+    )
+    start_state = _WorldTransformResolver(state, 0.0, profile).camera()
+    end_state = _WorldTransformResolver(state, sample_end, profile).camera()
+    if start_state is None or end_state is None:
+        return []
+    start_transform, start_focal = start_state
+    end_transform, _ = end_state
+    violations: list[Violation] = []
+
+    view_ref = "content.camera.view_angle"
+    if view_ref in required:
+        value = _objective_annotated_value(objective_brief.camera.get("view_angle"))
+        bounds = _camera_pitch_bounds(value)
+        if bounds is not None:
+            forward = rotate_vector(
+                start_transform.rotation_quaternion_wxyz,
+                (0.0, 0.0, -1.0),
+            )
+            downward_pitch = math.degrees(
+                math.asin(max(-1.0, min(1.0, -normalize(forward)[2])))
+            )
+            if not _within_range(downward_pitch, bounds[0], bounds[1], 1e-3):
+                violations.append(
+                    _violation(
+                        "EXPLICIT_CAMERA_VIEW_ANGLE_UNMET",
+                        "明确的摄影机俯仰意图未被实际机位满足",
+                        expected={"downward_pitch_degrees": list(bounds), "value": value},
+                        actual={"downward_pitch_degrees": downward_pitch},
+                        adjustable_variables=["camera transform"],
+                    )
+                )
+
+    height_ref = "content.camera.camera_height"
+    if height_ref in required:
+        expected_height = _number_with_unit(
+            _objective_annotated_value(objective_brief.camera.get("camera_height")),
+            ("m", "米"),
+        )
+        if expected_height is not None and abs(
+            start_transform.translation_m[2] - expected_height
+        ) > 0.05:
+            violations.append(
+                _violation(
+                    "EXPLICIT_CAMERA_HEIGHT_UNMET",
+                    "明确的摄影机高度未被实际机位满足",
+                    expected={"height_m": expected_height},
+                    actual={"height_m": start_transform.translation_m[2]},
+                    adjustable_variables=["camera transform"],
+                )
+            )
+
+    lens_ref = "content.camera.lens_intent"
+    if lens_ref in required:
+        value = _objective_annotated_value(objective_brief.camera.get("lens_intent"))
+        expected_focal = _camera_focal_intent(value)
+        if expected_focal is not None and abs(start_focal - expected_focal) > 0.05:
+            violations.append(
+                _violation(
+                    "EXPLICIT_CAMERA_LENS_UNMET",
+                    "明确的镜头焦段未被实际摄影机满足",
+                    expected={"focal_length_mm": expected_focal, "value": value},
+                    actual={"focal_length_mm": start_focal},
+                    adjustable_variables=["camera focal length"],
+                )
+            )
+
+    movement_ref = "content.camera.movement.type"
+    if movement_ref in required:
+        expected_movement = _camera_movement_kind(
+            _objective_annotated_value(
+                objective_brief.camera.get("movement", {}).get("type")
+            )
+        )
+        if expected_movement is not None and not _camera_motion_matches(
+            state,
+            start_transform,
+            end_transform,
+            expected_movement,
+            profile,
+        ):
+            violations.append(
+                _violation(
+                    "EXPLICIT_CAMERA_MOVEMENT_UNMET",
+                    "明确的摄影机运动类型未被实际轨迹满足",
+                    expected={"movement": expected_movement},
+                    actual={
+                        "camera_displacement_m": length(
+                            subtract(
+                                end_transform.translation_m,
+                                start_transform.translation_m,
+                            )
+                        ),
+                        "track_types": sorted(
+                            track.type for track in state.camera.tracks.values()
+                        ),
+                    },
+                    adjustable_variables=["camera tracks"],
+                )
+            )
+
+    focus_ref = "content.camera.focus_target_id"
+    if focus_ref in required:
+        expected_focus = _objective_annotated_value(
+            objective_brief.camera.get("focus_target_id")
+        )
+        if expected_focus != state.camera.static.focus_target_id:
+            violations.append(
+                _violation(
+                    "EXPLICIT_CAMERA_FOCUS_UNMET",
+                    "明确的摄影机注视目标未被实际摄影机满足",
+                    expected={"focus_target_id": expected_focus},
+                    actual={"focus_target_id": state.camera.static.focus_target_id},
+                    adjustable_variables=["camera focus target"],
+                )
+            )
+
+    relation_ref = "content.camera.view_relation_to_motion"
+    if relation_ref in required:
+        expected_relation = _objective_annotated_value(
+            objective_brief.camera.get("view_relation_to_motion")
+        )
+        relation = _camera_motion_view_relation(
+            state,
+            profile,
+            preferred_subject_id=state.camera.static.focus_target_id,
+        )
+        if (
+            expected_relation in {"front", "rear", "side", "three_quarter"}
+            and relation is not None
+            and not _view_relation_angle_matches(expected_relation, relation[1])
+        ):
+            violations.append(
+                _violation(
+                    "EXPLICIT_CAMERA_VIEW_RELATION_UNMET",
+                    "明确的摄影机相对运动视角未被实际机位满足",
+                    entity_ids=[relation[0]],
+                    expected={"view_relation_to_motion": expected_relation},
+                    actual={"angle_degrees": relation[1]},
+                    adjustable_variables=["camera transform"],
+                )
+            )
+    return violations
+
+
+def _objective_annotated_value(node: Any) -> Any:
+    return node.get("value") if isinstance(node, dict) else node
+
+
+def _number_with_unit(value: Any, units: tuple[str, ...]) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:" + "|".join(units) + ")", value.lower())
+    return float(match.group(1)) if match else None
+
+
+def _camera_pitch_bounds(value: Any) -> tuple[float, float] | None:
+    if not isinstance(value, str):
+        return None
+    lowered = value.lower()
+    if any(marker in lowered for marker in ("垂直俯", "正俯", "top_down", "top-down", "overhead")):
+        return (65.0, 90.0)
+    if any(marker in lowered for marker in ("俯拍", "高角度", "high_angle", "high-angle")):
+        return (15.0, 65.0)
+    if any(marker in lowered for marker in ("仰拍", "低角度", "low_angle", "low-angle")):
+        return (-45.0, -5.0)
+    if any(marker in lowered for marker in ("平视", "eye_level", "eye-level")):
+        return (-10.0, 10.0)
+    return None
+
+
+def _camera_focal_intent(value: Any) -> float | None:
+    numeric = _number_with_unit(value, ("mm",))
+    if numeric is not None:
+        return numeric
+    if not isinstance(value, str):
+        return None
+    lowered = value.lower()
+    if any(marker in lowered for marker in ("广角", "wide")):
+        return 35.0
+    if any(marker in lowered for marker in ("长焦", "telephoto")):
+        return 85.0
+    if any(marker in lowered for marker in ("标准", "normal")):
+        return 50.0
+    return None
+
+
+def _camera_movement_kind(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    lowered = value.lower().replace("-", "_").replace(" ", "_")
+    for kind, markers in (
+        ("push_in", ("推近", "推进", "push_in", "dolly_in")),
+        ("pull_out", ("拉远", "后拉", "pull_out", "dolly_out")),
+        ("follow", ("跟随", "跟拍", "follow")),
+        ("orbit", ("环绕", "绕拍", "orbit")),
+        ("lateral", ("横移", "侧移", "lateral", "truck")),
+        ("static", ("静止", "固定", "static", "fixed")),
+    ):
+        if any(marker in lowered for marker in markers):
+            return kind
+    return None
+
+
+def _camera_motion_view_relation(
+    state: CandidateState,
+    profile: PlanningProfile,
+    *,
+    preferred_subject_id: str | None,
+) -> tuple[str, float] | None:
+    """Return the angle from realized motion to the subject-to-camera vector."""
+
+    tracks = [
+        track
+        for track in state.motion_tracks.values()
+        if track.type == "transform" and track.target_entity_id in state.entities
+    ]
+    tracks.sort(key=lambda item: item.target_entity_id != preferred_subject_id)
+    for track in tracks:
+        translated = [
+            keyframe
+            for keyframe in track.keyframes
+            if isinstance(keyframe.value, TransformValue)
+            and keyframe.value.translation_m is not None
+        ]
+        best: tuple[TrackKeyframe, TrackKeyframe] | None = None
+        best_length = 0.0
+        for start, end in zip(translated, translated[1:]):
+            delta = subtract(end.value.translation_m, start.value.translation_m)
+            distance = math.hypot(delta[0], delta[1])
+            if distance > best_length:
+                best = (start, end)
+                best_length = distance
+        if best is None:
+            continue
+        start, end = best
+        sample_time = (start.time_seconds + end.time_seconds) * 0.5
+        resolver = _WorldTransformResolver(state, sample_time, profile)
+        camera_state = resolver.camera()
+        if camera_state is None:
+            continue
+        subject = resolver.entity(track.target_entity_id)
+        camera_transform, _ = camera_state
+        motion_delta = subtract(end.value.translation_m, start.value.translation_m)
+        motion = normalize((motion_delta[0], motion_delta[1], 0.0))
+        camera_delta = subtract(
+            camera_transform.translation_m,
+            subject.translation_m,
+        )
+        camera_distance = math.hypot(camera_delta[0], camera_delta[1])
+        if camera_distance <= profile.numeric_tolerance:
+            continue
+        subject_to_camera = (
+            camera_delta[0] / camera_distance,
+            camera_delta[1] / camera_distance,
+            0.0,
+        )
+        angle = math.degrees(
+            math.acos(max(-1.0, min(1.0, dot(motion, subject_to_camera))))
+        )
+        return track.target_entity_id, angle
+    return None
+
+
+def _view_relation_angle_matches(expected: str, angle_degrees: float) -> bool:
+    if expected == "front":
+        return angle_degrees <= 25.0
+    if expected == "rear":
+        return angle_degrees >= 155.0
+    if expected == "side":
+        return 65.0 <= angle_degrees <= 115.0
+    if expected == "three_quarter":
+        return 25.0 <= angle_degrees <= 65.0 or 115.0 <= angle_degrees <= 155.0
+    return True
+
+
+def _camera_motion_matches(
+    state: CandidateState,
+    start: TransformValue,
+    end: TransformValue,
+    expected: str,
+    profile: PlanningProfile,
+) -> bool:
+    displacement = length(subtract(end.translation_m, start.translation_m))
+    if expected == "static":
+        return displacement <= profile.numeric_tolerance
+    if expected in {"lateral", "follow", "orbit"}:
+        required_type = "path_follow" if expected in {"follow", "orbit"} else "transform"
+        return displacement > 0.05 and any(
+            track.type == required_type for track in state.camera.tracks.values()
+        )
+    target_id = state.camera.static.focus_target_id
+    if target_id not in state.entities:
+        return displacement > 0.05
+    start_target = _WorldTransformResolver(state, 0.0, profile).entity(target_id)
+    end_target = _WorldTransformResolver(
+        state,
+        max(
+            0.0,
+            state.timeline.duration_seconds
+            - state.timeline.fps_denominator / state.timeline.fps_numerator,
+        ),
+        profile,
+    ).entity(target_id)
+    start_distance = length(subtract(start.translation_m, start_target.translation_m))
+    end_distance = length(subtract(end.translation_m, end_target.translation_m))
+    return (
+        end_distance < start_distance - 0.05
+        if expected == "push_in"
+        else end_distance > start_distance + 0.05
+    )
 
 
 def _explicit_requirement_binding_violations(
@@ -5457,7 +5958,7 @@ def _compatible_locations(source_ref: str) -> set[str]:
         return {"entity_track", "constraint:*"}
     if source_ref.startswith("content.scene_design.relationships["):
         return {"constraint:*", "entity_track", "ground_interaction"}
-    if source_ref.startswith("content.scene_design.environment"):
+    if source_ref == "content.scene_design.environment":
         return {"entity"}
     if source_ref.startswith("content.composition"):
         return {"constraint:*", "camera_static", "camera_track"}

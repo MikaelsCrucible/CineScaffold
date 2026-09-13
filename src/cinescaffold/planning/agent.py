@@ -27,7 +27,6 @@ from cinescaffold.planning.domain import (
     AgentTerminal,
     CameraStatic,
     CandidateState,
-    ConstraintKind,
     GroundInteractionSpec,
     ProxyGeometry,
     StrictModel,
@@ -74,7 +73,27 @@ class ConstraintPatchInput(StrictModel):
     """保持工具 schema 紧凑，领域模型仍由 Toolkit 严格复验。"""
 
     constraint_id: str = Field(min_length=1)
-    type: ConstraintKind
+    type: Literal[
+        "relative_position",
+        "distance_range",
+        "surface_clearance_range",
+        "collision_clearance",
+        "depth_order",
+        "screen_region",
+        "projected_size",
+        "projected_scale_ratio",
+        "keep_in_frame",
+        "visibility_fraction",
+        "negative_space",
+        "look_at",
+        "camera_distance",
+        "focal_length_range",
+        "camera_motion_direction",
+        "speed_range",
+        "position_at_time",
+        "motion_direction",
+        "hold",
+    ]
     strength: Literal["hard", "soft"]
     weight: float = Field(default=1.0, gt=0)
     subjects: list[str] = Field(default_factory=list)
@@ -680,7 +699,11 @@ class PlanningDeps:
                 and not self.toolkit.has_design_options
                 and name
                 not in (
-                    {"request_design_options", "submit_scene_skeleton"}
+                    {
+                        "request_design_options",
+                        "submit_scene_skeleton",
+                        "begin_design_repair",
+                    }
                     if self.toolkit.design_search_failed
                     else {"request_design_options"}
                 )
@@ -693,7 +716,9 @@ class PlanningDeps:
                         else "Scene Skeleton 已接受；下一步必须请求数值设计选项"
                     ),
                     (
-                        ["修订后调用 submit_scene_skeleton，或调整后调用 request_design_options"]
+                        [
+                            "若返回了 repair baseline，调用 begin_design_repair；否则修订骨架或尺寸请求"
+                        ]
                         if self.toolkit.design_search_failed
                         else ["调用 request_design_options"]
                     ),
@@ -828,6 +853,16 @@ async def _prepare_design_apply_tool(
     if ctx.deps.capabilities_read or toolkit.design_option_applied:
         return None
     return tool_definition if toolkit.has_design_options else None
+
+
+async def _prepare_design_repair_tool(
+    ctx: RunContext[PlanningDeps],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    toolkit = ctx.deps.toolkit
+    if ctx.deps.capabilities_read or toolkit.design_option_applied:
+        return None
+    return tool_definition if toolkit.has_design_repair_baselines else None
 
 
 async def _prepare_candidate_tool(
@@ -977,6 +1012,20 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             "request_design_options",
             arguments,
             lambda: ctx.deps.toolkit.request_design_options(**arguments),
+        )
+
+    @agent.tool(sequential=True, prepare=_prepare_design_repair_tool)
+    async def begin_design_repair(
+        ctx: RunContext[PlanningDeps],
+        base_revision: int,
+        baseline_id: str,
+    ) -> dict[str, Any]:
+        """首次无合法 Design Option 时，物化执行安全的最优失败基线并立即进入受限 Candidate Patch。"""
+        arguments = {"base_revision": base_revision, "baseline_id": baseline_id}
+        return ctx.deps.call_tool(
+            "begin_design_repair",
+            arguments,
+            lambda: ctx.deps.toolkit.begin_design_repair(**arguments),
         )
 
     @agent.tool(sequential=True, prepare=_prepare_design_apply_tool)

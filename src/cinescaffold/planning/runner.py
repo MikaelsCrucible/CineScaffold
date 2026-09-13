@@ -208,6 +208,7 @@ class InterpreterRunner:
                 objective_fields=[
                     "subjects",
                     "subject_motion",
+                    "scene_dynamics",
                     "scene_design",
                     "composition",
                     "camera",
@@ -907,21 +908,29 @@ def _commit_simplified_delivery(
         options = toolkit.request_design_options(preference="balanced", max_options=3)
         candidates = options["data"].get("options", [])
         if not candidates:
-            raise RuntimeError(
-                f"deterministic fallback produced no design option: {options['warnings']}"
+            baselines = options["data"].get("repair_baselines", [])
+            if not baselines:
+                raise RuntimeError(
+                    f"deterministic fallback produced no safe design baseline: {options['warnings']}"
+                )
+            selected = baselines[0]
+            applied = toolkit.begin_design_repair(
+                selected["base_revision"],
+                selected["baseline_id"],
             )
-        selected = min(
-            candidates,
-            key=lambda item: (
-                item["predicted"]["hard_violation_count"],
-                -float(item["predicted"]["soft_score"]),
-                item["option_id"],
-            ),
-        )
-        applied = toolkit.apply_design_option(
-            selected["base_revision"],
-            selected["option_id"],
-        )
+        else:
+            selected = min(
+                candidates,
+                key=lambda item: (
+                    item["predicted"]["hard_violation_count"],
+                    -float(item["predicted"]["soft_score"]),
+                    item["option_id"],
+                ),
+            )
+            applied = toolkit.apply_design_option(
+                selected["base_revision"],
+                selected["option_id"],
+            )
         if applied["status"] != "ok":
             raise RuntimeError(
                 f"deterministic fallback option was rejected: {applied['warnings']}"

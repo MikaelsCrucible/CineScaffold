@@ -229,7 +229,7 @@ def build_deterministic_scene_skeleton(
                 "source_refs": [
                     item.path
                     for item in objective.explicit_requirements
-                    if item.path.startswith("content.scene_design.environment")
+                    if item.path == "content.scene_design.environment"
                 ],
             },
         )
@@ -351,8 +351,14 @@ def build_deterministic_scene_skeleton(
             direction_mode = "none"
             target_id = None
             carrier_id = semantics.get("carrier_id") or board_targets.get(subject_id)
+        elif motion_type == "interactive" or semantics.get("motion_mode") == "local_interaction":
+            kind = "local_transform"
+            path_family = "stationary"
+            direction_mode = "none"
+            target_id = None
+            carrier_id = semantics.get("carrier_id")
         elif (
-            motion_type in {"static", "interactive"}
+            motion_type == "static"
             or speed_intent == "stationary"
             or (subject_id in board_targets and event_id == "wait_and_arrive")
             # 进入关系是状态转换，不是把乘员代理驶入载体中心的指令。
@@ -365,7 +371,15 @@ def build_deterministic_scene_skeleton(
             carrier_id = semantics.get("carrier_id")
         else:
             kind = "linear_move"
-            path_family = "linear"
+            path_family = (
+                "parabolic"
+                if path_type == "parabolic"
+                else "catmull_rom"
+                if path_type == "s_curve"
+                else "lemniscate"
+                if path_type == "figure_eight"
+                else "linear"
+            )
             target_id = semantics.get("target_id")
             direction_mode = semantics.get("direction_mode") or "none"
             carrier_id = semantics.get("carrier_id")
@@ -381,6 +395,9 @@ def build_deterministic_scene_skeleton(
                 "carrier_id": carrier_id,
                 "direction_mode": direction_mode,
                 "path_family": path_family,
+                "local_components": (
+                    ["rotation", "scale"] if kind == "local_transform" else []
+                ),
                 "speed_intent": speed_intent,
                 "speed_source_status": (
                     motion["speed"].get("source_status")
@@ -526,10 +543,21 @@ def build_deterministic_scene_skeleton(
 
     focus_target = _annotated_value(objective.camera.get("focus_target_id"))
     movement_value = _annotated_value(objective.camera.get("movement", {}).get("type")) or ""
-    movement = (
-        "push_in"
-        if any(marker in movement_value.lower() for marker in ("推", "push"))
-        else "static"
+    movement_text = movement_value.lower()
+    movement = next(
+        (
+            kind
+            for kind, markers in (
+                ("push_in", ("推", "push", "dolly_in")),
+                ("pull_out", ("拉远", "后拉", "pull", "dolly_out")),
+                ("follow", ("跟随", "跟拍", "follow")),
+                ("orbit", ("环绕", "绕拍", "orbit")),
+                ("lateral", ("横移", "侧移", "lateral", "truck")),
+                ("static", ("静止", "固定", "static", "fixed")),
+            )
+            if any(marker in movement_text for marker in markers)
+        ),
+        "static",
     )
     movement_status = (
         objective.camera.get("movement", {}).get("type", {}).get("source_status", "inferred")
@@ -553,7 +581,10 @@ def build_deterministic_scene_skeleton(
         "camera_intent": {
             "movement": movement,
             "focus_target_id": focus_target,
-            "view_relation_to_motion": "unspecified",
+            "view_relation_to_motion": (
+                _annotated_value(objective.camera.get("view_relation_to_motion"))
+                or "unspecified"
+            ),
             "speed_intent": _mock_speed_intent(
                 _annotated_value(camera_speed),
                 "static" if movement == "static" else None,
@@ -624,6 +655,8 @@ def _mock_speed_intent(value: str | None, motion_type: str | None) -> str:
     if motion_type in {"running", "flying", "fast"}:
         return "fast"
     lowered = (value or "").lower()
+    if any(marker in lowered for marker in ("与主体速度同步", "同步主体", "match_subject")):
+        return "match_subject"
     if lowered in {"静止", "0 m/s", "stationary"}:
         return "stationary"
     if any(marker in lowered for marker in ("缓慢", "慢", "slow")):

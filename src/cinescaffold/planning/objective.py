@@ -176,6 +176,17 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
         for name in SUBJECTIVE_CONTENT_FIELDS
         if name in content
     ]
+    environmental_motion = content.get("scene_design", {}).get("environmental_motion")
+    if environmental_motion:
+        ignored.append(
+            IgnoredSubjectiveField(
+                path="content.scene_design.environmental_motion",
+                reason=(
+                    "环境特效运动属于最终视频生成层；当前几何白模不把它错误绑定到地面实体"
+                ),
+                content_sha256=_canonical_sha256(environmental_motion),
+            )
+        )
     return ObjectiveProjection(
         objective_brief=objective_brief,
         ignored_subjective_fields=ignored,
@@ -221,6 +232,8 @@ def _collect_explicit_requirements(
     path: str,
     output: list[ObjectiveRequirement],
 ) -> None:
+    if path.startswith("content.scene_design.environmental_motion"):
+        return
     if isinstance(value, list):
         for index, item in enumerate(value):
             _collect_explicit_requirements(item, f"{path}[{index}]", output)

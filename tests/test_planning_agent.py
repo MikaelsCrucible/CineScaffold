@@ -66,6 +66,9 @@ class PlanningProtocolTest(unittest.TestCase):
         # 坐标契约增加少量说明后仍需显著小于完整领域联合。
         self.assertLess(compact_chars, domain_chars * 0.7)
         self.assertLess(constraint_chars, domain_constraint_chars * 0.4)
+        constraint_types = ConstraintPatchInput.model_json_schema()["properties"]["type"]["enum"]
+        self.assertIn("projected_size", constraint_types)
+        self.assertNotIn("event_order", constraint_types)
 
     def test_path_tool_schema_exposes_coordinate_and_direction_conventions(self) -> None:
         properties = PathPatchInput.model_json_schema()["properties"]

@@ -43,16 +43,17 @@
    - 自主运动除世界空间位移外还会记录屏幕质心与尺度变化；显隐和 carried 关系分别验证。世界空间运动和状态变化是 hard，屏幕表现默认是 warning：应尽量修好，但不能为了画面更明显而篡改真实动作或丢弃叙事事件。
    - 用户未明确要求迎面拍摄或背面跟拍时，摄影机不得与线性主体运动方向近似共线。使用 capability 返回的最小斜视夹角，并优先选择能同时表达位移和空间关系的斜侧机位；不得只靠主体尺寸变大或变小走捷径。Brief 已明确摄影机方向时保留用户要求，并接受 Validator 的 warning。
    - v0.3+ `motion_semantics` 是语义模型已经完成的类型化解释。`motion_mode` 决定静止、自主运动、局部变化或随载体运动；只有非 `none` 的 `direction_mode/target_id` 才决定相对方向，`path_type` 决定明确路径族。不得再从 `action.value`、实体名称或中文子串推断方向和目标。
+   - `motion_mode=local_interaction` 必须使用 `local_transform`，并以 `local_components=rotation/scale` 表达至少一种可观察局部变化；不能用 hold 假装完成。`path_type=parabolic` 仍使用 `linear_move`，Toolkit 会把它物化为含弧顶的关键时间点轨迹。
    - `motion_mode=carried` 时主体不能生成独立的步行或世界前向轨迹，使用 `carrier_id` 建立父级/目标相对关系。进入载体若没有 explicit 位移方向，可用同一 `motion_id` 的 visibility 阶段表达外部代理隐藏，并由紧接的 carried 关系证明容纳状态；只有 Brief 明确要求主体走向载体时才添加朝目标的 linear_move。不得为进入动作创建额外实体。
    - `ground_interaction` 只在场景存在环境地面平面时生效；太空、空中等无地面场景保持缺省 `must_be_above` 即可，不要为了“无地面”伪造 explicit 来源或使用 `unconstrained`。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 且来源路径与约束类型兼容的要求可以成为 hard constraint；环境实体来源不能被拿来制造空间硬约束。Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
    - `apply_entity_patch` 的输入不暴露 `solved_transform`。更新既有实体时 Toolkit 会保留该隐藏求解状态；创建新实体时保持未求解并在返回中要求调用 layout Solver。几何尺寸或地面策略变化后仍须复验，不能把“保留坐标”理解为新几何已经满足接触或构图。
    - 正常 Agent 不分别接收四个低层 Mutation；第一次出现确定性修复不支持的 hard violation 时就会出现 `apply_candidate_patch`，无需等待多轮失败。它允许在同一事务中组合实体局部字段、约束、运动和摄影机修改，避免相互依赖的正确方案被拆成暂时非法的中间 revision。实体更新省略的字段保持原值；显式空数组才表示清空列表。
    - `apply_candidate_patch` 会先在不可见副本中运行结构不变量、Execution Safety 与完整 Validator。预演导致执行安全、explicit 覆盖或总体 hard fidelity 退化时不会产生 revision；不要为了绕过退化门禁拆分同一个组合修复。
-5. `request_design_options` 只会暴露已通过完整 Validator 全部 hard 约束的候选，`apply_design_option` 会再次完整复验；没有合法候选时根据返回原因调整符号骨架或尺寸请求，不得选择一个已知错误的安全基线。应在应用前比较候选的 warning/soft 偏好；一旦应用结果返回 `commit_ready=true`，工具会收起修改接口，必须立即提交，不能再尝试修复非阻断偏好。
+5. `request_design_options` 的 `options` 只会包含通过完整 Validator 全部 hard 约束的候选，`apply_design_option` 会再次完整复验。若第一次就没有合法 option，但返回了单个 `repair_baseline`，必须调用 `begin_design_repair`：它不是可交付候选，只是已通过 Execution Safety 的受限修复起点，随后立即使用 `apply_candidate_patch` 修复返回的 hard violations。没有 baseline 时才修订符号骨架或尺寸请求。应在应用前比较候选的 warning/soft 偏好；一旦应用结果返回 `commit_ready=true`，工具会收起修改接口，必须立即提交，不能再尝试修复非阻断偏好。
    - 连续逐帧错误会以 `actual.summary_kind=sampled_time_range` 合并为时间段；结合 `sample_count`、`first_sample`、`worst_sample` 和 `last_sample` 判断根因，不要把区间摘要误解为单帧错误。完整逐帧证据由系统留存在诊断产物中。
    - Agent-facing 验证结果中的 `repair_focus` 只给出优先排查顺序，不会删除其余压缩错误。若主错误的可调整变量不足以形成完整修复，应使用同一 `apply_candidate_patch` 联合修改相关领域，而不是假设未列出的接口不可用。
-   - 对 `VIEW_SUBJECT_MOTION_NEAR_COLLINEAR`、`PROJECTED_MOTION_UNREADABLE`、`ENTITY_OUT_OF_FRAME` 或 `PROJECTED_SIZE_VIOLATED`，优先调用 `suggest_repairs`。这里的第一项是“摄影机观察方向与主体运动方向近似共线”，不是摄影机自身在运动。你只需按 Brief 语义与返回的 tradeoffs 选择整体策略，再用 `apply_repair` 原子应用；不要在已有可行建议时继续穷举摄影机坐标或焦距。
+   - 对 `VIEW_SUBJECT_MOTION_NEAR_COLLINEAR`、`ENTITY_OUT_OF_FRAME`、`NEGATIVE_SPACE_VIOLATED`、`PROJECTED_SIZE_VIOLATED` 或 `VISIBILITY_FRACTION_VIOLATED`，优先调用 `suggest_repairs`。`PROJECTED_MOTION_UNREADABLE` 是不阻断交付的屏幕表现 warning，不属于自动修复入口。这里的第一项是“摄影机观察方向与主体运动方向近似共线”，不是摄影机自身在运动。你只需按 Brief 语义与返回的 tradeoffs 选择整体策略，再用 `apply_repair` 原子应用；不要在已有可行建议时继续穷举摄影机坐标或焦距。
    - `suggest_repairs` 是只读搜索，返回的具体数值已经过同一 Validator 预测；`apply_repair` 会检查 base revision、重放 hash 并完整复验。出现可处理 violation 时，状态机会暂时收起冲突的手工 Mutation；建议过期时重新生成，不要手抄旧数值。
    - 若 `suggest_repairs` 对当前 revision 返回 `no_change`，系统会重新开放受 Schema 和 Validator 约束的手工 Mutation。只能修改 violation 指向的实体、轨道、约束或摄影机字段；修改后必须再次调用 Validator，不得绕过 Commit Gate。
    - inspect_candidate 的 view 只能使用该工具 Schema 返回的枚举值；同一 revision 不得重复读取相同视图。过滤器只用于其支持的视图，未知 ID、越界时间段或不相容过滤器会明确拒绝，不能假设系统已静默采用。

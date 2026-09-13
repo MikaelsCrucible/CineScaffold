@@ -115,6 +115,381 @@ class PlanningDesignTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "scene_dynamics=static"):
             validate_scene_skeleton(objective, skeleton)
 
+    def test_dynamic_scene_rejects_hold_only_skeleton(self) -> None:
+        objective = project_objective_brief(valid_planning_brief()).objective_brief
+        objective = objective.model_copy(
+            update={
+                "scene_dynamics": {
+                    "mode": "dynamic",
+                    "source_status": "inferred",
+                    "reason": "主体发生局部状态变化",
+                }
+            }
+        )
+        skeleton = SceneSkeleton.model_validate(_desert_skeleton())
+
+        with self.assertRaisesRegex(ValueError, "scene_dynamics=dynamic"):
+            validate_scene_skeleton(objective, skeleton)
+
+    def test_required_local_interaction_cannot_be_replaced_by_hold(self) -> None:
+        objective = project_objective_brief(valid_planning_brief()).objective_brief
+        objective = objective.model_copy(
+            update={
+                "schema_version": "0.6",
+                "scene_dynamics": {
+                    "mode": "dynamic",
+                    "source_status": "inferred",
+                    "reason": "主体发生局部变化",
+                },
+                "subject_motion": [
+                    {
+                        "motion_id": "gesture_01",
+                        "subject_id": "man_01",
+                        "motion_semantics": {
+                            "motion_mode": "local_interaction",
+                            "path_type": "stationary",
+                            "narrative_required": True,
+                        },
+                    }
+                ],
+            }
+        )
+        value = _desert_skeleton()
+        value["motion_phases"][0].update(
+            motion_id="gesture_01",
+            kind="visibility",
+            visibility_state="hidden",
+            transition_at="at_end",
+        )
+        skeleton = SceneSkeleton.model_validate(value)
+
+        with self.assertRaisesRegex(ValueError, "错误表达关键叙事动作"):
+            validate_scene_skeleton(objective, skeleton)
+
+        value["motion_phases"][0].update(
+            kind="local_transform",
+            local_components=["rotation"],
+            visibility_state=None,
+            transition_at=None,
+        )
+        skeleton = SceneSkeleton.model_validate(value)
+        validate_scene_skeleton(objective, skeleton)
+
+    def test_parabolic_path_family_is_representable(self) -> None:
+        value = _desert_skeleton()
+        value["motion_phases"][0].update(
+            kind="linear_move",
+            direction_mode="world_forward",
+            path_family="parabolic",
+            speed_intent="medium",
+        )
+
+        skeleton = SceneSkeleton.model_validate(value)
+
+        self.assertEqual(skeleton.motion_phases[0].path_family, "parabolic")
+
+    def test_deterministic_local_interaction_builds_observable_transform(self) -> None:
+        source = _desert_toolkit()
+        objective = source.objective_brief.model_copy(
+            update={
+                "schema_version": "0.6",
+                "scene_dynamics": {
+                    "mode": "dynamic",
+                    "source_status": "inferred",
+                    "reason": "主体发生局部变化",
+                },
+                "subject_motion": [
+                    {
+                        "motion_id": "gesture_01",
+                        "subject_id": "man_01",
+                        "action": {
+                            "value": "挥手",
+                            "source_status": "inferred",
+                            "source_text": None,
+                        },
+                        "start_time_seconds": 0.0,
+                        "end_time_seconds": 6.0,
+                        "motion_semantics": {
+                            "motion_type": "interactive",
+                            "motion_mode": "local_interaction",
+                            "direction_mode": "none",
+                            "target_id": None,
+                            "carrier_id": None,
+                            "path_type": "stationary",
+                            "timeline_event_id": None,
+                            "source_status": "inferred",
+                            "narrative_required": True,
+                        },
+                    }
+                ],
+            }
+        )
+        toolkit = ScenePlanningToolkit(objective)
+        skeleton = _mock_scene_skeleton(objective)
+
+        self.assertEqual(skeleton["motion_phases"][0]["kind"], "local_transform")
+        accepted = toolkit.submit_scene_skeleton(skeleton)
+        self.assertEqual(accepted["status"], "ok", accepted)
+        options = toolkit.request_design_options(max_options=1)
+        candidates = [item.candidate for item in toolkit._design_options.values()]
+        candidates.extend(
+            item.candidate for item in toolkit._design_repair_baselines.values()
+        )
+        self.assertTrue(candidates, options)
+        track = candidates[0].motion_tracks["design_motion_man_01"]
+        rotations = [item.value.rotation_quaternion_wxyz for item in track.keyframes]
+        self.assertGreater(len(set(rotations)), 1)
+
+    def test_failed_hard_design_exposes_only_a_repair_baseline(self) -> None:
+        source = _desert_toolkit()
+        first_ref = "content.composition.visual_scales[0].scale"
+        second_ref = "content.composition.visual_scales[1].scale"
+        objective = source.objective_brief.model_copy(
+            update={
+                "composition": source.objective_brief.composition
+                | {
+                    "visual_scales": [
+                        {
+                            "subject_id": "man_01",
+                            "scale": {
+                                "value": "1%-2%",
+                                "source_status": "explicit",
+                                "source_text": "人物占画幅1%-2%",
+                            },
+                        },
+                        {
+                            "subject_id": "man_01",
+                            "scale": {
+                                "value": "80%-90%",
+                                "source_status": "explicit",
+                                "source_text": "人物占画幅80%-90%",
+                            },
+                        },
+                    ]
+                },
+                "explicit_requirements": [
+                    *source.objective_brief.explicit_requirements,
+                    ObjectiveRequirement(path=first_ref, value="1%-2%"),
+                    ObjectiveRequirement(path=second_ref, value="80%-90%"),
+                ],
+            }
+        )
+        toolkit = ScenePlanningToolkit(objective)
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+
+        result = toolkit.request_design_options(max_options=1)
+
+        self.assertEqual(result["data"]["options"], [])
+        self.assertEqual(result["data"]["next_tool"], "begin_design_repair")
+        baseline = result["data"]["repair_baselines"][0]
+        begun = toolkit.begin_design_repair(
+            baseline["base_revision"], baseline["baseline_id"]
+        )
+        self.assertEqual(begun["status"], "ok", begun)
+        self.assertEqual(begun["data"]["next_tool"], "apply_candidate_patch")
+        self.assertTrue(toolkit.store.get().entities)
+
+    def test_explicit_overhead_view_changes_actual_camera_pitch(self) -> None:
+        brief = valid_planning_brief()
+        brief["content"]["camera"]["view_angle"] = {
+            "value": "垂直俯拍",
+            "source_status": "explicit",
+            "source_text": "从正上方俯拍",
+        }
+        objective = project_objective_brief(brief).objective_brief
+        resolution = freeze_brief_duration(
+            objective.timeline,
+            fps_numerator=24,
+            fps_denominator=1,
+        )
+        toolkit = ScenePlanningToolkit(attach_duration_resolution(objective, resolution))
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+
+        options = toolkit.request_design_options(max_options=1)
+
+        candidates = [item.candidate for item in toolkit._design_options.values()]
+        candidates.extend(
+            item.candidate for item in toolkit._design_repair_baselines.values()
+        )
+        self.assertTrue(candidates, options)
+        candidate = candidates[0]
+        camera = candidate.camera
+        self.assertIsNotNone(camera)
+        assert camera is not None
+        focus = candidate.entities["man_01"].solved_transform.translation_m
+        position = camera.solved_transform.translation_m
+        horizontal = math.hypot(position[0] - focus[0], position[1] - focus[1])
+        pitch = math.degrees(math.atan2(position[2] - focus[2], horizontal))
+        self.assertGreaterEqual(pitch, 65.0)
+
+    def test_orbit_and_lateral_camera_intents_create_real_tracks(self) -> None:
+        for movement, text, expected_track in (
+            ("orbit", "环绕", "path_follow"),
+            ("lateral", "横移", "transform"),
+        ):
+            with self.subTest(movement=movement):
+                source = _desert_toolkit()
+                objective = source.objective_brief.model_copy(
+                    update={
+                        "scene_design": source.objective_brief.scene_design
+                        | {"relationships": []},
+                        "camera": source.objective_brief.camera
+                        | {
+                            "movement": source.objective_brief.camera["movement"]
+                            | {
+                                "type": {
+                                    "value": text,
+                                    "source_status": "explicit",
+                                    "source_text": text,
+                                }
+                            }
+                        },
+                        "explicit_requirements": [
+                            ObjectiveRequirement(
+                                path="content.camera.movement.type", value=text
+                            )
+                        ],
+                    }
+                )
+                toolkit = ScenePlanningToolkit(objective)
+                skeleton = _desert_skeleton()
+                skeleton["relations"] = skeleton["relations"][:1]
+                skeleton["camera_intent"]["movement"] = movement
+                toolkit.submit_scene_skeleton(skeleton)
+
+                options = toolkit.request_design_options(max_options=1)
+
+                self.assertTrue(options["data"]["options"], options)
+                candidate = toolkit._design_options[
+                    options["data"]["options"][0]["option_id"]
+                ].candidate
+                self.assertIn(
+                    expected_track,
+                    {track.type for track in candidate.camera.tracks.values()},
+                )
+
+    def test_follow_camera_uses_target_relative_track(self) -> None:
+        source = _desert_toolkit()
+        objective = source.objective_brief.model_copy(
+            update={
+                "schema_version": "0.6",
+                "scene_dynamics": {
+                    "mode": "dynamic",
+                    "source_status": "inferred",
+                    "reason": "主体位移",
+                },
+                "scene_design": source.objective_brief.scene_design
+                | {"relationships": []},
+                "subject_motion": [
+                    {
+                        "motion_id": "walk_01",
+                        "subject_id": "man_01",
+                        "start_time_seconds": 0.0,
+                        "end_time_seconds": 6.0,
+                        "motion_semantics": {
+                            "motion_type": "walking",
+                            "motion_mode": "self_propelled",
+                            "direction_mode": "world_forward",
+                            "target_id": None,
+                            "carrier_id": None,
+                            "path_type": "linear",
+                            "timeline_event_id": None,
+                            "narrative_required": False,
+                        },
+                    }
+                ],
+                "camera": source.objective_brief.camera
+                | {
+                    "movement": source.objective_brief.camera["movement"]
+                    | {
+                        "type": {
+                            "value": "跟拍",
+                            "source_status": "explicit",
+                            "source_text": "跟拍人物",
+                        }
+                    }
+                },
+                "explicit_requirements": [
+                    ObjectiveRequirement(
+                        path="content.camera.movement.type", value="跟拍"
+                    )
+                ],
+            }
+        )
+        toolkit = ScenePlanningToolkit(objective)
+        skeleton = _desert_skeleton()
+        skeleton["relations"] = skeleton["relations"][:1]
+        skeleton["motion_phases"][0].update(
+            motion_id="walk_01",
+            kind="linear_move",
+            direction_mode="world_forward",
+            path_family="linear",
+            speed_intent="slow",
+        )
+        skeleton["camera_intent"].update(
+            movement="follow",
+            speed_intent="match_subject",
+        )
+        toolkit.submit_scene_skeleton(skeleton)
+
+        options = toolkit.request_design_options(max_options=1)
+
+        self.assertTrue(options["data"]["options"], options)
+        candidate = toolkit._design_options[
+            options["data"]["options"][0]["option_id"]
+        ].candidate
+        path = candidate.camera.tracks["design_camera_path"].path
+        self.assertEqual(path.space, "target_relative")
+        self.assertEqual(path.target_id, "man_01")
+
+    def test_explicit_screen_placement_becomes_axis_specific_hard_constraints(self) -> None:
+        source = _desert_toolkit()
+        horizontal_ref = "content.composition.screen_placements[0].horizontal"
+        vertical_ref = "content.composition.screen_placements[0].vertical"
+        objective = source.objective_brief.model_copy(
+            update={
+                "composition": source.objective_brief.composition
+                | {
+                    "screen_placements": [
+                        {
+                            "subject_id": "man_01",
+                            "horizontal": {
+                                "value": "左侧",
+                                "source_status": "explicit",
+                                "source_text": "人物在左侧",
+                            },
+                            "vertical": {
+                                "value": "下方",
+                                "source_status": "explicit",
+                                "source_text": "人物在下方",
+                            },
+                        }
+                    ]
+                },
+                "explicit_requirements": [
+                    *source.objective_brief.explicit_requirements,
+                    ObjectiveRequirement(path=horizontal_ref, value="左侧"),
+                    ObjectiveRequirement(path=vertical_ref, value="下方"),
+                ],
+            }
+        )
+        toolkit = ScenePlanningToolkit(objective)
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+        result = toolkit.request_design_options(max_options=1)
+        candidates = [item.candidate for item in toolkit._design_options.values()]
+        candidates.extend(
+            item.candidate for item in toolkit._design_repair_baselines.values()
+        )
+        self.assertTrue(candidates, result)
+
+        constraints = {
+            item.source_ref: item
+            for item in candidates[0].constraints.values()
+            if item.type == "screen_region"
+        }
+        self.assertEqual(constraints[horizontal_ref].strength, "hard")
+        self.assertEqual(constraints[vertical_ref].strength, "hard")
+
     def test_motion_phase_direction_contract_rejects_accidental_target(self) -> None:
         value = _pickup_skeleton()
         phase = value["motion_phases"][1]

@@ -781,7 +781,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     "subjects": [],
                     "time_range_seconds": [0.0, 6.0],
                     "parameters": {
-                        "direction": "pull_out",
+                        "direction": "push_in",
                         "minimum_displacement_m": 3.0,
                     },
                     "source_status": "explicit",
@@ -801,11 +801,11 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                         "keyframes": [
                             {
                                 "time_seconds": 0.0,
-                                "value": {"translation_m": [0.0, -12.0, 2.0]},
+                                "value": {"translation_m": [0.0, -14.0, 2.0]},
                             },
                             {
                                 "time_seconds": 143 / 24,
-                                "value": {"translation_m": [0.0, -17.0, 2.0]},
+                                "value": {"translation_m": [0.0, -6.0, 2.0]},
                             },
                         ],
                     }
@@ -1998,6 +1998,49 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertTrue(validation["data"]["hard_pass"])
         self.assertEqual(violation["severity"], "warning")
         self.assertEqual(collinear["severity"], "warning")
+
+    def test_explicit_camera_focus_and_motion_view_are_checked_geometrically(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(8.0, 4.0, 0.9),
+            camera_position=(-10.0, 4.0, 1.5),
+        )
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "camera": toolkit.objective_brief.camera
+                | {
+                    "focus_target_id": _annotated("man_01", "注视人物"),
+                    "view_relation_to_motion": _annotated("front", "从运动正面拍摄"),
+                },
+                "explicit_requirements": [
+                    *toolkit.objective_brief.explicit_requirements,
+                    ObjectiveRequirement(
+                        path="content.camera.focus_target_id",
+                        value="man_01",
+                    ),
+                    ObjectiveRequirement(
+                        path="content.camera.view_relation_to_motion",
+                        value="front",
+                    ),
+                ],
+            }
+        )
+        toolkit.store.apply(
+            lambda state: (
+                state.required_source_refs.extend(
+                    [
+                        "content.camera.focus_target_id",
+                        "content.camera.view_relation_to_motion",
+                    ]
+                )
+                or ([{"operation": "test", "path": "required_source_refs"}], [])
+            )
+        )
+
+        validation = toolkit.validate_candidate(checks=["hard_semantics"])
+
+        codes = {item["code"] for item in validation["violations"]}
+        self.assertIn("EXPLICIT_CAMERA_FOCUS_UNMET", codes)
+        self.assertIn("EXPLICIT_CAMERA_VIEW_RELATION_UNMET", codes)
 
     def test_explicit_static_camera_does_not_authorize_collinear_view(self) -> None:
         toolkit = _projected_motion_toolkit(

@@ -159,6 +159,47 @@ class ValidationGeneralityTest(unittest.TestCase):
 
         self.assertIn("MOTION_PATH_FAMILY_UNMET", codes)
 
+    def test_parabolic_semantics_require_and_accept_an_interior_apex(self) -> None:
+        toolkit = _typed_motion_toolkit(
+            "jumper",
+            "landing",
+            end_x=5.0,
+            direction_mode="none",
+            path_type="parabolic",
+        )
+        before = _hard_codes(toolkit.validate_candidate(checks=["motion"]))
+        self.assertIn("MOTION_PATH_FAMILY_UNMET", before)
+
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "jumper_motion",
+                    "target_entity_id": "jumper",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [0.0, 0.0, 0.5]},
+                        },
+                        {
+                            "time_seconds": 3.0,
+                            "value": {"translation_m": [2.5, 0.0, 2.5]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [5.0, 0.0, 0.5]},
+                        },
+                    ],
+                    "source_ref": "content.subject_motion[0].action",
+                }
+            ],
+            [],
+        )
+
+        after = _hard_codes(toolkit.validate_candidate(checks=["motion"]))
+        self.assertNotIn("MOTION_PATH_FAMILY_UNMET", after)
+
     def test_subject_source_ref_cannot_be_attached_to_another_entity(self) -> None:
         toolkit = _typed_motion_toolkit("actor", "statue", end_x=2.0)
         source_ref = "content.subjects[0].category"
