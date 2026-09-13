@@ -41,6 +41,7 @@ from cinescaffold.planning.models import (
 from cinescaffold.planning.objective import (
     ObjectivePlanningBrief,
     ObjectiveProjection,
+    has_subject_spatial_motion,
     project_objective_brief,
 )
 from cinescaffold.planning.toolkit import (
@@ -696,6 +697,9 @@ def _route_context_index(objective: ObjectivePlanningBrief) -> dict[str, Any]:
     ]
     environment = objective.scene_design.get("environment")
     return {
+        "scene_dynamics": objective.scene_dynamics,
+        "subject_spatial_motion_present": has_subject_spatial_motion(objective),
+        "camera_motion_is_independent": True,
         "motion_timelines": motion_timelines,
         "spatial_relations": spatial_relations,
         "shared_events": shared_events,

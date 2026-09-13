@@ -91,6 +91,28 @@ class ObjectiveProjectionTest(unittest.TestCase):
         self.assertNotIn("emotion_class", objective.translation_parameters)
         self.assertNotIn("feeling", objective.translation_parameters["input_slots"])
 
+    def test_legacy_hold_motions_remain_a_static_subject_scene(self) -> None:
+        brief = _valid_brief()
+        normalized, parameters = apply_translation_rules(
+            brief["content"],
+            load_translation_rules(
+                ROOT
+                / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
+            ),
+        )
+        del normalized["scene_dynamics"]
+        brief.update(
+            schema_version="0.5",
+            content=normalized,
+            translation_parameters=parameters,
+        )
+        brief["provenance"]["translation_rules_sha256"] = "1" * 64
+
+        objective = project_objective_brief(brief).objective_brief
+
+        self.assertEqual(objective.scene_dynamics["mode"], "static")
+        self.assertIn("主体运动与状态转换", objective.scene_dynamics["reason"])
+
     def test_projection_repairs_legacy_camera_parameters_that_conflict_with_explicit_motion(self) -> None:
         brief = _valid_brief()
         brief["content"]["camera"]["movement"]["type"] = {

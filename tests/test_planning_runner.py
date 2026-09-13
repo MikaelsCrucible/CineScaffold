@@ -91,6 +91,9 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertIn("car", context["motion_timelines"])
         self.assertTrue(context["shared_events"])
         self.assertTrue(context["spatial_relations"])
+        self.assertEqual(context["scene_dynamics"]["mode"], "dynamic")
+        self.assertTrue(context["subject_spatial_motion_present"])
+        self.assertTrue(context["camera_motion_is_independent"])
         self.assertNotIn("translation_m", json.dumps(context))
 
     def test_context_limit_falls_back_without_another_model_request(self) -> None:
@@ -536,7 +539,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "tool_call_completed" for item in trace))
         self.assertTrue(any(item["event_type"] == "commit_gate_completed" for item in trace))
         run_started = next(item for item in trace if item["event_type"] == "run_started")
-        self.assertEqual(run_started["payload"]["toolkit_version"], "0.33")
+        self.assertEqual(run_started["payload"]["toolkit_version"], "0.34")
         self.assertNotIn("孤独", "\n".join(trace_lines))
         # 普通运行保持精简日志：不记录对话内容，response 只记类型与规模。
         request_started = next(

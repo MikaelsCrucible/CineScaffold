@@ -155,12 +155,19 @@ class SkeletonMotionPhase(StrictModel):
     carrier_id: str | None = None
     direction_mode: Literal[
         "none",
+        "world_forward",
         "toward_target",
         "away_from_target",
-        "screen_left_to_right",
-        "screen_right_to_left",
+        "world_left",
+        "world_right",
         "orbit_around",
-    ] = "none"
+    ] = Field(
+        default="none",
+        description=(
+            "主体的几何运动方向；事件参与者不是 target。world_forward 表示规范世界 -Y，"
+            "world_left/world_right 表示规范世界 -X/+X；这些名称不承诺最终屏幕方向"
+        ),
+    )
     path_family: Literal[
         "stationary",
         "linear",
@@ -186,10 +193,33 @@ class SkeletonMotionPhase(StrictModel):
             raise ValueError(f"{self.kind} 必须提供 target_id")
         if self.kind == "carried" and self.carrier_id is None:
             raise ValueError("carried 必须提供 carrier_id")
+        if self.kind != "carried" and self.carrier_id is not None:
+            raise ValueError(f"{self.kind} 不接受 carrier_id")
+        if self.direction_mode in {"toward_target", "away_from_target", "orbit_around"}:
+            if self.target_id is None:
+                raise ValueError(f"{self.direction_mode} 必须提供 target_id")
+        elif self.target_id is not None:
+            raise ValueError(f"{self.direction_mode} 不接受 target_id")
+        if self.kind == "orbit" and self.direction_mode != "orbit_around":
+            raise ValueError("orbit 必须使用 orbit_around 方向语义")
+        if self.kind != "orbit" and self.direction_mode == "orbit_around":
+            raise ValueError("只有 orbit 可以使用 orbit_around")
+        if self.kind in {"hold", "carried", "visibility"} and self.direction_mode != "none":
+            raise ValueError(f"{self.kind} 必须使用 direction_mode=none")
         if self.kind == "orbit" and self.path_family not in {"circle", "ellipse"}:
             raise ValueError("普通 orbit 必须使用 circle 或 ellipse")
         if self.kind == "hold" and self.path_family != "stationary":
             raise ValueError("hold 必须使用 stationary")
+        if self.kind == "linear_move" and self.path_family not in {
+            "linear",
+            "catmull_rom",
+            "lemniscate",
+        }:
+            raise ValueError("linear_move 必须使用 linear、catmull_rom 或 lemniscate")
+        if self.kind == "linear_move" and self.speed_intent == "stationary":
+            raise ValueError("linear_move 不能使用 stationary 速度")
+        if self.kind in {"carried", "visibility"} and self.path_family != "stationary":
+            raise ValueError(f"{self.kind} 必须使用 stationary；世界运动由载体或显隐语义负责")
         visibility_fields = (self.visibility_state, self.transition_at)
         if self.kind == "visibility" and any(item is None for item in visibility_fields):
             raise ValueError("visibility 必须提供 visibility_state 与 transition_at")
@@ -241,7 +271,9 @@ class SkeletonRouteIntent(StrictModel):
 class SkeletonCameraIntent(StrictModel):
     movement: Literal[
         "static", "push_in", "pull_out", "follow", "orbit", "lateral"
-    ]
+    ] = Field(
+        description="只描述摄影机自身运动，与 scene_dynamics 的主体静/动态分类彼此独立"
+    )
     focus_target_id: str | None = Field(
         default=None,
         description=(
@@ -251,7 +283,13 @@ class SkeletonCameraIntent(StrictModel):
     )
     view_relation_to_motion: Literal[
         "front", "rear", "side", "three_quarter", "unspecified"
-    ] = "unspecified"
+    ] = Field(
+        default="unspecified",
+        description=(
+            "摄影机观察方向相对主体线性运动的关系；不存在主体线性运动或 Brief 未明确时使用 unspecified；"
+            "它不描述摄影机自身如何移动"
+        ),
+    )
     speed_intent: Literal[
         "stationary", "slow", "medium", "fast", "unspecified"
     ] = "unspecified"
@@ -389,6 +427,18 @@ def validate_scene_skeleton(
     if missing:
         raise ValueError(f"Scene Skeleton 遗漏 Brief 主体：{', '.join(missing)}")
 
+    if objective.scene_dynamics.get("mode") == "static":
+        changing_phases = [
+            item.phase_id
+            for item in value.motion_phases
+            if item.kind != "hold"
+        ]
+        if changing_phases:
+            raise ValueError(
+                "scene_dynamics=static 表示主体状态不变，不能提交主体运动或状态转换阶段："
+                + ", ".join(changing_phases)
+            )
+
     known_event_ids = {
         str(item.get("id"))
         for item in objective.timeline.get("events", [])
@@ -490,6 +540,10 @@ def task_capability_slice(
     }
     if skeleton.camera_intent.speed_intent not in {"stationary", "unspecified"}:
         speed_intents.add(skeleton.camera_intent.speed_intent)
+    has_subject_translation = any(
+        phase.kind in {"linear_move", "orbit", "carried"}
+        for phase in skeleton.motion_phases
+    )
     return {
         "coordinate_system": {
             "linear_unit": "meter",
@@ -528,6 +582,12 @@ def task_capability_slice(
                 "selection": "Toolkit 按候选策略在范围内选择并完整验证",
             },
         },
+        "motion_readability": {
+            "applies_to": "subject_spatial_motion_only",
+            "subject_translation_present": has_subject_translation,
+            "camera_motion_counts_as_subject_motion": False,
+            "maximize_motion_readability_applicable": has_subject_translation,
+        },
         "inspect_views": [
             "summary",
             "entities",
@@ -543,8 +603,10 @@ def task_capability_slice(
             "minimum_soft_score": profile.minimum_soft_score,
             "soft_score_role": "advisory_quality_metric",
             "minimum_projected_motion_extent": profile.minimum_projected_motion_extent,
-            "minimum_camera_motion_obliqueness_degrees": (
-                profile.minimum_camera_motion_obliqueness_degrees
+            "minimum_view_subject_motion_obliqueness_degrees": (
+                profile.minimum_view_subject_motion_obliqueness_degrees
+                if has_subject_translation
+                else None
             ),
         },
         "next_tool": "apply_design_option",
@@ -605,6 +667,7 @@ def build_design_candidate(
         or not has_subject_translation
     ):
         _fit_static_camera_to_composition(candidate, skeleton, profile)
+    _fit_open_environment_ground_to_camera(objective, candidate, profile)
     assumptions = _design_assumptions(
         objective,
         skeleton,
@@ -812,7 +875,17 @@ def _validate_requested_dimensions(
         raise ValueError("自定义尺寸与 Brief 明确的参考高度冲突")
 
 
-def _camera_yaw_degrees(view: str, strategy: str) -> float:
+def _camera_yaw_degrees(
+    view: str,
+    strategy: str,
+    *,
+    subject_motion_readability_applicable: bool = True,
+) -> float:
+    if view == "unspecified" and not subject_motion_readability_applicable:
+        # Camera motion does not create a subject-motion axis. Static or
+        # state-only scenes therefore keep the ordinary oblique default even
+        # when a caller requests the motion-readability strategy.
+        return 35.0
     return {
         "front": 0.0,
         "rear": 180.0,
@@ -1097,18 +1170,19 @@ def _build_relation_constraints(
                 },
             }
         elif phase.kind == "linear_move" and phase.direction_mode in {
-            "screen_left_to_right",
-            "screen_right_to_left",
+            "world_forward",
+            "world_left",
+            "world_right",
         }:
             payload = common | {
                 "type": "motion_direction",
                 "parameters": {
                     "target_id": phase.subject_id,
-                    "direction": (
-                        "left"
-                        if phase.direction_mode == "screen_right_to_left"
-                        else "right"
-                    ),
+                    "direction": {
+                        "world_forward": "forward",
+                        "world_left": "left",
+                        "world_right": "right",
+                    }[phase.direction_mode],
                     "space": "world",
                     "minimum_displacement_m": 0.5,
                 },
@@ -1272,8 +1346,9 @@ def _build_motion(
             )
             if first.direction_mode in {
                 "none",
-                "screen_left_to_right",
-                "screen_right_to_left",
+                "world_forward",
+                "world_left",
+                "world_right",
             } and first_end_anchor is not None:
                 anchor_index, anchor = first_end_anchor
                 waypoint = _route_anchor_position(
@@ -1547,7 +1622,14 @@ def _build_camera(
         # 缺省轨道镜头提高俯视夹角，避免圆轨道投影成直线往返。
         height = focus_height + start_distance * 0.75
     view = skeleton.camera_intent.view_relation_to_motion
-    yaw = _camera_yaw_degrees(view, strategy)
+    yaw = _camera_yaw_degrees(
+        view,
+        strategy,
+        subject_motion_readability_applicable=any(
+            item.kind in {"linear_move", "orbit", "carried"}
+            for item in skeleton.motion_phases
+        ),
+    )
     start = _camera_position(focus_point, start_distance, height, yaw)
     end = _camera_position(focus_point, end_distance, height, yaw)
     duration = candidate.timeline.duration_seconds
@@ -1656,6 +1738,11 @@ def _add_composition_constraints(
     ):
         source_status = parameters.get("source_status", "inferred")
         if source_status not in {"explicit", "inferred", "default"}:
+            source_status = "inferred"
+        if source_status == "explicit":
+            # This value comes from the emotion table, which currently exposes
+            # only a coarse composition-level source. A truly explicit numeric
+            # major-object ratio is already handled by visual_scales above.
             source_status = "inferred"
         constraint = ConstraintSpec.model_validate(
             {
@@ -1889,7 +1976,7 @@ def _fit_static_camera_to_composition(
     projected = [
         item
         for item in candidate.constraints.values()
-        if item.type == "projected_size"
+        if item.type == "projected_size" and item.source_status == "explicit"
     ]
     focus_point, _ = _camera_focus(candidate, skeleton)
     transform_track = next(
@@ -2008,6 +2095,89 @@ def _fit_static_camera_to_composition(
             ]
 
 
+def _fit_open_environment_ground_to_camera(
+    objective: ObjectivePlanningBrief,
+    candidate: CandidateState,
+    profile: PlanningProfile,
+) -> None:
+    """Grow open preview ground around the camera path without changing scene scale."""
+
+    if candidate.camera is None:
+        return
+    scene = (objective.translation_parameters or {}).get("scene", {})
+    if scene.get("asset_key") == "interior":
+        return
+    transform_track = next(
+        (
+            item
+            for item in candidate.camera.tracks.values()
+            if item.type == "transform"
+        ),
+        None,
+    )
+    camera_positions = [candidate.camera.solved_transform.translation_m]
+    if transform_track is not None:
+        camera_positions.extend(
+            item.value.translation_m
+            for item in transform_track.keyframes
+            if isinstance(item.value, TransformValue)
+        )
+    positions = [item for item in camera_positions if item is not None]
+    if not positions:
+        return
+    semantic_dimensions = scene.get("dimensions_m")
+    semantic_extent = (
+        max(float(item) for item in semantic_dimensions)
+        if isinstance(semantic_dimensions, (list, tuple))
+        and semantic_dimensions
+        and all(isinstance(item, (int, float)) for item in semantic_dimensions)
+        else 0.0
+    )
+    # An open-environment plane is a cheap rendering backdrop, not the semantic
+    # coordinate system.  Keep a generous floor so shallow camera pitches do
+    # not reveal the finite edge as a void; the web viewer excludes this plane
+    # from content framing, so the larger proxy does not hide the real scene.
+    render_extent_floor = max(1000.0, semantic_extent * 5.0)
+
+    for entity_id, entity in list(candidate.entities.items()):
+        if (
+            entity.proxy.type != "plane"
+            or "environment" not in entity.tags
+            or "ground" not in entity.tags
+        ):
+            continue
+        center = entity.solved_transform.translation_m or (0.0, 0.0, 0.0)
+        current_x, current_y = entity.proxy.size_xy_m
+        maximum_height = max(abs(item[2] - center[2]) for item in positions)
+        margin = max(
+            10.0,
+            maximum_height * 8.0,
+            profile.default_depth_gap_m * 4.0,
+        )
+        required_x = 2.0 * max(
+            current_x / 2.0,
+            render_extent_floor / 2.0,
+            *(abs(item[0] - center[0]) + margin for item in positions),
+        )
+        required_y = 2.0 * max(
+            current_y / 2.0,
+            render_extent_floor / 2.0,
+            *(abs(item[1] - center[1]) + margin for item in positions),
+        )
+        if (
+            required_x <= current_x + profile.numeric_tolerance
+            and required_y <= current_y + profile.numeric_tolerance
+        ):
+            continue
+        candidate.entities[entity_id] = entity.model_copy(
+            update={
+                "proxy": entity.proxy.model_copy(
+                    update={"size_xy_m": (required_x, required_y)}
+                )
+            }
+        )
+
+
 def _speed_range(
     intent: str,
     profile: PlanningProfile,
@@ -2108,9 +2278,17 @@ def _design_assumptions(
     strategy: str,
     size_requests: dict[str, EntitySizeRequest],
 ) -> tuple[str, ...]:
+    has_subject_translation = any(
+        item.kind in {"linear_move", "orbit", "carried"}
+        for item in skeleton.motion_phases
+    )
     assumptions = [
         f"数值策略采用 {strategy}",
-        "未明确的世界方向由 Toolkit 选择斜侧可读方向",
+        (
+            "存在主体空间运动；未明确机位由 Toolkit 选择斜侧可读方向"
+            if has_subject_translation
+            else "不存在主体空间运动；摄影机自身运动不触发运动可读性附加斜角"
+        ),
         "所有范围都保留 explicit > inferred > default 的来源优先级",
     ]
     if not objective.translation_parameters:
@@ -2311,6 +2489,13 @@ def _composition_projected_sizes(
     source_status = parameters.get("source_status", "inferred")
     if source_status not in {"explicit", "inferred", "default"}:
         source_status = "inferred"
+    if source_status == "explicit" and not any(
+        requirement.path.startswith("content.composition.shot_size")
+        for requirement in objective.explicit_requirements
+    ):
+        # Do not let an unrelated explicit composition field promote every
+        # emotion-table ratio to an explicit camera instruction.
+        source_status = "inferred"
     return [
         (
             subject_id,
@@ -2491,7 +2676,7 @@ def _linear_phase_endpoint(
     fallback_direction: tuple[float, float],
 ) -> list[float]:
     endpoint = list(position)
-    if semantic_direction_mode == "world_forward":
+    if semantic_direction_mode == "world_forward" or phase.direction_mode == "world_forward":
         endpoint[1] -= 8.0
     elif phase.direction_mode == "toward_target" and phase.target_id:
         target_entity = candidate.entities[phase.target_id]
@@ -2514,7 +2699,7 @@ def _linear_phase_endpoint(
                 endpoint[1] = target[1] - delta_y / distance * clearance
     elif phase.direction_mode == "away_from_target":
         endpoint[0] += 8.0
-    elif phase.direction_mode == "screen_right_to_left":
+    elif phase.direction_mode == "world_left":
         endpoint[0] -= 8.0
     elif phase.direction_mode == "none":
         endpoint[0] += fallback_direction[0] * 8.0
@@ -2532,11 +2717,14 @@ def _selected_route_direction(
     selected = {
         phase.direction_mode
         for phase in phases
-        if phase.direction_mode in {"screen_left_to_right", "screen_right_to_left"}
+        if phase.direction_mode
+        in {"world_forward", "world_left", "world_right"}
     }
     if len(selected) > 1:
         raise ValueError("同一主体的未指定方向运动不能选择相反的局部路线")
-    if selected == {"screen_right_to_left"}:
+    if selected == {"world_forward"}:
+        return (0.0, -1.0)
+    if selected == {"world_left"}:
         return (-1.0, 0.0)
     return (1.0, 0.0)
 

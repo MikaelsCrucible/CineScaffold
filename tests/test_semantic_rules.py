@@ -394,6 +394,20 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
         self.assertEqual(parameters["scene_dynamics"]["mode"], "static")
 
+    def test_environmental_motion_does_not_change_subject_scene_dynamics(self) -> None:
+        content = valid_model_output()
+        content["scene_design"]["environmental_motion"] = ["风沙流动"]
+        content["scene_dynamics"] = {
+            "mode": "dynamic",
+            "source_status": "inferred",
+            "reason": "环境中有风沙",
+        }
+
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
+        self.assertEqual(parameters["scene_dynamics"]["mode"], "static")
+
     def test_explicit_push_in_overrides_neutral_static_numeric_profile(self) -> None:
         content = valid_model_output()
         content["camera"]["movement"]["type"] = self._annotated(

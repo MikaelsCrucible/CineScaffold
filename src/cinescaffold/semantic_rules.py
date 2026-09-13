@@ -659,7 +659,10 @@ def _normalize_motion_primitives(
 
 
 def _apply_scene_dynamics(content: dict[str, Any]) -> None:
-    dynamic = bool(content.get("scene_design", {}).get("environmental_motion"))
+    # scene_dynamics is deliberately subject-scoped.  Environmental effects
+    # such as wind, dust, clouds, or water do not turn an otherwise unchanged
+    # subject scene into a dynamic subject scene.
+    dynamic = False
     for motion in content.get("subject_motion", []):
         semantics = motion.get("motion_semantics")
         if not isinstance(semantics, dict):

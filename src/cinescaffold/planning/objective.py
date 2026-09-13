@@ -75,6 +75,35 @@ class ObjectiveProjection(_StrictModel):
     ignored_subjective_fields: list[IgnoredSubjectiveField]
 
 
+def has_subject_spatial_motion(objective: ObjectivePlanningBrief) -> bool:
+    """Return whether subjects translate in space, independent of camera motion."""
+
+    for motion in objective.subject_motion:
+        if not isinstance(motion, dict):
+            continue
+        semantics = motion.get("motion_semantics")
+        if isinstance(semantics, dict) and semantics.get("motion_mode") in {
+            "self_propelled",
+            "carried",
+        }:
+            return True
+    if any(
+        isinstance(item, dict)
+        and item.get("motion_type") not in {None, "", "static", "interactive"}
+        for item in (objective.translation_parameters or {}).get("motions", [])
+    ):
+        return True
+    # v0.1/v0.2 predate typed motion semantics.  Their structured trajectory
+    # field is the least ambiguous compatibility signal; do not reparse action
+    # prose or invent a target from it.
+    return any(
+        isinstance(motion, dict)
+        and isinstance(motion.get("trajectory"), dict)
+        and motion["trajectory"].get("value") not in {None, ""}
+        for motion in objective.subject_motion
+    )
+
+
 def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
     """在模型调用前剥离主观维度和原始提示词。"""
     schema_version = brief.get("schema_version")
@@ -94,10 +123,14 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
 
     if "scene_dynamics" not in content and schema_version != "0.6":
         content = deepcopy(content)
+        legacy_dynamic = _legacy_subject_scene_is_dynamic(
+            content,
+            translation_parameters,
+        )
         content["scene_dynamics"] = {
-            "mode": "dynamic" if content.get("subject_motion") else "static",
+            "mode": "dynamic" if legacy_dynamic else "static",
             "source_status": "default",
-            "reason": "旧版 Brief 兼容投影",
+            "reason": "旧版 Brief 按主体运动与状态转换兼容投影",
         }
     missing = [name for name in OBJECTIVE_CONTENT_FIELDS if name not in content]
     if missing:
@@ -146,6 +179,40 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
     return ObjectiveProjection(
         objective_brief=objective_brief,
         ignored_subjective_fields=ignored,
+    )
+
+
+def _legacy_subject_scene_is_dynamic(
+    content: dict[str, Any],
+    translation_parameters: dict[str, Any] | None,
+) -> bool:
+    """Apply the current subject-only dynamics contract to legacy briefs."""
+
+    for motion in content.get("subject_motion", []):
+        if not isinstance(motion, dict):
+            continue
+        semantics = motion.get("motion_semantics")
+        if not isinstance(semantics, dict):
+            continue
+        postconditions = semantics.get("postconditions")
+        changes_state = isinstance(postconditions, dict) and (
+            postconditions.get("contained_by_id") is not None
+            or postconditions.get("external_visibility") in {"visible", "hidden"}
+        )
+        if semantics.get("motion_mode") != "stationary" or changes_state:
+            return True
+    parameters = translation_parameters or {}
+    if any(
+        isinstance(item, dict)
+        and item.get("motion_type") not in {None, "", "static", "interactive"}
+        for item in parameters.get("motions", [])
+    ):
+        return True
+    return any(
+        isinstance(motion, dict)
+        and isinstance(motion.get("trajectory"), dict)
+        and motion["trajectory"].get("value") not in {None, ""}
+        for motion in content.get("subject_motion", [])
     )
 
 

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -100,6 +101,33 @@ class PlanningDesignTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing_event"):
             validate_scene_skeleton(objective, skeleton)
 
+    def test_static_subject_scene_rejects_changing_skeleton_phase(self) -> None:
+        objective = project_objective_brief(valid_planning_brief()).objective_brief
+        value = _desert_skeleton()
+        value["motion_phases"][0].update(
+            kind="linear_move",
+            direction_mode="world_forward",
+            path_family="linear",
+            speed_intent="slow",
+        )
+        skeleton = SceneSkeleton.model_validate(value)
+
+        with self.assertRaisesRegex(ValueError, "scene_dynamics=static"):
+            validate_scene_skeleton(objective, skeleton)
+
+    def test_motion_phase_direction_contract_rejects_accidental_target(self) -> None:
+        value = _pickup_skeleton()
+        phase = value["motion_phases"][1]
+        phase.update(direction_mode="world_forward", target_id=None)
+
+        skeleton = SceneSkeleton.model_validate(value)
+        self.assertEqual(skeleton.motion_phases[1].direction_mode, "world_forward")
+
+        phase["direction_mode"] = "none"
+        phase["target_id"] = "man"
+        with self.assertRaisesRegex(ValidationError, "不接受 target_id"):
+            SceneSkeleton.model_validate(value)
+
     def test_task_capabilities_are_filtered_by_skeleton(self) -> None:
         skeleton = SceneSkeleton.model_validate(_desert_skeleton())
         result = task_capability_slice(skeleton, PlanningProfile())
@@ -111,6 +139,19 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertEqual(
             result["route_planning"]["decision_owner"],
             "planning_agent",
+        )
+        self.assertFalse(
+            result["motion_readability"]["subject_translation_present"]
+        )
+        self.assertFalse(
+            result["motion_readability"][
+                "maximize_motion_readability_applicable"
+            ]
+        )
+        self.assertIsNone(
+            result["acceptance"][
+                "minimum_view_subject_motion_obliqueness_degrees"
+            ]
         )
         self.assertEqual(result["next_tool"], "apply_design_option")
 
@@ -175,8 +216,8 @@ class PlanningDesignTest(unittest.TestCase):
             result = toolkit.request_design_options(max_options=3)
 
         self.assertEqual(len(result["data"]["options"]), 1)
-        self.assertEqual(result["data"]["collapsed_duplicate_count"], 2)
-        self.assertEqual(len(result["data"]["duplicate_strategies"]), 2)
+        self.assertEqual(result["data"]["collapsed_duplicate_count"], 1)
+        self.assertEqual(len(result["data"]["duplicate_strategies"]), 1)
 
     def test_apply_design_option_materializes_atomically(self) -> None:
         toolkit = _desert_toolkit()
@@ -298,6 +339,14 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertAlmostEqual(clearance_m, constraint.parameters.minimum_meters)
         self.assertLessEqual(ratio, 0.5)
         self.assertGreater(characteristic_extent_m, 20.0)
+        self.assertLess(
+            math.dist(
+                state.camera.solved_transform.translation_m,
+                state.entities["man_01"].solved_transform.translation_m,
+            ),
+            100.0,
+        )
+        self.assertGreaterEqual(state.entities["ground"].proxy.size_xy_m[0], 1000.0)
 
     def test_far_layout_uses_scene_depth_not_oblique_camera_azimuth(self) -> None:
         toolkit = _desert_toolkit()
@@ -317,6 +366,131 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertEqual(
             state.entities["ship_01"].solved_transform.rotation_quaternion_wxyz,
             (1.0, 0.0, 0.0, 0.0),
+        )
+
+    def test_static_scene_rejects_motion_readability_strategy_and_uses_regular_yaw(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "scene_dynamics": {
+                    "mode": "static",
+                    "source_status": "inferred",
+                    "reason": "只有摄影机推近，主体状态不变",
+                }
+            }
+        )
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+
+        result = toolkit.request_design_options(
+            preference="maximize_motion_readability",
+            max_options=3,
+        )
+
+        self.assertEqual(result["data"]["preference_resolution"]["applied"], "balanced")
+        self.assertNotIn(
+            "maximize_motion_readability",
+            [item["strategy"] for item in result["data"]["options"]],
+        )
+        option = result["data"]["options"][0]
+        state = toolkit._design_options[option["option_id"]].candidate
+        camera_position = state.camera.solved_transform.translation_m
+        focus_position = state.entities["man_01"].solved_transform.translation_m
+        yaw = math.degrees(
+            math.atan2(
+                camera_position[0] - focus_position[0],
+                -(camera_position[1] - focus_position[1]),
+            )
+        )
+        self.assertAlmostEqual(yaw, 35.0)
+        self.assertTrue(
+            any("不存在主体空间运动" in item for item in option["assumptions"])
+        )
+
+    def test_non_explicit_projected_size_does_not_force_camera_retreat(self) -> None:
+        for source_status in ("default", "inferred", "explicit"):
+            with self.subTest(source_status=source_status):
+                toolkit = _desert_toolkit()
+                toolkit.objective_brief = toolkit.objective_brief.model_copy(
+                    update={
+                        "scene_dynamics": {
+                            "mode": "static",
+                            "source_status": "inferred",
+                            "reason": "静态构图回归",
+                        },
+                        "translation_parameters": _static_desert_translation_parameters(
+                            composition_source_status=source_status,
+                            major_object_frame_ratio=[0.01, 0.02],
+                        ),
+                    }
+                )
+                toolkit.submit_scene_skeleton(_desert_skeleton())
+
+                result = toolkit.request_design_options(max_options=1)
+                option = result["data"]["options"][0]
+                state = toolkit._design_options[option["option_id"]].candidate
+                camera_position = state.camera.solved_transform.translation_m
+                focus_position = state.entities["man_01"].solved_transform.translation_m
+
+                self.assertLess(math.dist(camera_position, focus_position), 100.0)
+                self.assertEqual(
+                    state.constraints[
+                        "design_major_object_projected_size"
+                    ].source_status,
+                    "inferred" if source_status == "explicit" else source_status,
+                )
+                self.assertIn(
+                    "PROJECTED_SIZE_VIOLATED",
+                    option["predicted"]["violation_codes"],
+                )
+
+    def test_open_ground_grows_to_cover_a_distant_camera_track(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "scene_dynamics": {
+                    "mode": "static",
+                    "source_status": "inferred",
+                    "reason": "静态构图回归",
+                },
+                "composition": {
+                    "patterns": [],
+                    "visual_scales": [
+                        {
+                            "subject_id": "ship_01",
+                            "scale": {
+                                "value": "1%-2%",
+                                "source_status": "explicit",
+                                "source_text": "飞船只占画面 1%-2%",
+                            },
+                        }
+                    ],
+                    "visibility_requirements": [],
+                },
+                "translation_parameters": _static_desert_translation_parameters(
+                    composition_source_status="explicit",
+                    major_object_frame_ratio=[0.01, 0.02],
+                ),
+            }
+        )
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+
+        result = toolkit.request_design_options(max_options=1)
+        option = result["data"]["options"][0]
+        state = toolkit._design_options[option["option_id"]].candidate
+        ground = state.entities["ground"]
+        camera_track = next(iter(state.camera.tracks.values()))
+        camera_positions = [
+            keyframe.value.translation_m for keyframe in camera_track.keyframes
+        ]
+
+        self.assertGreaterEqual(ground.proxy.size_xy_m[0], 1000.0)
+        self.assertGreaterEqual(ground.proxy.size_xy_m[1], 1000.0)
+        self.assertTrue(
+            all(
+                abs(position[0]) < ground.proxy.size_xy_m[0] / 2.0
+                and abs(position[1]) < ground.proxy.size_xy_m[1] / 2.0
+                for position in camera_positions
+            )
         )
 
     def test_static_composition_keeps_small_subject_and_major_object_visible(self) -> None:
@@ -366,7 +540,9 @@ class PlanningDesignTest(unittest.TestCase):
         option = result["data"]["options"][0]
         state = toolkit._design_options[option["option_id"]].candidate
 
-        self.assertEqual(option["predicted"]["soft_score"], 1.0)
+        self.assertTrue(option["predicted"]["hard_pass"])
+        self.assertTrue(option["predicted"]["commit_ready"])
+        self.assertLess(option["predicted"]["soft_score"], 1.0)
         self.assertEqual(
             state.constraints["design_major_object_projected_size"].subjects,
             ["ship_01"],
@@ -813,8 +989,8 @@ class PlanningDesignTest(unittest.TestCase):
         for index, value in semantics.items():
             toolkit.objective_brief.subject_motion[index]["motion_semantics"] = value
         skeleton = _pickup_skeleton()
-        skeleton["motion_phases"][4]["target_id"] = None
-        skeleton["motion_phases"][4]["direction_mode"] = "screen_left_to_right"
+        skeleton["motion_phases"][5]["target_id"] = None
+        skeleton["motion_phases"][5]["direction_mode"] = "world_right"
         toolkit.submit_scene_skeleton(skeleton)
 
         options = toolkit.request_design_options(max_options=1)
@@ -1116,6 +1292,34 @@ def _desert_toolkit() -> ScenePlanningToolkit:
         fps_denominator=1,
     )
     return ScenePlanningToolkit(attach_duration_resolution(objective, resolution))
+
+
+def _static_desert_translation_parameters(
+    *,
+    composition_source_status: str,
+    major_object_frame_ratio: list[float],
+) -> dict:
+    return {
+        "scene": {
+            "asset_key": "desert",
+            "dimensions_m": [200.0, 200.0],
+            "source_status": "inferred",
+        },
+        "camera": {
+            "height_m": 1.5,
+            "focal_length_mm": 50.0,
+            "movement": "push_in",
+            "start_distance_m": 15.0,
+            "end_distance_m": 5.0,
+            "source_status": "default",
+        },
+        "composition": {
+            "subject_frame_ratio": [0.05, 0.1],
+            "major_object_frame_ratio": major_object_frame_ratio,
+            "negative_space_ratio": [0.6, 0.7],
+            "source_status": composition_source_status,
+        },
+    }
 
 
 def _example_toolkit(filename: str) -> ScenePlanningToolkit:

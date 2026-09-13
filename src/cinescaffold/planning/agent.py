@@ -774,11 +774,26 @@ async def _prepare_scene_skeleton_tool(
 ) -> ToolDefinition | None:
     if ctx.deps.capabilities_read or ctx.deps.toolkit.design_option_applied:
         return None
-    return (
+    prepared = (
         tool_definition
         if not ctx.deps.toolkit.has_scene_skeleton
         or ctx.deps.toolkit.design_search_failed
         else None
+    )
+    if prepared is None or not hasattr(prepared, "description"):
+        return prepared
+    toolkit = ctx.deps.toolkit
+    return replace(
+        prepared,
+        description=(
+            (prepared.description or "")
+            + f" 当前 scene_dynamics={toolkit.scene_dynamics_mode}，"
+            + (
+                "Objective 含主体空间运动；应按各主体时间线提交相应 linear_move/orbit/carried。"
+                if toolkit.objective_has_subject_spatial_motion
+                else "Objective 不含主体空间运动；不得因摄影机运动添加主体位移阶段。"
+            )
+        ),
     )
 
 
@@ -789,7 +804,20 @@ async def _prepare_design_options_tool(
     toolkit = ctx.deps.toolkit
     if ctx.deps.capabilities_read or toolkit.design_option_applied:
         return None
-    return tool_definition if toolkit.has_scene_skeleton else None
+    if not toolkit.has_scene_skeleton:
+        return None
+    if not toolkit.has_subject_translation:
+        if not hasattr(tool_definition, "description"):
+            return tool_definition
+        return replace(
+            tool_definition,
+            description=(
+                (tool_definition.description or "")
+                + f" 当前 scene_dynamics={toolkit.scene_dynamics_mode}，且没有主体空间运动；"
+                "摄影机自身运动不算主体运动，maximize_motion_readability 不适用并会由 Toolkit 忽略。"
+            ),
+        )
+    return tool_definition
 
 
 async def _prepare_design_apply_tool(
@@ -874,7 +902,20 @@ async def _prepare_repair_suggestion_tool(
         return None
     if ctx.deps.toolkit.has_current_repair_suggestions:
         return None
-    return prepared if ctx.deps.toolkit.has_repairable_violations else None
+    if not ctx.deps.toolkit.has_repairable_violations:
+        return None
+    if not ctx.deps.toolkit.has_subject_translation:
+        if not hasattr(prepared, "description"):
+            return prepared
+        return replace(
+            prepared,
+            description=(
+                (prepared.description or "")
+                + " 当前没有主体空间运动；maximize_motion_readability 不适用，"
+                "摄影机自身推拉或环绕不能作为选择该偏好的理由。"
+            ),
+        )
+    return prepared
 
 
 async def _prepare_repair_apply_tool(
@@ -904,7 +945,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         ctx: RunContext[PlanningDeps],
         skeleton: SceneSkeleton,
     ) -> dict[str, Any]:
-        """提交实体、关系、动作阶段、符号路径点和摄影机意图；不得包含坐标或尺寸。"""
+        """提交实体、关系、主体动作阶段、符号路径点和独立摄影机意图；不得包含坐标或尺寸。static 仅允许主体 hold，运镜不改变该分类。"""
         arguments = {"skeleton": skeleton.model_dump(mode="json")}
         return ctx.deps.call_tool(
             "submit_scene_skeleton",
@@ -923,7 +964,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         max_options: int = 3,
         custom_size_requests: list[EntitySizeRequest] | None = None,
     ) -> dict[str, Any]:
-        """让 Toolkit 联合求解数值候选；可请求受约束的三轴尺寸范围。"""
+        """联合求解候选。balanced 是一般默认；preserve_composition 保护构图；maximize_motion_readability 仅强化主体空间运动，不包括摄影机自身运动。"""
         arguments = {
             "preference": preference,
             "max_options": max_options,
@@ -1205,7 +1246,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         ] = "balanced",
         max_options: int = 3,
     ) -> dict[str, Any]:
-        """为投影或机位 violation 搜索一至三个经复验的整体策略，不修改 Candidate。"""
+        """搜索经复验的机位修复。balanced 折中，minimize_change 优先少改，preserve_composition 保护构图；maximize_motion_readability 仅适用于主体空间运动。"""
         arguments = {
             "revision": revision,
             "violation_ids": violation_ids or [],

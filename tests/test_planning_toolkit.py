@@ -53,7 +53,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             1.2,
         )
         self.assertEqual(
-            result["data"]["acceptance"]["minimum_camera_motion_obliqueness_degrees"],
+            result["data"]["acceptance"][
+                "minimum_view_subject_motion_obliqueness_degrees"
+            ],
             20.0,
         )
         self.assertFalse(result["data"]["acceptance"]["commit_ready"])
@@ -65,6 +67,16 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(
             result["data"]["semantic_distinctions"]["relative_position_front_behind"],
             "规范世界 -Y/+Y；不表示摄影机深度",
+        )
+        self.assertIn(
+            "摄影机推拉",
+            result["data"]["semantic_distinctions"]["scene_dynamics"],
+        )
+        self.assertEqual(
+            result["data"]["repair_suggestions"][
+                "maximize_motion_readability_scope"
+            ],
+            "subject_spatial_motion_only",
         )
         relative_schema = result["data"]["constraint_parameter_schemas"][
             "relative_position"
@@ -1931,7 +1943,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         violation = next(
             item
             for item in validation["violations"]
-            if item["code"] == "CAMERA_MOTION_NEAR_COLLINEAR"
+            if item["code"] == "VIEW_SUBJECT_MOTION_NEAR_COLLINEAR"
         )
 
         self.assertNotIn("PROJECTED_MOTION_UNREADABLE", codes)
@@ -1952,7 +1964,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             {item["code"] for item in validation["violations"]},
         )
         self.assertNotIn(
-            "CAMERA_MOTION_NEAR_COLLINEAR",
+            "VIEW_SUBJECT_MOTION_NEAR_COLLINEAR",
             {item["code"] for item in validation["violations"]},
         )
 
@@ -1981,7 +1993,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         collinear = next(
             item
             for item in validation["violations"]
-            if item["code"] == "CAMERA_MOTION_NEAR_COLLINEAR"
+            if item["code"] == "VIEW_SUBJECT_MOTION_NEAR_COLLINEAR"
         )
         self.assertTrue(validation["data"]["hard_pass"])
         self.assertEqual(violation["severity"], "warning")
@@ -2009,7 +2021,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         violation = next(
             item
             for item in validation["violations"]
-            if item["code"] == "CAMERA_MOTION_NEAR_COLLINEAR"
+            if item["code"] == "VIEW_SUBJECT_MOTION_NEAR_COLLINEAR"
         )
 
         self.assertFalse(validation["data"]["hard_pass"])
@@ -2041,7 +2053,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertTrue(applied["data"]["prediction_matched"])
         self.assertEqual(applied["data"]["after"]["target_violation_count"], 0)
         self.assertNotIn(
-            "CAMERA_MOTION_NEAR_COLLINEAR",
+            "VIEW_SUBJECT_MOTION_NEAR_COLLINEAR",
             {item["code"] for item in applied["violations"]},
         )
 

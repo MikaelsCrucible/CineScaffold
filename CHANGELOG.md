@@ -19,6 +19,10 @@
 
 ### Changed
 
+- Toolkit v0.34 统一 Semantic、Planning Prompt、Scene Skeleton Schema、Design Options 和 Repair 的运动术语：`scene_dynamics` 只判断主体状态，`subject_spatial_motion` 只表示主体位移，`camera_motion` 独立。无主体位移时不再暴露或采用 `maximize_motion_readability`，未明确观察关系的静态主体场景恢复为普通 35° 斜侧机位。
+- Agent 骨架的方向枚举由容易误解成屏幕坐标的 `screen_left_to_right/screen_right_to_left` 改为真实执行语义 `world_right/world_left`；目标、载体、路径族、静止阶段和方向字段的矛盾组合在数值 Design 前直接拒绝。
+- 情绪表生成的主要物体画幅比例无论整组 composition 来源如何都保持 inferred；只有字段级 explicit 画幅要求可主动移动摄影机。开放环境代理地面按摄影机轨迹扩展为至少 1000 m 的渲染背景，语义场景范围和主体距离不变。
+- 线性主体运动的共线错误更名为 `VIEW_SUBJECT_MOTION_NEAR_COLLINEAR`，避免把“摄影机观察方向与主体运动方向接近共线”误读成摄影机自身运动；提示词、任务相关能力和 Repair 说明使用同一名称与适用条件。
 - Toolkit v0.33 把场景语义深度与摄影机方位角解耦：普通 far/background 沿稳定场景纵深轴摆放，摄影机仍可从斜侧观察；镜头角度不再把背景主体无依据地移到参考主体侧后方。
 - “远处/背景”不再使用较大主体尺寸归一化净空。Design 沿稳定场景纵深轴布置前后景，以环境代理的方向范围确定场景级绝对净空；主体尺寸只用于把中心位置换算为真实表面边界。静态摄影机根据全部 projected-size 上界整体后移，保持原推镜行程与速度。
 - Design Options 先按完整 Validator 的 soft score 排序，再使用请求的策略顺序破同分；构图与实际入框问题也可进入确定性摄影机 Repair 搜索。

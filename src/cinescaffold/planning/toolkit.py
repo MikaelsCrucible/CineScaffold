@@ -55,11 +55,14 @@ from cinescaffold.planning.geometry import (
     surface_clearance_target_distance,
     surface_clearance_target_distance_m,
 )
-from cinescaffold.planning.objective import ObjectivePlanningBrief
+from cinescaffold.planning.objective import (
+    ObjectivePlanningBrief,
+    has_subject_spatial_motion,
+)
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.33"
+TOOLKIT_VERSION = "0.34"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -140,7 +143,7 @@ INSPECT_VIEWS = [
 CAMERA_SINGLETON_TRACK_TYPES = {"transform", "path_follow", "look_at", "focal_length"}
 ENTITY_SINGLETON_TRACK_TYPES = {"transform", "path_follow", "visibility", "look_at"}
 REPAIRABLE_VIOLATION_CODES = {
-    "CAMERA_MOTION_NEAR_COLLINEAR",
+    "VIEW_SUBJECT_MOTION_NEAR_COLLINEAR",
     "ENTITY_OUT_OF_FRAME",
     "NEGATIVE_SPACE_VIOLATED",
     "PROJECTED_MOTION_UNREADABLE",
@@ -312,6 +315,24 @@ class ScenePlanningToolkit:
     @property
     def design_option_applied(self) -> bool:
         return bool(self.store.get().entities)
+
+    @property
+    def scene_dynamics_mode(self) -> str:
+        return str(self.objective_brief.scene_dynamics.get("mode") or "dynamic")
+
+    @property
+    def objective_has_subject_spatial_motion(self) -> bool:
+        return has_subject_spatial_motion(self.objective_brief)
+
+    @property
+    def has_subject_translation(self) -> bool:
+        return bool(
+            self._scene_skeleton
+            and any(
+                item.kind in {"linear_move", "orbit", "carried"}
+                for item in self._scene_skeleton.motion_phases
+            )
+        )
 
     @property
     def has_repairable_violations(self) -> bool:
@@ -594,6 +615,12 @@ class ScenePlanningToolkit:
                 },
             },
             "semantic_distinctions": {
+                "scene_dynamics": (
+                    "只描述主体状态；摄影机推拉、横移、环绕或变焦不把静态主体场景变成 dynamic"
+                ),
+                "motion_readability_scope": (
+                    "仅适用于 linear_move/orbit/carried 主体空间运动；摄影机自身运动不计入"
+                ),
                 "relative_position_front_behind": "规范世界 -Y/+Y；不表示摄影机深度",
                 "camera_depth_order": "使用 depth_order；深度沿摄影机 -Z 前向取正值",
                 "far_scene_reference": (
@@ -603,7 +630,8 @@ class ScenePlanningToolkit:
                 ),
                 "keep_in_frame": "只验证自身投影包围盒入框比例，不验证被其他实体遮挡的比例",
                 "composition_bundle": (
-                    "主体与主要物体投影尺度、有效入框时间和屏幕负空间联合衡量构图"
+                    "主体与主要物体投影尺度、有效入框时间和屏幕负空间联合衡量构图；"
+                    "只有 explicit 画幅比例可主动驱动机位重排；inferred/default 范围只参与评分"
                 ),
                 "look_at_precedence": "生效的 look_at Track 覆盖摄影机 Transform Track 的旋转",
                 "path_follow_precedence": (
@@ -615,7 +643,7 @@ class ScenePlanningToolkit:
                     "moving 主体在每个语义动作阶段必须产生足够的屏幕轨迹范围或投影尺度变化；"
                     "不能用沿镜头纵深的微小尺寸变化冒充对白模可读的运动"
                 ),
-                "default_camera_motion_obliqueness": (
+                "default_view_to_subject_motion_obliqueness": (
                     "未明确摄影机方向时，线性主体运动不得采用近似迎面或背后共线机位；"
                     "明确机位保留用户要求并降为 warning"
                 ),
@@ -623,6 +651,7 @@ class ScenePlanningToolkit:
             "repair_suggestions": {
                 "supported_violation_codes": sorted(REPAIRABLE_VIOLATION_CODES),
                 "preferences": sorted(REPAIR_PREFERENCES),
+                "maximize_motion_readability_scope": "subject_spatial_motion_only",
                 "contract": (
                     "Agent 选择整体策略；Toolkit 确定性搜索具体摄影机数值，"
                     "suggest_repairs 不修改 Candidate，apply_repair 原子应用已验证建议"
@@ -643,8 +672,8 @@ class ScenePlanningToolkit:
                 "minimum_projected_motion_scale_ratio": (
                     self.profile.minimum_projected_motion_scale_ratio
                 ),
-                "minimum_camera_motion_obliqueness_degrees": (
-                    self.profile.minimum_camera_motion_obliqueness_degrees
+                "minimum_view_subject_motion_obliqueness_degrees": (
+                    self.profile.minimum_view_subject_motion_obliqueness_degrees
                 ),
             },
             "supported_constraints": sorted(SUPPORTED_CONSTRAINTS),
@@ -917,7 +946,18 @@ class ScenePlanningToolkit:
             )
         self._last_design_request_hash = request_hash
         self._design_options.clear()
-        order = [preference, *sorted(allowed - {preference})][:max_options]
+        applicable = set(allowed)
+        preference_reason = None
+        if not self.has_subject_translation:
+            applicable.remove("maximize_motion_readability")
+            preference_reason = (
+                "场景没有主体空间运动；摄影机运动不构成运动可读性策略的适用条件"
+            )
+        applied_preference = preference if preference in applicable else "balanced"
+        order = [
+            applied_preference,
+            *sorted(applicable - {applied_preference}),
+        ][:max_options]
         base = self.store.get()
         skeleton_sha256 = skeleton_hash(self._scene_skeleton)
         options: list[DesignOption] = []
@@ -1021,6 +1061,12 @@ class ScenePlanningToolkit:
                 "selection_rule": (
                     "先保留 explicit，再比较 hard violation、soft score 与策略偏好"
                 ),
+                "preference_resolution": {
+                    "requested": preference,
+                    "applied": applied_preference,
+                    "subject_translation_present": self.has_subject_translation,
+                    "reason": preference_reason,
+                },
                 "custom_size_request_count": len(size_requests),
                 "collapsed_duplicate_count": len(duplicate_strategies),
                 "duplicate_strategies": duplicate_strategies,
@@ -2061,6 +2107,13 @@ class ScenePlanningToolkit:
             )
         if not 1 <= max_options <= 3:
             return _rejected(selected_revision, "max_options 必须位于 1 到 3")
+        applied_preference = preference
+        preference_reason = None
+        if preference == "maximize_motion_readability" and not self.has_subject_translation:
+            applied_preference = "balanced"
+            preference_reason = (
+                "场景没有主体空间运动；摄影机自身运动不构成运动可读性策略的适用条件"
+            )
 
         state = self.store.get(selected_revision)
         report = self._validate(state, FULL_VALIDATION_CHECKS)
@@ -2090,6 +2143,12 @@ class ScenePlanningToolkit:
                     "baseline": _repair_report_summary(report, ()),
                     "options": [],
                     "evaluated_candidates": 0,
+                    "preference_resolution": {
+                        "requested": preference,
+                        "applied": applied_preference,
+                        "subject_translation_present": self.has_subject_translation,
+                        "reason": preference_reason,
+                    },
                 },
                 warnings=["当前 revision 没有可由建议接口处理的非 warning violation"],
             )
@@ -2107,6 +2166,12 @@ class ScenePlanningToolkit:
                     ),
                     "options": [],
                     "evaluated_candidates": 0,
+                    "preference_resolution": {
+                        "requested": preference,
+                        "applied": applied_preference,
+                        "subject_translation_present": self.has_subject_translation,
+                        "reason": preference_reason,
+                    },
                 },
                 capability_gaps=[gap],
             )
@@ -2116,7 +2181,7 @@ class ScenePlanningToolkit:
             state,
             report,
             selected,
-            preference,
+            applied_preference,
             max_options,
         )
         for repair in repairs:
@@ -2135,6 +2200,12 @@ class ScenePlanningToolkit:
                     "先减少目标 hard violation，再避免新增非目标 hard violation，"
                     "最后按 preference 与最小改动排序"
                 ),
+                "preference_resolution": {
+                    "requested": preference,
+                    "applied": applied_preference,
+                    "subject_translation_present": self.has_subject_translation,
+                    "reason": preference_reason,
+                },
             },
             warnings=(
                 []
@@ -2374,7 +2445,7 @@ class ScenePlanningToolkit:
                 )
             )
             violations.extend(
-                _camera_motion_collinearity_violations(
+                _view_subject_motion_collinearity_violations(
                     state,
                     self.objective_brief,
                     self.profile,
@@ -2741,7 +2812,7 @@ def _camera_repair_parameter_grid(
 
     codes = set(target_codes)
     values: list[tuple[float, float, float]] = []
-    if "CAMERA_MOTION_NEAR_COLLINEAR" in codes:
+    if "VIEW_SUBJECT_MOTION_NEAR_COLLINEAR" in codes:
         values.extend(
             (yaw, distance, 1.0)
             for yaw in (-30.0, 30.0, -45.0, 45.0, -60.0, 60.0, -90.0, 90.0)
@@ -3006,6 +3077,19 @@ def _design_report_summary(
 
 
 def _design_option_payload(option: DesignOption) -> dict[str, Any]:
+    subject_motion_readability_applicable = bool(
+        option.relevant_capabilities.get("motion_readability", {}).get(
+            "maximize_motion_readability_applicable"
+        )
+    )
+    tradeoffs = {
+        "balanced": ["折中保持构图与主体运动的屏幕可读性"],
+        "preserve_composition": ["摄影机倾向后移，主体运动幅度可能较弱"],
+        "maximize_motion_readability": ["斜侧角更大，可能偏离缺省构图"],
+    }
+    if not subject_motion_readability_applicable:
+        tradeoffs["balanced"] = ["没有主体空间运动；使用常规构图机位"]
+        tradeoffs["preserve_composition"] = ["没有主体空间运动；优先保留构图关系"]
     return {
         "option_id": option.option_id,
         "base_revision": option.base_revision,
@@ -3014,11 +3098,7 @@ def _design_option_payload(option: DesignOption) -> dict[str, Any]:
         "assumptions": list(option.assumptions),
         "relevant_capabilities": option.relevant_capabilities,
         "predicted": option.predicted,
-        "tradeoffs": {
-            "balanced": ["折中保持构图与屏幕运动可读性"],
-            "preserve_composition": ["摄影机倾向后移，运动幅度可能较弱"],
-            "maximize_motion_readability": ["斜侧角更大，可能偏离缺省构图"],
-        }[option.strategy],
+        "tradeoffs": tradeoffs[option.strategy],
     }
 
 
@@ -4252,7 +4332,7 @@ def _projected_motion_readability_violations(
     return violations
 
 
-def _camera_motion_collinearity_violations(
+def _view_subject_motion_collinearity_violations(
     state: CandidateState,
     objective_brief: ObjectivePlanningBrief,
     profile: PlanningProfile,
@@ -4321,7 +4401,7 @@ def _camera_motion_collinearity_violations(
             continue
         median_obliqueness = median(obliqueness_degrees)
         if median_obliqueness + profile.numeric_tolerance >= (
-            profile.minimum_camera_motion_obliqueness_degrees
+            profile.minimum_view_subject_motion_obliqueness_degrees
         ):
             continue
         message = (
@@ -4332,13 +4412,13 @@ def _camera_motion_collinearity_violations(
         if explicit_direction:
             message += "；Brief 已明确摄影机方向，因此仅记录警告"
         violation = _violation(
-            "CAMERA_MOTION_NEAR_COLLINEAR",
+            "VIEW_SUBJECT_MOTION_NEAR_COLLINEAR",
             message,
             entity_ids=[subject_id],
             time_range_seconds=(start, end),
             expected={
                 "minimum_median_obliqueness_degrees": (
-                    profile.minimum_camera_motion_obliqueness_degrees
+                    profile.minimum_view_subject_motion_obliqueness_degrees
                 ),
                 "purpose": "避免缺省摄影机采用迎面或背面共线机位",
             },
