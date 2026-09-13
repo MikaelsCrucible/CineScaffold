@@ -125,7 +125,7 @@ python -c "import cinescaffold; print(cinescaffold.__version__)"
 生产环境应依赖正式 tag 或完整 commit，而不是 `main`：
 
 ```text
-cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.16
+cinescaffold @ git+https://github.com/MikaelsCrucible/CineScaffold.git@v0.8.17
 ```
 
 嵌入式调用只依赖 [`cinescaffold.api`](src/cinescaffold/api.py) 的公共入口；`planning`、`execution` 等子模块属于内部实现：

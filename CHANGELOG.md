@@ -28,6 +28,7 @@
 
 ### Fixed
 
+- Core 0.8.17 / Semantic Parser v0.9 修复 `timeline.events` 时间字段的传输容错与确定性规则互相矛盾：模型为静态场景多生成事件并把范围留空时，Core 会在不增加 Provider 请求的情况下归一化为完整镜头；与已有主体动作绑定的事件会从动作范围确定性恢复。Prompt 同时明确持续静态镜头无需虚构事件，已输出事件不得使用空范围。完整离线回归 331 项通过。
 - 修复 `environmental_motion` 因路径前缀过宽而被错误绑定到地面实体的问题。环境特效运动现在明确留给最终视频生成层，白模规划会记录忽略原因。
 - 修复 deterministic fallback 把局部互动降级为 hold、丢失抛物线路径、只实现 push-in 摄影机以及忽略 `view_relation_to_motion/match_subject` 的跨层漂移。
 - 修复摄影机 `focus_target_id` 与 `view_relation_to_motion` 仅检查来源标签、候选 Patch 后不复验真实机位的问题；相对视角现在按实际主体运动轴求解并做几何 hard 验证。

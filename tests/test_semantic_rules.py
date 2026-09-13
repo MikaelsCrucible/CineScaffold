@@ -442,6 +442,83 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
         self.assertEqual(parameters["scene_dynamics"]["mode"], "static")
 
+    def test_static_scene_repairs_null_event_range_without_another_model_call(self) -> None:
+        content = valid_model_output()
+        content["camera"]["movement"]["type"] = self._annotated(
+            "缓慢推近",
+            "镜头缓慢推近",
+        )
+        content["timeline"]["events"] = [
+            {
+                "id": "static_shot",
+                "description": "人物站立，镜头缓慢推近",
+                "start_time_seconds": None,
+                "end_time_seconds": None,
+                "reference_ids": [],
+                "source_status": "inferred",
+                "source_text": "一个男人站在荒漠里，镜头缓慢推近",
+            }
+        ]
+        validate_model_output(content, self.model_schema)
+
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        event = normalized["timeline"]["events"][0]
+        self.assertEqual(event["start_time_seconds"], 0.0)
+        self.assertEqual(event["end_time_seconds"], 15.0)
+        self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
+        self.assertEqual(parameters["scene_dynamics"]["mode"], "static")
+
+    def test_event_range_is_recovered_from_linked_typed_motion(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": "person",
+                "category": self._annotated("人", "一个人"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            }
+        ]
+        motion = self._motion(
+            "person",
+            "向前走",
+            action_kind="locomotion",
+            motion_type="walking",
+            motion_mode="self_propelled",
+            direction_mode="world_forward",
+            path_type="linear",
+            timeline_event_id="walk",
+        )
+        motion["start_time_seconds"] = 2.0
+        motion["end_time_seconds"] = 8.0
+        content["subject_motion"] = [motion]
+        content["timeline"].update(
+            {
+                "duration_seconds": 10.0,
+                "duration_source_status": "explicit",
+                "events": [
+                    {
+                        "id": "walk",
+                        "description": "人物向前走",
+                        "start_time_seconds": None,
+                        "end_time_seconds": None,
+                        "reference_ids": ["person"],
+                        "source_status": "inferred",
+                        "source_text": "一个人向前走",
+                    }
+                ],
+            }
+        )
+        validate_model_output(content, self.model_schema)
+
+        normalized, _parameters = apply_translation_rules(content, self.rules)
+
+        event = normalized["timeline"]["events"][0]
+        self.assertEqual(event["start_time_seconds"], 2.0)
+        self.assertEqual(event["end_time_seconds"], 8.0)
+        self.assertEqual(normalized["scene_dynamics"]["mode"], "dynamic")
+
     def test_environmental_motion_does_not_change_subject_scene_dynamics(self) -> None:
         content = valid_model_output()
         content["scene_design"]["environmental_motion"] = ["风沙流动"]
