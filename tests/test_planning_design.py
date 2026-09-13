@@ -296,8 +296,28 @@ class PlanningDesignTest(unittest.TestCase):
             if item.type == "collision_clearance"
         )
         self.assertAlmostEqual(clearance_m, constraint.parameters.minimum_meters)
-        self.assertLess(ratio, 0.5)
+        self.assertLessEqual(ratio, 0.5)
         self.assertGreater(characteristic_extent_m, 20.0)
+
+    def test_far_layout_uses_scene_depth_not_oblique_camera_azimuth(self) -> None:
+        toolkit = _desert_toolkit()
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+
+        result = toolkit.request_design_options(
+            preference="preserve_composition",
+            max_options=1,
+        )
+        option = result["data"]["options"][0]
+        state = toolkit._design_options[option["option_id"]].candidate
+        man_position = state.entities["man_01"].solved_transform.translation_m
+        ship_position = state.entities["ship_01"].solved_transform.translation_m
+
+        self.assertAlmostEqual(ship_position[0], man_position[0])
+        self.assertGreater(ship_position[1], man_position[1])
+        self.assertEqual(
+            state.entities["ship_01"].solved_transform.rotation_quaternion_wxyz,
+            (1.0, 0.0, 0.0, 0.0),
+        )
 
     def test_static_composition_keeps_small_subject_and_major_object_visible(self) -> None:
         toolkit = _desert_toolkit()

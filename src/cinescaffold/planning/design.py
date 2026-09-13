@@ -23,10 +23,12 @@ from cinescaffold.planning.domain import (
 )
 from cinescaffold.planning.geometry import (
     directional_support_extent,
+    dot,
     look_at_camera_quaternion,
     normalize,
     project_geometry_bounds,
     sample_transform_track,
+    subtract,
     surface_clearance_target_distance_m,
 )
 from cinescaffold.planning.objective import ObjectivePlanningBrief
@@ -594,7 +596,14 @@ def build_design_candidate(
     )
     _add_speed_constraints(objective, skeleton, candidate, profile)
     _add_composition_constraints(objective, skeleton, candidate)
-    if objective.scene_dynamics.get("mode") == "static":
+    has_subject_translation = any(
+        phase.kind in {"linear_move", "orbit", "carried"}
+        for phase in skeleton.motion_phases
+    )
+    if (
+        objective.scene_dynamics.get("mode") == "static"
+        or not has_subject_translation
+    ):
         _fit_static_camera_to_composition(candidate, skeleton, profile)
     assumptions = _design_assumptions(
         objective,
@@ -813,17 +822,10 @@ def _camera_yaw_degrees(view: str, strategy: str) -> float:
     }[view]
 
 
-def _camera_forward_ground_direction(
-    skeleton: SceneSkeleton,
-    strategy: str,
-) -> tuple[float, float, float]:
-    yaw = math.radians(
-        _camera_yaw_degrees(
-            skeleton.camera_intent.view_relation_to_motion,
-            strategy,
-        )
-    )
-    return normalize((-math.sin(yaw), math.cos(yaw), 0.0))
+def _scene_background_ground_direction() -> tuple[float, float, float]:
+    """Keep semantic scene depth independent from the observing camera azimuth."""
+
+    return (0.0, 1.0, 0.0)
 
 
 def _scene_reference_clearance_m(
@@ -874,10 +876,10 @@ def _place_entities(
         subject_position = list(subject.solved_transform.translation_m or (0.0, 0.0, 0.0))
         reference_position = reference.solved_transform.translation_m or (0.0, 0.0, 0.0)
         if relation.kind == "camera_depth_order":
-            # "Far" belongs to the scene/camera reference frame. Object size only
+            # "Far" belongs to the scene reference frame. Object size only
             # contributes its surface support; it must never enlarge the requested
             # empty gap merely because the object itself is large.
-            direction = _camera_forward_ground_direction(skeleton, strategy)
+            direction = _scene_background_ground_direction()
             clearance_m = _scene_reference_clearance_m(
                 candidate,
                 direction,
@@ -991,7 +993,7 @@ def _build_relation_constraints(
         }
         payloads: list[dict[str, Any]] = []
         if relation.kind == "camera_depth_order":
-            direction = _camera_forward_ground_direction(skeleton, strategy)
+            direction = _scene_background_ground_direction()
             clearance_m = _scene_reference_clearance_m(
                 candidate,
                 direction,
@@ -1889,8 +1891,6 @@ def _fit_static_camera_to_composition(
         for item in candidate.constraints.values()
         if item.type == "projected_size"
     ]
-    if not projected:
-        return
     focus_point, _ = _camera_focus(candidate, skeleton)
     transform_track = next(
         (
@@ -1910,13 +1910,38 @@ def _fit_static_camera_to_composition(
             if isinstance(item.value, TransformValue)
         ]
 
-    # Projection is approximately inverse-depth. Two passes absorb the small
-    # pitch and proxy-bound differences while preserving the original dolly span.
-    for _ in range(2):
+    # Projection is approximately inverse-depth. Repeated passes absorb pitch,
+    # proxy bounds and the re-aimed camera while preserving the dolly span.
+    for _ in range(3):
         required_offset = 0.0
         for camera_transform in camera_samples():
             if camera_transform.translation_m is None:
                 continue
+            camera_forward = normalize(
+                subtract(focus_point, camera_transform.translation_m)
+            )
+            for entity in candidate.entities.values():
+                if entity.proxy.type == "plane" or "environment" in entity.tags:
+                    continue
+                entity_position = entity.solved_transform.translation_m or (
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+                center_depth = dot(
+                    subtract(entity_position, camera_transform.translation_m),
+                    camera_forward,
+                )
+                near_surface_depth = center_depth - directional_support_extent(
+                    entity.proxy,
+                    entity.solved_transform,
+                    camera_forward,
+                )
+                if near_surface_depth <= profile.default_depth_gap_m:
+                    required_offset = max(
+                        required_offset,
+                        profile.default_depth_gap_m - near_surface_depth,
+                    )
             for constraint in projected:
                 entity_id = constraint.parameters.entity_id
                 entity = candidate.entities.get(entity_id)

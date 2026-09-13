@@ -59,7 +59,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.32"
+TOOLKIT_VERSION = "0.33"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -598,7 +598,8 @@ class ScenePlanningToolkit:
                 "camera_depth_order": "使用 depth_order；深度沿摄影机 -Z 前向取正值",
                 "far_scene_reference": (
                     "远处净空按环境/场景参考范围冻结；主体尺寸只参与表面边界，"
-                    "不会同比放大远近语义"
+                    "不会同比放大远近语义；初始背景布局沿场景 +Y 纵深轴，"
+                    "不继承摄影机方位角"
                 ),
                 "keep_in_frame": "只验证自身投影包围盒入框比例，不验证被其他实体遮挡的比例",
                 "composition_bundle": (
