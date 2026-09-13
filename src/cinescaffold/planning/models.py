@@ -525,8 +525,6 @@ def build_deterministic_scene_skeleton(
     ]
 
     focus_target = _annotated_value(objective.camera.get("focus_target_id"))
-    if not focus_target:
-        focus_target = next(iter(categories), entities[0]["entity_id"])
     movement_value = _annotated_value(objective.camera.get("movement", {}).get("type")) or ""
     movement = (
         "push_in"
@@ -812,8 +810,6 @@ def _mock_actions(objective: ObjectivePlanningBrief) -> list[tuple[str, dict[str
         if item.path.startswith("content.camera")
     ]
     focus_target = _annotated_value(objective.camera.get("focus_target_id"))
-    if not focus_target and entities:
-        focus_target = entities[0]["entity_id"]
     translation_camera = (objective.translation_parameters or {}).get("camera", {})
     semantic_movement = objective.camera.get("movement", {}).get("type")
     movement = _annotated_value(semantic_movement) or str(

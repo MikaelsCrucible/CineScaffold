@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -237,7 +238,13 @@ class SkeletonCameraIntent(StrictModel):
     movement: Literal[
         "static", "push_in", "pull_out", "follow", "orbit", "lateral"
     ]
-    focus_target_id: str
+    focus_target_id: str | None = Field(
+        default=None,
+        description=(
+            "可选的初始取景主体；null 表示使用稳定的场景锚点，不得为了满足 Schema "
+            "而臆造逐帧跟踪目标"
+        ),
+    )
     view_relation_to_motion: Literal[
         "front", "rear", "side", "three_quarter", "unspecified"
     ] = "unspecified"
@@ -284,7 +291,10 @@ class SceneSkeleton(StrictModel):
         route_subjects = [item.subject_id for item in self.route_intents]
         if len(route_subjects) != len(set(route_subjects)):
             raise ValueError("同一主体只能提交一条 Route Intent")
-        if self.camera_intent.focus_target_id not in known:
+        if (
+            self.camera_intent.focus_target_id is not None
+            and self.camera_intent.focus_target_id not in known
+        ):
             raise ValueError("摄影机观察目标不在 Scene Skeleton 中")
         proxy_families = {item.entity_id: item.proxy_family for item in self.entities}
         ground_subjects: dict[str, str] = {}
@@ -1407,7 +1417,9 @@ def _build_camera(
     parameters = (objective.translation_parameters or {}).get("camera", {})
     focal = float(parameters.get("focal_length_mm") or profile.default_focal_length_mm)
     movement = skeleton.camera_intent.movement
-    start_distance = float(parameters.get("start_distance_m") or profile.default_camera_distance_m)
+    start_distance = float(
+        parameters.get("start_distance_m") or profile.default_camera_distance_m
+    )
     if parameters.get("end_distance_m") is not None:
         end_distance = float(parameters["end_distance_m"])
     elif movement == "push_in":
@@ -1425,11 +1437,9 @@ def _build_camera(
     end_distance *= distance_scale
     height = float(parameters.get("height_m") or 1.5)
     has_orbit = any(item.kind == "orbit" for item in skeleton.motion_phases)
+    focus_point, focus_height = _camera_focus(candidate, skeleton)
     if has_orbit and not _has_explicit_camera_elevation(objective):
         # 缺省轨道镜头提高俯视夹角，避免圆轨道投影成直线往返。
-        focus_height = _proxy_half_height(
-            candidate.entities[skeleton.camera_intent.focus_target_id]
-        )
         height = focus_height + start_distance * 0.75
     view = skeleton.camera_intent.view_relation_to_motion
     yaw = {
@@ -1439,8 +1449,6 @@ def _build_camera(
         "three_quarter": 45.0,
         "unspecified": 55.0 if strategy == "maximize_motion_readability" else 35.0,
     }[view]
-    focus = candidate.entities[skeleton.camera_intent.focus_target_id]
-    focus_point = focus.solved_transform.translation_m or (0.0, 0.0, 0.0)
     start = _camera_position(focus_point, start_distance, height, yaw)
     end = _camera_position(focus_point, end_distance, height, yaw)
     duration = candidate.timeline.duration_seconds
@@ -1506,31 +1514,33 @@ def _add_composition_constraints(
 ) -> None:
     parameters = (objective.translation_parameters or {}).get("composition", {})
     duration = candidate.timeline.duration_seconds
-    foreground = next(
-        (
-            item.entity_id
-            for item in skeleton.entities
-            if item.proxy_family not in {"ground_plane"}
-        ),
-        None,
+    projected_sizes = _composition_projected_sizes(
+        objective,
+        candidate,
+        parameters,
     )
-    if foreground and parameters.get("subject_frame_ratio"):
-        minimum, maximum = parameters["subject_frame_ratio"]
+    for index, (subject_id, minimum, maximum, source_status, source_ref) in enumerate(
+        projected_sizes
+    ):
         constraint = ConstraintSpec.model_validate(
             {
-                "constraint_id": "design_subject_projected_size",
+                "constraint_id": (
+                    "design_subject_projected_size"
+                    if index == 0
+                    else f"design_subject_projected_size_{subject_id}_{index}"
+                ),
                 "type": "projected_size",
                 "strength": "soft",
-                "subjects": [foreground],
+                "subjects": [subject_id],
                 "time_range_seconds": [0.0, duration],
                 "parameters": {
-                    "entity_id": foreground,
+                    "entity_id": subject_id,
                     "measurement": "height",
                     "minimum": float(minimum),
                     "maximum": float(maximum),
                 },
-                "source_status": parameters.get("source_status", "inferred"),
-                "source_ref": "translation_parameters.composition.subject_frame_ratio",
+                "source_status": source_status,
+                "source_ref": source_ref,
             }
         )
         candidate.constraints[constraint.constraint_id] = constraint
@@ -1675,8 +1685,7 @@ def _numeric_envelopes(
             for item in transform.keyframes
             if isinstance(item.value, TransformValue)
         ]
-    focus = candidate.entities[skeleton.camera_intent.focus_target_id]
-    focus_point = focus.solved_transform.translation_m or (0.0, 0.0, 0.0)
+    focus_point, _ = _camera_focus(candidate, skeleton)
     distances = [
         math.dist(item, focus_point)
         for item in camera_positions
@@ -1840,6 +1849,129 @@ def _proxy_bounding_radius(entity: EntitySpec) -> float:
             proxy.depth_m / 2.0,
         )
     return math.hypot(*[item / 2.0 for item in proxy.size_xy_m])
+
+
+def _camera_focus(
+    candidate: CandidateState,
+    skeleton: SceneSkeleton,
+) -> tuple[tuple[float, float, float], float]:
+    """Resolve an initial framing point without creating an implicit tracking target."""
+
+    target_id = skeleton.camera_intent.focus_target_id
+    if target_id is not None:
+        target = candidate.entities[target_id]
+        point = target.solved_transform.translation_m or (0.0, 0.0, 0.0)
+        return point, _proxy_half_height(target)
+
+    dependent_ids = {
+        relation.subject_id
+        for relation in skeleton.relations
+        if relation.kind in {"orbit_around", "carried_by"}
+    }
+    anchors = [
+        entity
+        for entity in candidate.entities.values()
+        if entity.entity_id not in dependent_ids and entity.proxy.type != "plane"
+    ]
+    if not anchors:
+        anchors = [
+            entity
+            for entity in candidate.entities.values()
+            if entity.proxy.type != "plane"
+        ]
+    points = [
+        entity.solved_transform.translation_m
+        for entity in anchors
+        if entity.solved_transform.translation_m is not None
+    ]
+    if not points:
+        return (0.0, 0.0, 0.0), 0.0
+    point = tuple(sum(item[axis] for item in points) / len(points) for axis in range(3))
+    return point, point[2]
+
+
+def _composition_projected_sizes(
+    objective: ObjectivePlanningBrief,
+    candidate: CandidateState,
+    parameters: dict[str, Any],
+) -> list[tuple[str, float, float, SourceStatus, str]]:
+    """Keep a visual-scale range attached to the subject named by the Brief."""
+
+    resolved: list[tuple[str, float, float, SourceStatus, str]] = []
+    for index, item in enumerate(objective.composition.get("visual_scales", [])):
+        if not isinstance(item, dict):
+            continue
+        subject_id = item.get("subject_id")
+        scale = item.get("scale")
+        if (
+            not isinstance(subject_id, str)
+            or subject_id not in candidate.entities
+            or not isinstance(scale, dict)
+        ):
+            continue
+        value_range = _percentage_range(scale.get("value"))
+        source_status = scale.get("source_status")
+        if value_range is None or source_status not in {
+            "explicit",
+            "inferred",
+            "default",
+        }:
+            continue
+        resolved.append(
+            (
+                subject_id,
+                value_range[0],
+                value_range[1],
+                source_status,
+                f"content.composition.visual_scales[{index}].scale",
+            )
+        )
+    if resolved:
+        return resolved
+
+    ratio = parameters.get("subject_frame_ratio")
+    if not isinstance(ratio, (list, tuple)) or len(ratio) != 2:
+        return []
+    subject_id = next(
+        (
+            str(subject.get("id"))
+            for subject in objective.subjects
+            if isinstance(subject, dict)
+            and isinstance(subject.get("id"), str)
+            and subject["id"] in candidate.entities
+        ),
+        None,
+    )
+    if subject_id is None:
+        return []
+    source_status = parameters.get("source_status", "inferred")
+    if source_status not in {"explicit", "inferred", "default"}:
+        source_status = "inferred"
+    return [
+        (
+            subject_id,
+            float(ratio[0]),
+            float(ratio[1]),
+            source_status,
+            "translation_parameters.composition.subject_frame_ratio",
+        )
+    ]
+
+
+def _percentage_range(value: Any) -> tuple[float, float] | None:
+    if not isinstance(value, str):
+        return None
+    percentages = [
+        float(item) / 100.0
+        for item in re.findall(r"(\d+(?:\.\d+)?)\s*%", value)
+    ]
+    if not percentages:
+        return None
+    minimum = percentages[0]
+    maximum = percentages[1] if len(percentages) > 1 else minimum
+    if not 0.0 <= minimum <= maximum <= 1.0:
+        return None
+    return minimum, maximum
 
 
 def _event_range(

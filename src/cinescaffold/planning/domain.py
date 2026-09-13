@@ -668,7 +668,7 @@ class CameraStatic(StrictModel):
     )
     focus_target_id: str | None = Field(
         default=None,
-        description="缺省观察目标；look_at Track 在其生效区间内覆盖它",
+        description="初始取景目标；只有 look_at Track 才会逐帧跟踪动态目标",
     )
     source_refs: list[str] = Field(
         default_factory=list,

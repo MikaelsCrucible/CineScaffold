@@ -18,6 +18,8 @@
 
 ### Changed
 
+- Scene Skeleton 的摄影机焦点改为可空；未指定拍摄主体时使用稳定场景锚点完成初始取景。静态焦点不再隐式逐帧跟踪运动实体，持续跟踪必须由 `look_at` Track 明确表达。
+- 构图 projected-size Constraint 按 Cinematic Brief `visual_scales[*].subject_id` 和对应百分比建立，不再依赖 Scene Skeleton 的实体插入顺序。
 - 明确的“远处/背景”关系现在必须同时具有 `depth_order` 与 `surface_clearance_range` hard 证据。Design Option、确定性布局 Solver 和逐帧 Validator 共用同一方向包围体计算；距离档位相对物体尺寸而非固定米数，Agent 可在受限 Patch 中调整比例范围但不能绕过门禁直接写最终坐标。
 - Semantic 输出的 `action_kind` 收敛为 hold/locomotion/interact/other；Planning 只依据明确方向、路径、载体和后置状态建立几何，不再把 arrive/depart/transport 等叙事标签二次加工为目标或方向。
 - Scene Planner 必须先联合检查每个实体的完整阶段时间线；未明确转向或反转的线性运动跨静止阶段继承同一路线方向，事件末端会合关系不再把另一个参与者变成运动目标。
@@ -28,6 +30,8 @@
 
 ### Fixed
 
+- 修复无摄影机指令的多主体动态场景仍被迫绑定首个/任意实体，以及 `static` 镜头位置不动却逐帧旋转追踪该实体的问题。
+- 修复语义层已把主体画幅比例绑定到特定 ID，Design 却把该约束错误施加给 Skeleton 第一个非地面实体的问题。
 - 修复巨型代理仅以中心深度满足“远处”，导致中心相距十余米但人物距飞船边缘不足一米仍被 Commit Gate 接受的问题；旋转后的长轴也会进入方向相关净空计算。
 - 修复 Semantic 模型把“同时结束”误写成 `meets`，并以 inferred `maximum_gap_seconds=0` 阻止关系规范化的问题；推断零间隔现在随错误标签一起清除并按实际区间改为 `ends_with` 等精确关系，用户明确数值间隔继续失败关闭。
 - 修复接载叙事中车辆被错误要求朝乘客移动、随后又远离同一乘客的问题；乘员进入可由隐藏后置状态和紧接的 carried 关系满足，不再强制人物代理移动到载体中心。
@@ -40,6 +44,7 @@
 
 ### Verification
 
+- Python 3.12 完整离线回归 301 项通过；新增回归覆盖 Scene Skeleton 空焦点、静态实体焦点不隐式跟踪、固定场景锚点编译和 visual-scale 主体 ID 映射。
 - Python 3.12 完整离线回归 297 项通过；新增回归覆盖超大自定义代理、旋转长方体、far explicit 双约束完整性、比例范围校验和统一 Solver/Validator 行为。
 - Python 3.12 完整离线回归 290 项通过；旧版道路接车 Brief 的 Mock 端到端规划、inferred zero-gap 时间关系和已取消真实失败结构的离线 Design 重放均成功。
 - `uv build` 成功生成 Core 0.8.9 的 sdist 与 wheel。

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from cinescaffold.planning.compiler import compile_scene_ir
 from cinescaffold.planning.design import (
     SceneSkeleton,
     skeleton_hash,
@@ -36,6 +37,14 @@ class PlanningDesignTest(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             SceneSkeleton.model_validate(value)
+
+    def test_scene_skeleton_allows_unspecified_camera_focus(self) -> None:
+        value = _solar_skeleton()
+        value["camera_intent"]["focus_target_id"] = None
+
+        skeleton = SceneSkeleton.model_validate(value)
+
+        self.assertIsNone(skeleton.camera_intent.focus_target_id)
 
     def test_scene_skeleton_rejects_duplicate_ids_and_non_ground_support(self) -> None:
         duplicate = _desert_skeleton()
@@ -399,6 +408,89 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertGreater(
             state.entities["earth"].proxy.radius_m,
             state.entities["moon"].proxy.radius_m,
+        )
+
+    def test_unspecified_camera_focus_uses_fixed_scene_anchor(self) -> None:
+        toolkit = _example_toolkit("solar_system_10s.json")
+        skeleton = _solar_skeleton()
+        skeleton["camera_intent"]["focus_target_id"] = None
+        toolkit.submit_scene_skeleton(skeleton)
+        suggested = toolkit.request_design_options(max_options=1)
+        toolkit.apply_design_option(0, suggested["data"]["options"][0]["option_id"])
+        state = toolkit.store.get()
+
+        scene_ir = compile_scene_ir(
+            toolkit,
+            state,
+            agent_run_id="fixed_scene_anchor_test",
+            trace_ref="test_trace.jsonl",
+        )
+        camera_samples = scene_ir.camera.state_track.samples
+
+        self.assertIsNone(state.camera.static.focus_target_id)
+        self.assertEqual(
+            camera_samples[0].value.rotation_quaternion_wxyz,
+            camera_samples[-1].value.rotation_quaternion_wxyz,
+        )
+
+    def test_static_entity_focus_does_not_become_implicit_tracking(self) -> None:
+        toolkit = _example_toolkit("solar_system_10s.json")
+        skeleton = _solar_skeleton()
+        skeleton["camera_intent"]["focus_target_id"] = "earth"
+        toolkit.submit_scene_skeleton(skeleton)
+        suggested = toolkit.request_design_options(max_options=1)
+        toolkit.apply_design_option(0, suggested["data"]["options"][0]["option_id"])
+        scene_ir = compile_scene_ir(
+            toolkit,
+            toolkit.store.get(),
+            agent_run_id="fixed_entity_focus_test",
+            trace_ref="test_trace.jsonl",
+        )
+        camera_samples = scene_ir.camera.state_track.samples
+
+        self.assertEqual(
+            camera_samples[0].value.rotation_quaternion_wxyz,
+            camera_samples[-1].value.rotation_quaternion_wxyz,
+        )
+
+    def test_projected_size_keeps_visual_scale_subject_identity(self) -> None:
+        toolkit = _example_toolkit("solar_system_10s.json")
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "composition": {
+                    "visual_scales": [
+                        {
+                            "subject_id": "moon",
+                            "scale": {
+                                "value": "5%-10%",
+                                "source_status": "default",
+                                "source_text": None,
+                            },
+                        }
+                    ],
+                    "visibility_requirements": [],
+                },
+                "translation_parameters": {
+                    "composition": {
+                        "subject_frame_ratio": [0.05, 0.1],
+                        "source_status": "default",
+                    }
+                },
+            }
+        )
+        toolkit.submit_scene_skeleton(_solar_skeleton())
+        suggested = toolkit.request_design_options(max_options=1)
+        toolkit.apply_design_option(0, suggested["data"]["options"][0]["option_id"])
+
+        constraint = toolkit.store.get().constraints["design_subject_projected_size"]
+
+        self.assertEqual(constraint.subjects, ["moon"])
+        self.assertEqual(constraint.parameters.entity_id, "moon")
+        self.assertEqual(constraint.parameters.minimum, 0.05)
+        self.assertEqual(constraint.parameters.maximum, 0.1)
+        self.assertEqual(
+            constraint.source_ref,
+            "content.composition.visual_scales[0].scale",
         )
 
     def test_pickup_option_composes_boarding_from_generic_motion(self) -> None:

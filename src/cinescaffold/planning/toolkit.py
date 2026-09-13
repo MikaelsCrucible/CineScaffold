@@ -57,7 +57,7 @@ from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.29"
+TOOLKIT_VERSION = "0.30"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -5756,15 +5756,27 @@ class _WorldTransformResolver:
             if path_track is not None:
                 raw = sample_path_track(path_track, self.time_seconds, raw)
             transform = self._to_world(raw, camera=True)
-            focus_id = self.state.camera.static.focus_target_id
             look_track = next(
                 (track for track in tracks if track.type == "look_at"),
                 None,
             )
-            if look_track and look_track.target_id:
-                focus_id = look_track.target_id
+            focus_id = (
+                look_track.target_id
+                if look_track is not None and look_track.target_id
+                else self.state.camera.static.focus_target_id
+            )
             if focus_id in self.state.entities:
-                target = self.entity(focus_id).translation_m
+                # A static focus target defines the initial framing direction. Only an
+                # explicit look_at track continuously follows a moving entity.
+                target = (
+                    self.entity(focus_id).translation_m
+                    if look_track is not None
+                    else _WorldTransformResolver(
+                        self.state,
+                        0.0,
+                        self.profile,
+                    ).entity(focus_id).translation_m
+                )
                 transform = transform.model_copy(
                     update={
                         "rotation_quaternion_wxyz": look_at_camera_quaternion(

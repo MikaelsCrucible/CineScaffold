@@ -18,7 +18,7 @@
    - 连续薄表面应使用 `ground_plane`，需要独立定位或厚度的薄片代理应使用 `generic_box + flat`，不得把表面退化成等边立方体。该约定适用于任意平台、带状表面或薄板，不是场景名称查表。
    - `ground_support`、`camera_depth_order`、`relative_position`、`proximity`、`scale_dominance`、`orbit_around` 与 `carried_by` 只表达关系，不自行换算米制间距。
    - 有事件 ID 的关系还要选择 `temporal_mode`：持续成立用 `throughout`，只要求事件开始/结束瞬间成立用 `at_start` / `at_end`。不得把只在关键时点成立的空间关系错误扩张到整个运动区间。
-   - Motion Phase 只表达 hold/linear_move/orbit/carried/visibility、对应的 `motion_id/narrative_required`、目标、载体、路径族、`slow/medium/fast/stationary/unspecified` 速度意图和事件 ID；Camera Intent 同样只保留符号速度档位。明确速度必须填写独立的 `speed_source_status/speed_source_ref`。精确时间从 Objective Brief 的主体动作范围解析，事件关系只表达先后、相接、包含或重叠；米制速度与数值轨迹由 Toolkit 生成。
+   - Motion Phase 只表达 hold/linear_move/orbit/carried/visibility、对应的 `motion_id/narrative_required`、目标、载体、路径族、`slow/medium/fast/stationary/unspecified` 速度意图和事件 ID；Camera Intent 同样只保留符号速度档位。明确速度必须填写独立的 `speed_source_status/speed_source_ref`。精确时间从 Objective Brief 的主体动作范围解析，事件关系只表达先后、相接、包含或重叠；米制速度与数值轨迹由 Toolkit 生成。`focus_target_id` 只是可选的初始取景主体；Brief 未指定拍摄主体时必须为 null，由 Toolkit 使用稳定的场景锚点，不能为了满足 Schema 随意选择一个运动实体。持续跟踪必须由明确的摄影机运动或后续 `look_at` Track 表达，不能把缺省 static 镜头变成逐帧跟随。
    - 提交骨架前必须按 `subject_id` 通读该主体的完整时间线，并做一次全局路径检查：运动过程中必须经过、靠近、进入、避开或保持在哪一侧的空间条件是什么；哪些阶段之间必须保持方向；直线能否同时满足。直线足够时不要添加路径点；不够时用最少的 `route_intents.anchors` 把某个 `linear_move` 的起点或终点绑定到已经声明的 `proximity/relative_position` 关系。路径点只表达符号关系，不填写米制坐标。
    - `route_intents` 是 Planning Agent 的路径拓扑决策，Toolkit 负责数值化。`continuity=preserve_direction` 表示跨 hold 或相邻运动阶段保持总体前进方向；确有转向需求才使用 `allow_turns`。场景存在可用的道路、轨道、平台或其他方向参照时，可以填写 `axis_reference_id`；没有参照物时留空，由 Toolkit 选择场景局部主轴，不得为了求解路线强行创建可见实体。
    - `target_id` 只表示 Brief 明确给出的几何运动目标，不表示普通事件参与者。多个实体在关键时点发生空间交互时，先声明通用空间关系，再由相关运动主体的 Route Anchor 指明哪段路径应满足该关系；不得从叙事动词重新推断朝向或把轨迹直接指向另一实体中心。
