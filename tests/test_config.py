@@ -107,6 +107,15 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.data["execution_build_timeout_seconds"], "240")
         self.assertEqual(config.data["execution_process_mode"], "split")
 
+    def test_execution_render_video_is_a_strict_boolean_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.conf"
+            save_config(path, {"execution_render_video": "0"})
+            config = load_config(path)
+            self.assertEqual(config.data["execution_render_video"], "0")
+            with self.assertRaisesRegex(ConfigurationError, "execution_render_video"):
+                save_config(path, {"execution_render_video": "false"})
+
     def test_low_effort_is_not_accepted_as_thinking_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.conf"
