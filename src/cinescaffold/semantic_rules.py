@@ -747,7 +747,11 @@ def _normalize_motion_metadata(content: dict[str, Any]) -> None:
         semantics = motion.get("motion_semantics")
         if not isinstance(semantics, dict):
             continue
-        _normalize_motion_primitives(motion, semantics)
+        _normalize_motion_primitives(
+            motion,
+            semantics,
+            orbit_target_candidates=_orbit_target_candidates(content, motion),
+        )
         if "narrative_required" not in semantics:
             action = motion.get("action")
             semantics["narrative_required"] = bool(
@@ -758,6 +762,8 @@ def _normalize_motion_metadata(content: dict[str, Any]) -> None:
 def _normalize_motion_primitives(
     motion: dict[str, Any],
     semantics: dict[str, Any],
+    *,
+    orbit_target_candidates: set[str],
 ) -> None:
     """把叙事动词收敛为 Planning 实际使用的运动事实。
 
@@ -806,6 +812,37 @@ def _normalize_motion_primitives(
         semantics["path_type"] = "stationary"
         return
 
+    path_type = semantics.get("path_type")
+    if path_type in {"circular", "elliptical"}:
+        target_id = semantics.get("target_id")
+        if (
+            semantics.get("direction_mode") == "relative_to_target"
+            and isinstance(target_id, str)
+            and target_id
+        ):
+            if orbit_target_candidates and target_id not in orbit_target_candidates:
+                raise ValueError(
+                    f"{motion.get('motion_id')} 的闭合路径目标与公转关系冲突"
+                )
+            # A closed path around a named target carries its own geometric
+            # evidence.  It must not be erased merely because the redundant
+            # human-readable `direction` annotation is inferred or unknown.
+            return
+        if (
+            semantics.get("direction_mode") in {"none", "relative_to_target"}
+            and len(orbit_target_candidates) == 1
+        ):
+            relation_target = next(iter(orbit_target_candidates))
+            if target_id not in {None, "", relation_target}:
+                raise ValueError(
+                    f"{motion.get('motion_id')} 的闭合路径目标与公转关系冲突"
+                )
+            # The normalized relationship supplies the one missing field
+            # without reparsing action prose or guessing among candidates.
+            semantics["direction_mode"] = "relative_to_target"
+            semantics["target_id"] = relation_target
+            return
+
     if not direction_is_explicit and semantics.get("direction_mode") in {
         "world_forward",
         "toward_target",
@@ -815,6 +852,39 @@ def _normalize_motion_primitives(
         semantics["direction_mode"] = "none"
         # 容纳已有独立后置状态；几何 target_id 不得重复事件参与者或容器。
         semantics["target_id"] = None
+
+
+def _orbit_target_candidates(
+    content: dict[str, Any],
+    motion: dict[str, Any],
+) -> set[str]:
+    """Return event-compatible orbit targets already present in the Brief."""
+
+    subject_id = motion.get("subject_id")
+    semantics = motion.get("motion_semantics")
+    event_id = (
+        semantics.get("timeline_event_id") if isinstance(semantics, dict) else None
+    )
+    exact: set[str] = set()
+    throughout: set[str] = set()
+    relationships = content.get("scene_design", {}).get("relationships", [])
+    for relationship in relationships:
+        if not isinstance(relationship, dict):
+            continue
+        meaning = classify_relationship(relationship)
+        if meaning is None or meaning.kind != "orbit":
+            continue
+        if relationship.get("subject_id") != subject_id:
+            continue
+        reference_id = relationship.get("reference_id")
+        if not isinstance(reference_id, str) or not reference_id:
+            continue
+        relation_event_id = relationship.get("timeline_event_id")
+        if event_id is not None and relation_event_id == event_id:
+            exact.add(reference_id)
+        elif relation_event_id is None:
+            throughout.add(reference_id)
+    return exact or throughout
 
 
 def _reconcile_motion_mode(semantics: dict[str, Any]) -> str | None:

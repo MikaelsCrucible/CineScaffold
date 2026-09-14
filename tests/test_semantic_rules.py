@@ -993,6 +993,153 @@ class SemanticRulesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "relative_to_target"):
             apply_translation_rules(content, self.rules)
 
+    def test_closed_target_relative_paths_survive_unknown_direction_annotation(
+        self,
+    ) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": entity_id,
+                "category": self._annotated(label, label),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            }
+            for entity_id, label in (
+                ("sun", "太阳"),
+                ("earth", "地球"),
+                ("moon", "月亮"),
+            )
+        ]
+        content["subject_motion"] = [
+            self._motion(
+                "earth",
+                "地球绕太阳公转",
+                action_kind="locomotion",
+                motion_type="moving",
+                motion_mode="self_propelled",
+                direction_mode="relative_to_target",
+                target_id="sun",
+                path_type="circular",
+            ),
+            self._motion(
+                "moon",
+                "月亮绕地球公转",
+                action_kind="locomotion",
+                motion_type="moving",
+                motion_mode="self_propelled",
+                direction_mode="relative_to_target",
+                target_id="earth",
+                path_type="circular",
+            ),
+        ]
+
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        self.assertEqual(
+            [
+                (
+                    item["motion_semantics"]["direction_mode"],
+                    item["motion_semantics"]["target_id"],
+                )
+                for item in normalized["subject_motion"]
+                if item["subject_id"] in {"earth", "moon"}
+            ],
+            [("relative_to_target", "sun"), ("relative_to_target", "earth")],
+        )
+        self.assertEqual(
+            [
+                item["target_id"]
+                for item in parameters["motions"]
+                if item["subject_id"] in {"earth", "moon"}
+            ],
+            ["sun", "earth"],
+        )
+
+    def test_unique_orbit_relation_repairs_missing_closed_path_target(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": entity_id,
+                "category": self._annotated(label, label),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            }
+            for entity_id, label in (("man_01", "人物"), ("sun", "太阳"))
+        ]
+        content["subject_motion"] = [
+            self._motion(
+                "man_01",
+                "围绕太阳运动",
+                action_kind="locomotion",
+                motion_type="moving",
+                motion_mode="self_propelled",
+                direction_mode="none",
+                path_type="circular",
+            )
+        ]
+        content["scene_design"]["relationships"] = [
+            {
+                "type": "orbit_around",
+                "subject_id": "man_01",
+                "reference_id": "sun",
+                "strength": "explicit",
+                "source_status": "explicit",
+                "source_text": "围绕太阳运动",
+                "timeline_event_id": None,
+                "temporal_mode": "throughout",
+            }
+        ]
+
+        normalized, _ = apply_translation_rules(content, self.rules)
+
+        semantics = normalized["subject_motion"][0]["motion_semantics"]
+        self.assertEqual(semantics["direction_mode"], "relative_to_target")
+        self.assertEqual(semantics["target_id"], "sun")
+
+    def test_orbit_relation_does_not_hide_conflicting_closed_path_direction(
+        self,
+    ) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": entity_id,
+                "category": self._annotated(label, label),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            }
+            for entity_id, label in (("moon", "月亮"), ("earth", "地球"))
+        ]
+        content["subject_motion"] = [
+            self._motion(
+                "moon",
+                "月亮绕地球公转",
+                action_kind="locomotion",
+                motion_type="moving",
+                motion_mode="self_propelled",
+                direction_mode="away_from_target",
+                target_id="earth",
+                path_type="circular",
+            )
+        ]
+        content["scene_design"]["relationships"] = [
+            {
+                "type": "orbit_around",
+                "subject_id": "moon",
+                "reference_id": "earth",
+                "strength": "explicit",
+                "source_status": "explicit",
+                "source_text": "月亮绕地球公转",
+                "timeline_event_id": None,
+                "temporal_mode": "throughout",
+            }
+        ]
+
+        with self.assertRaisesRegex(ValueError, "相对闭合路径"):
+            apply_translation_rules(content, self.rules)
+
     @staticmethod
     def _annotated(value: str, source_text: str) -> dict:
         return {"value": value, "source_status": "explicit", "source_text": source_text}
