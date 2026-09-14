@@ -548,6 +548,7 @@ def build_deterministic_scene_skeleton(
         (
             kind
             for kind, markers in (
+                ("pan", ("pan", "摇摄", "摇镜", "原地旋转", "固定机位旋转", "不平移")),
                 ("push_in", ("推", "push", "dolly_in")),
                 ("pull_out", ("拉远", "后拉", "pull", "dolly_out")),
                 ("follow", ("跟随", "跟拍", "follow")),
@@ -581,6 +582,7 @@ def build_deterministic_scene_skeleton(
         "camera_intent": {
             "movement": movement,
             "focus_target_id": focus_target,
+            "movement_target_id": objective.camera.get("movement", {}).get("target_id"),
             "view_relation_to_motion": (
                 _annotated_value(objective.camera.get("view_relation_to_motion"))
                 or "unspecified"

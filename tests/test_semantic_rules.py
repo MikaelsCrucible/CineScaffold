@@ -442,6 +442,60 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
         self.assertEqual(parameters["scene_dynamics"]["mode"], "static")
 
+    def test_fixed_position_pan_is_isolated_from_subject_motion(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": "car_01",
+                "category": self._annotated("车辆", "一辆车"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            }
+        ]
+        content["timeline"].update(
+            {"duration_seconds": 10.0, "duration_source_status": "explicit"}
+        )
+        content["subject_motion"] = [
+            self._motion(
+                "car_01",
+                "开远",
+                action_kind="locomotion",
+                motion_type="moving",
+                motion_mode="self_propelled",
+                direction_mode="none",
+                path_type="linear",
+            )
+        ]
+        content["subject_motion"][0].update(
+            start_time_seconds=5.0,
+            end_time_seconds=10.0,
+        )
+        camera_movement = content["camera"]["movement"]
+        camera_movement.update(
+            {
+                "type": self._annotated(
+                    "固定机位，不平移，只旋转跟车",
+                    "镜头不平移而是旋转地跟着车",
+                ),
+                "target_id": "car_01",
+                "start_time_seconds": 5.0,
+                "end_time_seconds": 10.0,
+            }
+        )
+
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        semantics = normalized["subject_motion"][0]["motion_semantics"]
+        self.assertEqual(semantics["motion_mode"], "self_propelled")
+        self.assertEqual(parameters["camera"]["movement"], "pan")
+        self.assertEqual(parameters["camera"]["speed_mps"], 0.0)
+        self.assertEqual(normalized["camera"]["movement"]["target_id"], "car_01")
+        self.assertEqual(
+            normalized["camera"]["movement"]["trajectory"]["value"],
+            "固定位置旋转",
+        )
+
     def test_static_scene_repairs_null_event_range_without_another_model_call(self) -> None:
         content = valid_model_output()
         content["camera"]["movement"]["type"] = self._annotated(
@@ -711,7 +765,7 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(motion["speed_range_mps"], [0.0, 0.0])
         self.assertEqual(motion["postconditions"]["external_visibility"], "hidden")
 
-    def test_inconsistent_carried_semantics_fail_before_planning(self) -> None:
+    def test_redundant_carried_semantics_are_reconciled_without_provider_retry(self) -> None:
         content = valid_model_output()
         content["subjects"] = [
             {
@@ -743,7 +797,80 @@ class SemanticRulesTest(unittest.TestCase):
             )
         ]
 
-        with self.assertRaisesRegex(ValueError, "必须使用 motion_type=carried"):
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        semantics = normalized["subject_motion"][0]["motion_semantics"]
+        self.assertEqual(semantics["motion_mode"], "carried")
+        self.assertEqual(semantics["motion_type"], "carried")
+        self.assertEqual(semantics["path_type"], "stationary")
+        self.assertEqual(parameters["motions"][0]["motion_mode"], "carried")
+
+    def test_locomotion_majority_repairs_stationary_mode_without_provider_retry(self) -> None:
+        content = valid_model_output()
+        content["camera"]["movement"]["type"] = self._annotated(
+            "固定机位旋转跟随车辆",
+            "镜头不平移而是旋转地跟着车",
+        )
+        content["subject_motion"] = [
+            self._motion(
+                "person_01",
+                "开走",
+                action_kind="locomotion",
+                motion_type="moving",
+                motion_mode="stationary",
+                direction_mode="none",
+                path_type="linear",
+            )
+        ]
+
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        semantics = normalized["subject_motion"][0]["motion_semantics"]
+        self.assertEqual(semantics["motion_mode"], "self_propelled")
+        self.assertEqual(semantics["motion_type"], "moving")
+        self.assertEqual(semantics["action_kind"], "locomotion")
+        self.assertEqual(parameters["motions"][0]["motion_mode"], "self_propelled")
+        self.assertEqual(
+            normalized["camera"]["movement"]["type"]["value"],
+            "固定机位旋转跟随车辆",
+        )
+
+    def test_hold_majority_repairs_inconsistent_motion_type_without_provider_retry(self) -> None:
+        content = valid_model_output()
+        content["subject_motion"] = [
+            self._motion(
+                "person_01",
+                "等待",
+                action_kind="hold",
+                motion_type="moving",
+                motion_mode="stationary",
+                direction_mode="none",
+                path_type="stationary",
+            )
+        ]
+
+        normalized, parameters = apply_translation_rules(content, self.rules)
+
+        semantics = normalized["subject_motion"][0]["motion_semantics"]
+        self.assertEqual(semantics["motion_mode"], "stationary")
+        self.assertEqual(semantics["motion_type"], "static")
+        self.assertEqual(parameters["motions"][0]["speed_range_mps"], [0.0, 0.0])
+
+    def test_tied_motion_evidence_still_fails_closed(self) -> None:
+        content = valid_model_output()
+        content["subject_motion"] = [
+            self._motion(
+                "person_01",
+                "含义不明",
+                action_kind="other",
+                motion_type="moving",
+                motion_mode="stationary",
+                direction_mode="none",
+                path_type="stationary",
+            )
+        ]
+
+        with self.assertRaisesRegex(ValueError, "必须使用 motion_type=static"):
             apply_translation_rules(content, self.rules)
 
     def test_simultaneous_full_timeline_events_remain_concurrent(self) -> None:

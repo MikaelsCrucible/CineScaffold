@@ -1,4 +1,4 @@
-# 四要素到六维 Cinematic Brief 规则 v0.8
+# 四要素到六维 Cinematic Brief 规则 v0.10
 
 ## 1. 任务边界
 
@@ -38,6 +38,7 @@
 ### 做什么
 
 - 为每个主体提取核心动词、目标、方向、先后顺序和明确时长。
+- 这里只读取以场景实体为施事者的动作。以“镜头、摄影机、机位、视角”为施事者的固定、平移、旋转、推拉或跟踪全部属于摄影机维度，绝不能写入 `subject_motion`；反过来，主体的等待、开来、离开或公转也不能直接成为摄影机运动类型。
 - 首先区分主体静态场景与主体动态场景。`scene_dynamics` 只描述主体，不描述摄影机：所有主体的位置、姿态、尺度、可见性、容纳/携带关系和其他可观察状态从头到尾都不变时为 `static`；推近、后拉、横移、环绕、变焦等摄影机变化不能把它变成 `dynamic`。任一主体发生上述变化时才为 `dynamic`。站立、等待、停放等持续状态本身仍是静态。
 - 动态场景按 `subject_id` 分别建立稀疏语义时间线。`subject_motion` 中的每一项是一个主体自己的关键时间范围，不是全场共享分段，也不是逐帧动画关键帧；每项使用稳定、唯一的 `motion_id`。
 - `timeline.events` 可以为空；但一旦输出事件，起止时间必须是总时长内的数字，不能使用 `null`。持续静态场景不需要为了“站立”或摄影机运动虚构主体事件。
@@ -74,6 +75,7 @@
 一致性要求：
 
 - `motion_mode=stationary` 必须配 `motion_type=static`；`local_interaction` 必须配 `interactive`；`carried` 必须配 `motion_type=carried` 和非空 `carrier_id`。
+- `action_kind`、`motion_type`、`motion_mode`、`path_type` 与 `carrier_id` 是同一动作事实的互相校验字段，必须成组一致。Core 只会在这些类型化证据形成唯一多数时纠正单个枚举笔误；证据相互打平时仍会拒绝，不能依赖下游猜测原始动作文字。
 - 进入载体或容器通过 `postconditions.contained_by_id` 表达；只有用户明确描述“朝向/走向该目标”时才同时设置方向 `target_id`。代理白模不能表现进入内部时，通常将 `external_visibility` 设为 `hidden`。
 - 被载体携带通过 `motion_mode=carried + carrier_id` 表达，不再另造 transport 动作。其空间运动继承载体，`direction_mode=none`、`path_type=stationary`，不能重复生成世界轨迹。
 - 绕行通过 `relative_to_target + target_id + circular/elliptical` 表达，不依赖 orbit 动词类别。
@@ -122,6 +124,10 @@
 - “远处、后景、背景”等明确纵深词必须写入 `spatial_layers` 或主体关系；应用会把只存在于远景层中的实体确定性归一化为 Planning 可消费的纵深关系，不能因模型没有重复填写两个字段而丢失。
 
 ### 摄影机、构图与光源
+
+- 摄影机与主体使用相互隔离的时间语义。`camera.movement` 只描述摄影机自身状态变化；`subject_motion` 中的 `motion_mode` 永远不受“固定机位、镜头不平移”等摄影机措辞影响。
+- `camera.movement` 当前表达一个连续的主动运镜区间；区间之前和之后保持相邻摄影机状态。先固定、后执行一次运镜时，只把后一个主动阶段写入该区间，不需要为前段另造主体事件。
+- 固定位置、只改变朝向以继续观察运动目标称为 `pan`，并在 `camera.movement.target_id` 填写目标主体 ID；它不同于位置和朝向都不变的 `static`，也不同于摄影机位置跟随主体平移的 `follow`。`pan` 的平移速度为 0，但朝向必须随目标产生可观察变化。
 
 `camera.view_relation_to_motion` 类型化记录摄影机相对主要线性运动的观察关系，只能使用：
 

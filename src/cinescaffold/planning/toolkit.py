@@ -62,7 +62,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 
 
-TOOLKIT_VERSION = "0.37"
+TOOLKIT_VERSION = "0.38"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -5464,6 +5464,37 @@ def _explicit_camera_parameter_violations(
                     adjustable_variables=["camera tracks"],
                 )
             )
+        expected_start, expected_end = _objective_camera_motion_range(
+            objective_brief,
+            state.timeline.duration_seconds,
+        )
+        if (
+            expected_movement not in {None, "static"}
+            and not _camera_motion_timing_matches(
+                state,
+                expected_movement,
+                expected_start,
+                expected_end,
+                profile,
+            )
+        ):
+            violations.append(
+                _violation(
+                    "EXPLICIT_CAMERA_TIMING_UNMET",
+                    "明确的摄影机运动时间范围未被实际轨迹满足",
+                    expected={
+                        "movement": expected_movement,
+                        "time_range_seconds": [expected_start, expected_end],
+                    },
+                    actual={
+                        "camera_track_ranges": {
+                            track.type: list(track.time_range_seconds)
+                            for track in state.camera.tracks.values()
+                        }
+                    },
+                    adjustable_variables=["camera tracks"],
+                )
+            )
 
     focus_ref = "content.camera.focus_target_id"
     if focus_ref in required:
@@ -5558,6 +5589,7 @@ def _camera_movement_kind(value: Any) -> str | None:
         return None
     lowered = value.lower().replace("-", "_").replace(" ", "_")
     for kind, markers in (
+        ("pan", ("pan", "摇摄", "摇镜", "原地旋转", "固定机位旋转", "不平移")),
         ("push_in", ("推近", "推进", "push_in", "dolly_in")),
         ("pull_out", ("拉远", "后拉", "pull_out", "dolly_out")),
         ("follow", ("跟随", "跟拍", "follow")),
@@ -5651,7 +5683,24 @@ def _camera_motion_matches(
 ) -> bool:
     displacement = length(subtract(end.translation_m, start.translation_m))
     if expected == "static":
-        return displacement <= profile.numeric_tolerance
+        return (
+            displacement <= profile.numeric_tolerance
+            and _quaternion_angle_degrees(
+                start.rotation_quaternion_wxyz,
+                end.rotation_quaternion_wxyz,
+            )
+            <= 0.05
+        )
+    if expected == "pan":
+        return (
+            displacement <= profile.numeric_tolerance
+            and any(track.type == "look_at" for track in state.camera.tracks.values())
+            and _quaternion_angle_degrees(
+                start.rotation_quaternion_wxyz,
+                end.rotation_quaternion_wxyz,
+            )
+            > 0.05
+        )
     if expected in {"lateral", "follow", "orbit"}:
         required_type = "path_follow" if expected in {"follow", "orbit"} else "transform"
         return displacement > 0.05 and any(
@@ -5676,6 +5725,49 @@ def _camera_motion_matches(
         end_distance < start_distance - 0.05
         if expected == "push_in"
         else end_distance > start_distance + 0.05
+    )
+
+
+def _objective_camera_motion_range(
+    objective_brief: ObjectivePlanningBrief,
+    duration: float,
+) -> tuple[float, float]:
+    movement = objective_brief.camera.get("movement", {})
+    start = movement.get("start_time_seconds") if isinstance(movement, dict) else None
+    end = movement.get("end_time_seconds") if isinstance(movement, dict) else None
+    if not isinstance(start, (int, float)) or isinstance(start, bool):
+        start = 0.0
+    if not isinstance(end, (int, float)) or isinstance(end, bool):
+        end = duration
+    return float(start), float(end)
+
+
+def _camera_motion_timing_matches(
+    state: CandidateState,
+    movement: str,
+    expected_start: float,
+    expected_end: float,
+    profile: PlanningProfile,
+) -> bool:
+    expected_type = {
+        "pan": "look_at",
+        "follow": "path_follow",
+        "orbit": "path_follow",
+        "push_in": "transform",
+        "pull_out": "transform",
+        "lateral": "transform",
+    }.get(movement)
+    if expected_type is None:
+        return True
+    tolerance = max(
+        profile.numeric_tolerance,
+        state.timeline.fps_denominator / state.timeline.fps_numerator,
+    )
+    return any(
+        track.type == expected_type
+        and abs(track.time_range_seconds[0] - expected_start) <= tolerance
+        and abs(track.time_range_seconds[1] - expected_end) <= tolerance
+        for track in state.camera.tracks.values()
     )
 
 
@@ -6729,23 +6821,24 @@ class _WorldTransformResolver:
                 (track for track in tracks if track.type == "look_at"),
                 None,
             )
-            focus_id = (
-                look_track.target_id
-                if look_track is not None and look_track.target_id
-                else self.state.camera.static.focus_target_id
-            )
-            if focus_id in self.state.entities:
-                # A static focus target defines the initial framing direction. Only an
-                # explicit look_at track continuously follows a moving entity.
-                target = (
-                    self.entity(focus_id).translation_m
-                    if look_track is not None
-                    else _WorldTransformResolver(
-                        self.state,
-                        0.0,
-                        self.profile,
-                    ).entity(focus_id).translation_m
+            look_sample_time = (
+                _look_at_sample_time(
+                    look_track,
+                    self.time_seconds,
+                    self.state.timeline.duration_seconds,
+                    self.state.timeline.fps_denominator
+                    / self.state.timeline.fps_numerator,
                 )
+                if look_track is not None
+                else None
+            )
+            initial_focus_id = self.state.camera.static.focus_target_id
+            if initial_focus_id in self.state.entities:
+                target = _WorldTransformResolver(
+                    self.state,
+                    0.0,
+                    self.profile,
+                ).entity(initial_focus_id).translation_m
                 transform = transform.model_copy(
                     update={
                         "rotation_quaternion_wxyz": look_at_camera_quaternion(
@@ -6753,6 +6846,41 @@ class _WorldTransformResolver:
                             target,
                         )
                     }
+                )
+            if (
+                look_sample_time is not None
+                and look_track is not None
+                and look_track.target_id in self.state.entities
+            ):
+                target = _WorldTransformResolver(
+                    self.state,
+                    look_sample_time,
+                    self.profile,
+                ).entity(look_track.target_id).translation_m
+                desired = look_at_camera_quaternion(transform.translation_m, target)
+                rotation = desired
+                if look_track.interpolation == "smooth":
+                    start, end = look_track.time_range_seconds
+                    sampled_end = min(end, self.state.timeline.duration_seconds) - (
+                        self.state.timeline.fps_denominator
+                        / self.state.timeline.fps_numerator
+                    )
+                    ratio = min(
+                        1.0,
+                        max(
+                            0.0,
+                            (look_sample_time - start)
+                            / max(sampled_end - start, 1e-9),
+                        ),
+                    )
+                    ratio = ratio * ratio * (3.0 - 2.0 * ratio)
+                    rotation = _nlerp_camera_quaternion(
+                        transform.rotation_quaternion_wxyz,
+                        desired,
+                        ratio,
+                    )
+                transform = transform.model_copy(
+                    update={"rotation_quaternion_wxyz": rotation}
                 )
             focal_track = next(
                 (track for track in tracks if track.type == "focal_length"),
@@ -6768,7 +6896,6 @@ class _WorldTransformResolver:
             return self._camera
         finally:
             self._leave(token)
-
     def _to_world(
         self,
         raw: TransformValue,
@@ -6811,6 +6938,34 @@ class _WorldTransformResolver:
     def _leave(self, token: str) -> None:
         if self._resolving and self._resolving[-1] == token:
             self._resolving.pop()
+
+
+def _look_at_sample_time(
+    track: TrackSpec,
+    time_seconds: float,
+    duration: float,
+    frame_step: float,
+) -> float | None:
+    """Keep the initial aim before a look-at phase and freeze its final aim after it."""
+
+    start, end = track.time_range_seconds
+    if time_seconds < start:
+        return None
+    return min(time_seconds, min(end, duration) - frame_step)
+
+
+def _nlerp_camera_quaternion(
+    start: tuple[float, float, float, float],
+    end: tuple[float, float, float, float],
+    ratio: float,
+) -> tuple[float, float, float, float]:
+    if sum(left * right for left, right in zip(start, end)) < 0.0:
+        end = tuple(-value for value in end)
+    values = tuple(left + (right - left) * ratio for left, right in zip(start, end))
+    magnitude = math.sqrt(sum(value * value for value in values))
+    if magnitude <= 1e-12:
+        return start
+    return tuple(value / magnitude for value in values)
 
 
 def _complete_preserving_frame(value: TransformValue) -> TransformValue:

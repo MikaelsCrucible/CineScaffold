@@ -20,7 +20,12 @@ from cinescaffold.planning.duration import attach_duration_resolution, freeze_br
 from cinescaffold.planning.geometry import surface_clearance_ratio
 from cinescaffold.planning.models import _mock_scene_skeleton
 from cinescaffold.planning.objective import ObjectiveRequirement, project_objective_brief
-from cinescaffold.planning.toolkit import ScenePlanningToolkit, _route_anchor_failures
+from cinescaffold.planning.toolkit import (
+    ScenePlanningToolkit,
+    _WorldTransformResolver,
+    _quaternion_angle_degrees,
+    _route_anchor_failures,
+)
 from tests.helpers import valid_planning_brief
 
 
@@ -441,6 +446,107 @@ class PlanningDesignTest(unittest.TestCase):
         path = candidate.camera.tracks["design_camera_path"].path
         self.assertEqual(path.space, "target_relative")
         self.assertEqual(path.target_id, "man_01")
+
+    def test_delayed_pan_keeps_position_fixed_then_rotates_toward_target(self) -> None:
+        source = _desert_toolkit()
+        objective = source.objective_brief.model_copy(
+            update={
+                "schema_version": "0.6",
+                "scene_dynamics": {
+                    "mode": "dynamic",
+                    "source_status": "inferred",
+                    "reason": "主体位移",
+                },
+                "scene_design": source.objective_brief.scene_design
+                | {"relationships": []},
+                "subject_motion": [
+                    {
+                        "motion_id": "walk_01",
+                        "subject_id": "man_01",
+                        "start_time_seconds": 0.0,
+                        "end_time_seconds": 6.0,
+                        "motion_semantics": {
+                            "motion_type": "walking",
+                            "motion_mode": "self_propelled",
+                            "direction_mode": "world_forward",
+                            "target_id": None,
+                            "carrier_id": None,
+                            "path_type": "linear",
+                            "timeline_event_id": None,
+                            "narrative_required": False,
+                        },
+                    }
+                ],
+                "camera": source.objective_brief.camera
+                | {
+                    "focus_target_id": {
+                        "value": "man_01",
+                        "source_status": "inferred",
+                        "source_text": None,
+                    },
+                    "movement": source.objective_brief.camera["movement"]
+                    | {
+                        "type": {
+                            "value": "固定机位，不平移，只旋转跟随人物",
+                            "source_status": "explicit",
+                            "source_text": "先固定，之后只旋转跟随人物",
+                        },
+                        "target_id": "man_01",
+                        "start_time_seconds": 3.0,
+                        "end_time_seconds": 6.0,
+                    },
+                },
+                "explicit_requirements": [
+                    ObjectiveRequirement(
+                        path="content.camera.movement.type",
+                        value="固定机位，不平移，只旋转跟随人物",
+                    )
+                ],
+            }
+        )
+        toolkit = ScenePlanningToolkit(objective)
+        skeleton = _desert_skeleton()
+        skeleton["relations"] = skeleton["relations"][:1]
+        skeleton["motion_phases"][0].update(
+            motion_id="walk_01",
+            kind="linear_move",
+            direction_mode="world_forward",
+            path_family="linear",
+            speed_intent="slow",
+        )
+        skeleton["camera_intent"].update(
+            movement="pan",
+            movement_target_id="man_01",
+        )
+        toolkit.submit_scene_skeleton(skeleton)
+
+        options = toolkit.request_design_options(max_options=1)
+
+        self.assertTrue(options["data"]["options"], options)
+        candidate = toolkit._design_options[
+            options["data"]["options"][0]["option_id"]
+        ].candidate
+        look_at = candidate.camera.tracks["design_camera_look_at"]
+        self.assertEqual(look_at.time_range_seconds, (3.0, 6.0))
+        before = _WorldTransformResolver(candidate, 2.0, toolkit.profile).camera()[0]
+        started = _WorldTransformResolver(candidate, 3.0, toolkit.profile).camera()[0]
+        finished = _WorldTransformResolver(candidate, 5.95, toolkit.profile).camera()[0]
+        self.assertEqual(before.translation_m, started.translation_m)
+        self.assertEqual(started.translation_m, finished.translation_m)
+        self.assertLessEqual(
+            _quaternion_angle_degrees(
+                before.rotation_quaternion_wxyz,
+                started.rotation_quaternion_wxyz,
+            ),
+            0.05,
+        )
+        self.assertGreater(
+            _quaternion_angle_degrees(
+                started.rotation_quaternion_wxyz,
+                finished.rotation_quaternion_wxyz,
+            ),
+            0.05,
+        )
 
     def test_explicit_screen_placement_becomes_axis_specific_hard_constraints(self) -> None:
         source = _desert_toolkit()

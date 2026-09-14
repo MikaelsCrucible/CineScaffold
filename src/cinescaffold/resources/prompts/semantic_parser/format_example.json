@@ -35,6 +35,7 @@
     "focus_target_id": {"value": null, "source_status": "unknown", "source_text": null},
     "movement": {
       "type": {"value": null, "source_status": "unknown", "source_text": null},
+      "target_id": null,
       "direction": {"value": null, "source_status": "unknown", "source_text": null},
       "speed": {"value": null, "source_status": "unknown", "source_text": null},
       "trajectory": {"value": null, "source_status": "unknown", "source_text": null},

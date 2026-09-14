@@ -281,7 +281,7 @@ class SkeletonRouteIntent(StrictModel):
 
 class SkeletonCameraIntent(StrictModel):
     movement: Literal[
-        "static", "push_in", "pull_out", "follow", "orbit", "lateral"
+        "static", "push_in", "pull_out", "follow", "orbit", "lateral", "pan"
     ] = Field(
         description="只描述摄影机自身运动，与 scene_dynamics 的主体静/动态分类彼此独立"
     )
@@ -290,6 +290,13 @@ class SkeletonCameraIntent(StrictModel):
         description=(
             "可选的初始取景主体；null 表示使用稳定的场景锚点，不得为了满足 Schema "
             "而臆造逐帧跟踪目标"
+        ),
+    )
+    movement_target_id: str | None = Field(
+        default=None,
+        description=(
+            "pan/follow/orbit 的运动目标，来自 camera.movement.target_id；"
+            "与初始取景 focus_target_id 相互独立"
         ),
     )
     view_relation_to_motion: Literal[
@@ -349,6 +356,22 @@ class SceneSkeleton(StrictModel):
             and self.camera_intent.focus_target_id not in known
         ):
             raise ValueError("摄影机观察目标不在 Scene Skeleton 中")
+        if (
+            self.camera_intent.movement_target_id is not None
+            and self.camera_intent.movement_target_id not in known
+        ):
+            raise ValueError("摄影机运动目标不在 Scene Skeleton 中")
+        if (
+            self.camera_intent.movement_target_id is not None
+            and self.camera_intent.movement not in {"pan", "follow", "orbit"}
+        ):
+            raise ValueError("只有 pan/follow/orbit 可以设置摄影机运动目标")
+        if (
+            self.camera_intent.movement in {"pan", "follow", "orbit"}
+            and self.camera_intent.movement_target_id is None
+            and self.camera_intent.focus_target_id is None
+        ):
+            raise ValueError("pan/follow/orbit 摄影机必须提供运动目标")
         proxy_families = {item.entity_id: item.proxy_family for item in self.entities}
         ground_subjects: dict[str, str] = {}
         for relation in self.relations:
@@ -528,6 +551,12 @@ def validate_scene_skeleton(
                 "Scene Skeleton 摄影机运动与 Brief 明确要求不一致："
                 f"{value.camera_intent.movement} != {expected_movement}"
             )
+    movement_target_id = camera.get("movement", {}).get("target_id")
+    if (
+        movement_target_id is not None
+        and value.camera_intent.movement_target_id != movement_target_id
+    ):
+        raise ValueError("Scene Skeleton 摄影机运动目标与 Brief 不一致")
     view_node = camera.get("view_relation_to_motion")
     if isinstance(view_node, dict) and view_node.get("source_status") == "explicit":
         expected_view = view_node.get("value")
@@ -571,6 +600,7 @@ def _camera_movement_from_value(value: Any) -> str | None:
         return None
     normalized = value.lower().replace("-", "_").replace(" ", "_")
     for kind, markers in (
+        ("pan", ("pan", "摇摄", "摇镜", "原地旋转", "固定机位旋转", "不平移")),
         ("push_in", ("推近", "推进", "push_in", "dolly_in")),
         ("pull_out", ("拉远", "后拉", "pull_out", "dolly_out")),
         ("follow", ("跟随", "跟拍", "follow")),
@@ -1889,6 +1919,7 @@ def _build_camera(
     start = _camera_position(focus_point, start_distance, height, yaw)
     end = _camera_position(focus_point, end_distance, height, yaw)
     duration = candidate.timeline.duration_seconds
+    motion_start, motion_end = _camera_motion_range(objective, duration)
     tracks: dict[str, TrackSpec] = {}
     if movement in {"push_in", "pull_out", "lateral"}:
         if movement == "pull_out":
@@ -1912,10 +1943,10 @@ def _build_camera(
         track = TrackSpec(
             track_id="design_camera_transform",
             type="transform",
-            time_range_seconds=(0.0, duration),
+            time_range_seconds=(motion_start, motion_end),
             keyframes=[
                 TrackKeyframe(
-                    time_seconds=0.0,
+                    time_seconds=motion_start,
                     value=TransformValue(
                         translation_m=start,
                         rotation_quaternion_wxyz=look_at_camera_quaternion(start, focus_point),
@@ -1923,7 +1954,7 @@ def _build_camera(
                     interpolation="smooth",
                 ),
                 TrackKeyframe(
-                    time_seconds=_track_end_time(candidate, duration),
+                    time_seconds=_track_end_time(candidate, motion_end),
                     value=TransformValue(
                         translation_m=end,
                         rotation_quaternion_wxyz=look_at_camera_quaternion(end, focus_point),
@@ -1936,7 +1967,10 @@ def _build_camera(
         )
         tracks[track.track_id] = track
     elif movement in {"follow", "orbit"}:
-        target_id = skeleton.camera_intent.focus_target_id
+        target_id = (
+            skeleton.camera_intent.movement_target_id
+            or skeleton.camera_intent.focus_target_id
+        )
         if target_id is None:
             raise ValueError(f"{movement} 摄影机必须提供 focus_target_id")
         target_position = candidate.entities[target_id].solved_transform.translation_m or (
@@ -1981,18 +2015,23 @@ def _build_camera(
             {
                 "track_id": "design_camera_path",
                 "type": "path_follow",
-                "time_range_seconds": [0.0, duration],
+                "time_range_seconds": [motion_start, motion_end],
                 "path": path,
                 "interpolation": "smooth",
                 "source_ref": skeleton.camera_intent.source_ref,
             }
         )
-    if movement in {"follow", "orbit"} and skeleton.camera_intent.focus_target_id:
+    look_target_id = (
+        skeleton.camera_intent.movement_target_id
+        or skeleton.camera_intent.focus_target_id
+    )
+    if movement in {"follow", "orbit", "pan"} and look_target_id:
         tracks["design_camera_look_at"] = TrackSpec(
             track_id="design_camera_look_at",
             type="look_at",
-            time_range_seconds=(0.0, duration),
-            target_id=skeleton.camera_intent.focus_target_id,
+            time_range_seconds=(motion_start, motion_end),
+            target_id=look_target_id,
+            interpolation="smooth" if movement == "pan" else "linear",
             source_ref=(
                 skeleton.camera_intent.speed_source_ref
                 if skeleton.camera_intent.speed_intent == "match_subject"
@@ -2339,7 +2378,7 @@ def _add_speed_constraints(
             "type": "speed_range",
             "strength": "hard" if camera.speed_source_status == "explicit" else "soft",
             "subjects": [],
-            "time_range_seconds": [0.0, duration],
+            "time_range_seconds": list(_camera_motion_range(objective, duration)),
             "parameters": {
                 "target_id": "camera_main",
                 "minimum_mps": minimum,
@@ -3096,6 +3135,20 @@ def _track_end_time(candidate: CandidateState, end: float) -> float:
         candidate.timeline.fps_denominator / candidate.timeline.fps_numerator
     )
     return min(end, candidate.timeline.duration_seconds - frame_step)
+
+
+def _camera_motion_range(
+    objective: ObjectivePlanningBrief,
+    duration: float,
+) -> tuple[float, float]:
+    movement = objective.camera.get("movement", {})
+    start = movement.get("start_time_seconds") if isinstance(movement, dict) else None
+    end = movement.get("end_time_seconds") if isinstance(movement, dict) else None
+    if not isinstance(start, (int, float)) or isinstance(start, bool):
+        start = 0.0
+    if not isinstance(end, (int, float)) or isinstance(end, bool):
+        end = duration
+    return max(0.0, float(start)), min(duration, float(end))
 
 
 def _linear_phase_endpoint(

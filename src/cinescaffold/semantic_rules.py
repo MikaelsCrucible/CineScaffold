@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,7 @@ def apply_translation_rules(
         float(content["timeline"]["duration_seconds"]),
     )
     _apply_emotion_semantics(content, resolved_profile, emotion)
+    _normalize_camera_movement(content)
     subjects = _subject_parameters(content, rules)
     motions = _motion_parameters(content, rules)
     scene = _scene_parameters(content, rules)
@@ -260,6 +262,9 @@ def reconcile_translation_parameters(
         camera["end_distance_m"] = end
         camera["speed_mps"] = abs(end - start) / duration
     elif movement == "static":
+        camera["end_distance_m"] = start
+        camera["speed_mps"] = 0.0
+    elif movement == "pan":
         camera["end_distance_m"] = start
         camera["speed_mps"] = 0.0
     return reconciled
@@ -716,7 +721,27 @@ def _normalize_motion_primitives(
     方向才能进入相对几何，容纳和载运继续作为独立状态关系。
     """
 
-    motion_mode = semantics.get("motion_mode")
+    motion_mode = _reconcile_motion_mode(semantics)
+    if motion_mode is not None:
+        semantics["motion_mode"] = motion_mode
+        semantics["action_kind"] = {
+            "stationary": "hold",
+            "local_interaction": "interact",
+            "self_propelled": "locomotion",
+            "carried": "locomotion",
+        }[motion_mode]
+        if motion_mode == "stationary":
+            semantics["motion_type"] = "static"
+            semantics["path_type"] = "stationary"
+        elif motion_mode == "local_interaction":
+            semantics["motion_type"] = "interactive"
+            semantics["path_type"] = "stationary"
+        elif motion_mode == "carried":
+            semantics["motion_type"] = "carried"
+            semantics["path_type"] = "stationary"
+        elif semantics.get("path_type") == "stationary":
+            semantics["path_type"] = "unspecified"
+
     semantics["action_kind"] = {
         "stationary": "hold",
         "local_interaction": "interact",
@@ -746,6 +771,125 @@ def _normalize_motion_primitives(
         semantics["direction_mode"] = "none"
         # 容纳已有独立后置状态；几何 target_id 不得重复事件参与者或容器。
         semantics["target_id"] = None
+
+
+def _reconcile_motion_mode(semantics: dict[str, Any]) -> str | None:
+    """Repair redundant motion labels only when their typed evidence agrees.
+
+    Structured-output providers can satisfy JSON Schema while emitting one
+    contradictory enum.  These fields describe the same coarse fact, so a
+    unique majority can be normalized without another paid model request.
+    Ties remain untouched and are rejected by the strict validator below.
+    """
+
+    valid_modes = {
+        "stationary",
+        "self_propelled",
+        "carried",
+        "local_interaction",
+    }
+    votes: Counter[str] = Counter()
+    declared_mode = semantics.get("motion_mode")
+    if declared_mode in valid_modes:
+        votes[declared_mode] += 1
+
+    type_mode = {
+        "static": "stationary",
+        "interactive": "local_interaction",
+        "walking": "self_propelled",
+        "running": "self_propelled",
+        "flying": "self_propelled",
+        "jumping": "self_propelled",
+        "moving": "self_propelled",
+        "carried": "carried",
+    }.get(semantics.get("motion_type"))
+    if type_mode is not None:
+        votes[type_mode] += 1
+
+    action_kind = semantics.get("action_kind")
+    if action_kind == "hold":
+        votes["stationary"] += 1
+    elif action_kind == "interact":
+        votes["local_interaction"] += 1
+    elif action_kind == "locomotion":
+        # Locomotion excludes stationary/local modes but does not by itself
+        # distinguish self propulsion from being carried.
+        votes["self_propelled"] += 1
+        votes["carried"] += 1
+
+    if semantics.get("path_type") not in {None, "stationary", "unspecified"}:
+        votes["self_propelled"] += 1
+    if semantics.get("carrier_id") is not None:
+        votes["carried"] += 1
+    postconditions = semantics.get("postconditions")
+    if isinstance(postconditions, dict) and postconditions.get("contained_by_id") is not None:
+        votes["carried"] += 1
+
+    if not votes:
+        return None
+    highest = max(votes.values())
+    winners = [mode for mode, count in votes.items() if count == highest]
+    return winners[0] if len(winners) == 1 else None
+
+
+def _normalize_camera_movement(content: dict[str, Any]) -> None:
+    """Validate camera-only timing and recover a uniquely typed tracking target."""
+
+    movement = content.get("camera", {}).get("movement")
+    if not isinstance(movement, dict):
+        return
+    movement.setdefault("target_id", None)
+    duration = float(content["timeline"]["duration_seconds"])
+    start = movement.get("start_time_seconds")
+    end = movement.get("end_time_seconds")
+    if not _is_number(start) or not _is_number(end):
+        raise ValueError("camera.movement 必须给出有效时间范围")
+    if not 0.0 <= float(start) < float(end) <= duration:
+        raise ValueError("camera.movement 时间范围无效")
+
+    subject_ids = {
+        str(subject["id"])
+        for subject in content.get("subjects", [])
+        if isinstance(subject, dict) and isinstance(subject.get("id"), str)
+    }
+    target_id = movement.get("target_id")
+    if target_id is not None and target_id not in subject_ids:
+        raise ValueError("camera.movement.target_id 未引用有效主体")
+
+    kind = _camera_movement_kind(_value(movement.get("type")))
+    if kind not in {"pan", "follow", "orbit"} or target_id is not None:
+        return
+    focus_id = _value(content.get("camera", {}).get("focus_target_id"))
+    if focus_id in subject_ids:
+        movement["target_id"] = focus_id
+        return
+
+    active_subjects = {
+        motion.get("subject_id")
+        for motion in content.get("subject_motion", [])
+        if isinstance(motion, dict)
+        and isinstance(motion.get("motion_semantics"), dict)
+        and motion["motion_semantics"].get("motion_mode") == "self_propelled"
+        and _ranges_overlap(
+            float(start),
+            float(end),
+            motion.get("start_time_seconds"),
+            motion.get("end_time_seconds"),
+        )
+    }
+    active_subjects.discard(None)
+    if len(active_subjects) == 1:
+        movement["target_id"] = next(iter(active_subjects))
+        return
+    raise ValueError(f"camera.movement.type={kind} 缺少唯一 target_id")
+
+
+def _ranges_overlap(start: float, end: float, other_start: Any, other_end: Any) -> bool:
+    return (
+        _is_number(other_start)
+        and _is_number(other_end)
+        and max(start, float(other_start)) < min(end, float(other_end))
+    )
 
 
 def _apply_scene_dynamics(content: dict[str, Any]) -> None:
@@ -1175,6 +1319,10 @@ def _camera_profile_for_explicit_movement(
             return resolved
 
     resolved["movement"] = movement
+    if movement == "pan":
+        resolved["speed_policy"] = "static"
+        resolved["speed_mps"] = 0.0
+        resolved["end_distance_m"] = resolved["start_distance_m"]
     return resolved
 
 
@@ -1183,6 +1331,7 @@ def _camera_movement_kind(value: str | None) -> str | None:
         return None
     normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
     aliases = (
+        ("pan", ("pan", "摇摄", "摇镜", "原地旋转", "固定机位旋转", "不平移")),
         ("push_in", ("push_in", "pushin", "dolly_in", "推近", "推进")),
         ("pull_out", ("pull_out", "pullout", "dolly_out", "拉远", "后拉", "拉开")),
         ("orbit", ("orbit", "环绕", "绕拍")),
@@ -1197,6 +1346,8 @@ def _camera_movement_kind(value: str | None) -> str | None:
 
 
 def _camera_trajectory(movement: str) -> str:
+    if movement == "pan":
+        return "固定位置旋转"
     if movement == "orbit":
         return "圆形环绕"
     if movement == "static":

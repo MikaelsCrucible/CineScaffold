@@ -279,8 +279,16 @@
     },
     "cameraMovement": {
       "type": "object",
+      "description": "只描述摄影机自身的位置、朝向或焦距变化，绝不描述任何场景主体的运动。",
       "properties": {
-        "type": {"$ref": "#/$defs/annotatedText"},
+        "type": {
+          "allOf": [{"$ref": "#/$defs/annotatedText"}],
+          "description": "摄影机自身运镜；固定位置旋转跟踪使用 pan，不得写成随主体平移的 follow。"
+        },
+        "target_id": {
+          "type": ["string", "null"],
+          "description": "pan/follow/orbit 的摄影机运动目标主体 ID；没有目标时为 null。"
+        },
         "direction": {"$ref": "#/$defs/annotatedText"},
         "speed": {"$ref": "#/$defs/annotatedText"},
         "trajectory": {"$ref": "#/$defs/annotatedText"},
@@ -288,7 +296,7 @@
         "start_time_seconds": {"type": ["number", "null"]},
         "end_time_seconds": {"type": ["number", "null"]}
       },
-      "required": ["type", "direction", "speed", "trajectory", "easing", "start_time_seconds", "end_time_seconds"],
+      "required": ["type", "target_id", "direction", "speed", "trajectory", "easing", "start_time_seconds", "end_time_seconds"],
       "additionalProperties": false
     },
     "cameraViewRelation": {
