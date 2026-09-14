@@ -17,6 +17,8 @@ def valid_model_output() -> dict[str, Any]:
 
 
 def valid_planning_brief() -> dict[str, Any]:
+    from cinescaffold.semantic_rules import apply_translation_rules, load_translation_rules
+
     content = valid_model_output()
     content["summary"] = "男人孤独地面对远处飞船"
     content["timeline"].update(
@@ -59,15 +61,25 @@ def valid_planning_brief() -> dict[str, Any]:
         }
     ]
     content["camera"]["movement"]["type"] = _annotated("缓慢推近", "镜头慢慢推近")
+    rules_path = (
+        ROOT
+        / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
+    )
+    normalized, parameters = apply_translation_rules(
+        content,
+        load_translation_rules(rules_path),
+    )
     return {
-        "schema_version": "0.1",
-        "content": content,
+        "schema_version": "0.7",
+        "content": normalized,
+        "translation_parameters": parameters,
         "provenance": {
             "source_prompt": "一个男人站在荒漠里，远处有飞船，感觉孤独，镜头慢慢推近。",
             "provider": "mock",
             "model": "mock-cinematic-brief-v0.1",
             "parser_prompt_version": "semantic-parser-v0.1",
             "rules_sha256": "0" * 64,
+            "translation_rules_sha256": "1" * 64,
             "response_id": "mock-response-001",
         },
     }

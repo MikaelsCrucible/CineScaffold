@@ -641,7 +641,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "tool_call_completed" for item in trace))
         self.assertTrue(any(item["event_type"] == "commit_gate_completed" for item in trace))
         run_started = next(item for item in trace if item["event_type"] == "run_started")
-        self.assertEqual(run_started["payload"]["toolkit_version"], "0.41")
+        self.assertEqual(run_started["payload"]["toolkit_version"], "0.42")
         self.assertNotIn("孤独", "\n".join(trace_lines))
         # 普通运行保持精简日志：不记录对话内容，response 只记类型与规模。
         request_started = next(
@@ -656,7 +656,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(
             any(item["kind"] == "tool_call" for item in summaries)
         )
-        self.assertEqual(scene_ir["schema_version"], "0.1")
+        self.assertEqual(scene_ir["schema_version"], "0.2")
         self.assertEqual(len(scene_ir["camera"]["state_track"]["samples"]), 144)
         self.assertEqual(checkpoint["candidate"]["revision"], result.final_revision)
 

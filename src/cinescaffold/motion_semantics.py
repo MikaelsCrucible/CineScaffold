@@ -40,11 +40,11 @@ class PlanningMotionShape:
     path_family: PlanningPathFamily
 
 
-def planning_motion_shape(semantics: dict[str, Any]) -> PlanningMotionShape | None:
+def planning_motion_shape(semantics: dict[str, Any]) -> PlanningMotionShape:
     """Translate the closed Semantic vocabulary into Planning's closed vocabulary.
 
-    ``None`` is reserved for legacy Briefs without a typed ``motion_mode``. Invalid
-    combinations raise here so every builder and validator shares one contract.
+    Missing or invalid typed semantics are rejected so every builder and validator
+    shares the current contract.
     """
 
     motion_mode = semantics.get("motion_mode")
@@ -54,7 +54,7 @@ def planning_motion_shape(semantics: dict[str, Any]) -> PlanningMotionShape | No
     path_type = semantics.get("path_type")
 
     if motion_mode is None:
-        return None
+        raise ValueError("缺少 motion_mode")
     if motion_mode == "stationary":
         return PlanningMotionShape("hold", "none", None, None, "stationary")
     if motion_mode == "local_interaction":

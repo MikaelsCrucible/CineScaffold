@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import hashlib
 import json
 import subprocess
@@ -86,7 +85,6 @@ class ExecutionRunner:
         started = time.monotonic()
         self._emit("execution_validation_started")
         try:
-            payload = _upgrade_legacy_scene_ir(payload)
             scene_ir = SceneIR.model_validate(payload)
             validate_scene_ir_for_execution(scene_ir)
         except Exception as error:
@@ -783,23 +781,3 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return f"sha256:{digest.hexdigest()}"
-
-
-def _upgrade_legacy_scene_ir(payload: dict[str, Any]) -> dict[str, Any]:
-    timeline = payload.get("timeline")
-    if not isinstance(timeline, dict) or "duration_resolution" in timeline:
-        return payload
-    duration = timeline.get("duration_seconds")
-    frame_count = timeline.get("frame_count")
-    if not isinstance(duration, (int, float)) or not isinstance(frame_count, int):
-        return payload
-    upgraded = copy.deepcopy(payload)
-    upgraded["timeline"]["duration_resolution"] = {
-        "request": {"mode": "legacy_frozen"},
-        "resolution_method": "legacy_frozen",
-        "proposed_duration_seconds": duration,
-        "resolved_duration_seconds": duration,
-        "frame_count": frame_count,
-        "reason": "从旧版已冻结 Scene IR 迁移；原始时长请求类型未知。",
-    }
-    return upgraded

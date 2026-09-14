@@ -23,7 +23,7 @@ class SemanticParserTest(unittest.TestCase):
         )
         result = parse_cinematic_brief("测试自然语言", provider, config)
 
-        self.assertEqual(result["schema_version"], "0.6")
+        self.assertEqual(result["schema_version"], "0.7")
         self.assertEqual(
             result["content"]["camera"]["view_relation_to_motion"],
             {

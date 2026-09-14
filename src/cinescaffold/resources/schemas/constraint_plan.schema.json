@@ -892,7 +892,6 @@
               "cinematic_brief": "#/$defs/BriefDurationRequest",
               "exact": "#/$defs/ExactDurationRequest",
               "inferred": "#/$defs/InferredDurationRequest",
-              "legacy_frozen": "#/$defs/LegacyDurationRequest",
               "range": "#/$defs/RangeDurationRequest"
             },
             "propertyName": "mode"
@@ -908,9 +907,6 @@
               "$ref": "#/$defs/InferredDurationRequest"
             },
             {
-              "$ref": "#/$defs/LegacyDurationRequest"
-            },
-            {
               "$ref": "#/$defs/BriefDurationRequest"
             }
           ],
@@ -921,7 +917,6 @@
             "user_exact",
             "agent_within_user_range",
             "agent_inferred",
-            "legacy_frozen",
             "brief_explicit",
             "brief_inferred",
             "brief_default"
@@ -1438,21 +1433,6 @@
         "minimum_inside_fraction"
       ],
       "title": "KeepInFrameParameters",
-      "type": "object"
-    },
-    "LegacyDurationRequest": {
-      "additionalProperties": false,
-      "properties": {
-        "mode": {
-          "const": "legacy_frozen",
-          "title": "Mode",
-          "type": "string"
-        }
-      },
-      "required": [
-        "mode"
-      ],
-      "title": "LegacyDurationRequest",
       "type": "object"
     },
     "LemniscatePathSpec": {
@@ -2469,6 +2449,7 @@
         },
         "interpolation": {
           "default": "linear",
+          "description": "Track 全局插值；transform/visibility/focal_length 中会作为仍使用 linear 默认值的关键帧段之回退，关键帧显式 step/smooth 优先；visibility 为布尔通道，始终按 step 求值",
           "enum": [
             "step",
             "linear",
@@ -2495,6 +2476,14 @@
           ],
           "default": null,
           "title": "Source Ref"
+        },
+        "source_refs": {
+          "description": "同一轨道同时实现的其他 Brief 来源；source_ref 保留主来源",
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
         }
       },
       "required": [
@@ -2794,8 +2783,8 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": "0.1",
-      "default": "0.1",
+      "const": "0.2",
+      "default": "0.2",
       "title": "Schema Version",
       "type": "string"
     },

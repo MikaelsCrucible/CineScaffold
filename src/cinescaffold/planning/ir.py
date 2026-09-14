@@ -232,11 +232,9 @@ class AcceptanceIR(StrictModel):
 
 
 class ProvenanceIR(StrictModel):
-    cinematic_brief_schema_version: Literal[
-        "0.1", "0.2", "0.3", "0.4", "0.5", "0.6"
-    ] = "0.1"
+    cinematic_brief_schema_version: Literal["0.7"]
     cinematic_brief_hash: str
-    constraint_plan_schema_version: Literal["0.1"] = "0.1"
+    constraint_plan_schema_version: Literal["0.2"] = "0.2"
     constraint_plan_hash: str
     candidate_revision: int = Field(ge=0)
     candidate_hash: str
@@ -255,7 +253,7 @@ class ProvenanceIR(StrictModel):
 
 
 class SceneIR(StrictModel):
-    schema_version: Literal["0.1"] = "0.1"
+    schema_version: Literal["0.2"] = "0.2"
     scene_id: str
     coordinate_system: CoordinateSystem = Field(default_factory=CoordinateSystem)
     timeline: IRTimeline

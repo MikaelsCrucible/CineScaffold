@@ -101,7 +101,7 @@ class RelationshipBoundaryTest(unittest.TestCase):
 
         self.assertEqual(content["scene_design"]["relationships"], ["not-an-object"])
 
-    def test_unknown_relationship_is_preserved_but_not_guessed_as_proximity(
+    def test_unknown_relationship_is_rejected_at_current_brief_boundary(
         self,
     ) -> None:
         brief = valid_planning_brief()
@@ -117,16 +117,8 @@ class RelationshipBoundaryTest(unittest.TestCase):
                 "temporal_mode": "throughout",
             }
         ]
-        objective = project_objective_brief(brief).objective_brief
-
-        skeleton = build_deterministic_scene_skeleton(objective)
-
-        self.assertEqual(
-            objective.scene_design["relationships"][0]["type"], "visually_echoes"
-        )
-        self.assertFalse(
-            any(relation["kind"] == "proximity" for relation in skeleton["relations"])
-        )
+        with self.assertRaisesRegex(ValueError, "不支持的类型"):
+            project_objective_brief(brief)
 
     def test_direct_far_and_near_conflict_is_rejected_before_planning(self) -> None:
         content = {

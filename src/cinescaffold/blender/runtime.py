@@ -310,7 +310,7 @@ def _validate_payload_shape(scene_ir: dict[str, Any]) -> None:
     missing = sorted(required - set(scene_ir))
     if missing:
         raise ValueError(f"Scene IR 缺少字段：{', '.join(missing)}")
-    if scene_ir["schema_version"] != "0.1":
+    if scene_ir["schema_version"] != "0.2":
         raise ValueError(f"不支持的 Scene IR 版本：{scene_ir['schema_version']}")
 
 

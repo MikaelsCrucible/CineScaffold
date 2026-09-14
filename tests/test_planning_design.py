@@ -160,7 +160,7 @@ class PlanningDesignTest(unittest.TestCase):
         objective = project_objective_brief(valid_planning_brief()).objective_brief
         objective = objective.model_copy(
             update={
-                "schema_version": "0.6",
+                "schema_version": "0.7",
                 "subject_motion": [
                     {
                         "motion_id": "required_hold",
@@ -217,7 +217,7 @@ class PlanningDesignTest(unittest.TestCase):
         objective = project_objective_brief(valid_planning_brief()).objective_brief
         objective = objective.model_copy(
             update={
-                "schema_version": "0.6",
+                "schema_version": "0.7",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -227,6 +227,8 @@ class PlanningDesignTest(unittest.TestCase):
                     {
                         "motion_id": "gesture_01",
                         "subject_id": "man_01",
+                        "start_time_seconds": 0.0,
+                        "end_time_seconds": 6.0,
                         "motion_semantics": {
                             "motion_mode": "local_interaction",
                             "path_type": "stationary",
@@ -275,7 +277,7 @@ class PlanningDesignTest(unittest.TestCase):
         source = _desert_toolkit()
         objective = source.objective_brief.model_copy(
             update={
-                "schema_version": "0.6",
+                "schema_version": "0.7",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -552,7 +554,7 @@ class PlanningDesignTest(unittest.TestCase):
         source = _desert_toolkit()
         objective = source.objective_brief.model_copy(
             update={
-                "schema_version": "0.6",
+                "schema_version": "0.7",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -629,7 +631,7 @@ class PlanningDesignTest(unittest.TestCase):
         source = _desert_toolkit()
         objective = source.objective_brief.model_copy(
             update={
-                "schema_version": "0.6",
+                "schema_version": "0.7",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -1003,7 +1005,7 @@ class PlanningDesignTest(unittest.TestCase):
         option = result["data"]["options"][0]
         toolkit.apply_design_option(0, option["option_id"])
         state = toolkit.store.get()
-        ratio, clearance_m, characteristic_extent_m = surface_clearance_ratio(
+        _ratio, clearance_m, characteristic_extent_m = surface_clearance_ratio(
             state.entities["man_01"].proxy,
             state.entities["man_01"].solved_transform,
             state.entities["ship_01"].proxy,
@@ -1016,7 +1018,11 @@ class PlanningDesignTest(unittest.TestCase):
             if item.type == "collision_clearance"
         )
         self.assertAlmostEqual(clearance_m, constraint.parameters.minimum_meters)
-        self.assertLessEqual(ratio, 0.5)
+        self.assertAlmostEqual(
+            clearance_m,
+            min(toolkit.objective_brief.translation_parameters["scene"]["dimensions_m"])
+            * toolkit.profile.far_scene_extent_ratio,
+        )
         self.assertGreater(characteristic_extent_m, 20.0)
         self.assertLess(
             math.dist(
@@ -1545,12 +1551,16 @@ class PlanningDesignTest(unittest.TestCase):
                     "moon",
                     "visibility",
                     2,
-                    status="inferred",
+                    status="explicit",
+                    motion_id="moon_orbit",
                 ),
                 "visibility_state": "hidden",
                 "transition_at": "at_end",
             }
         )
+        toolkit.objective_brief.subject_motion[2]["motion_semantics"][
+            "postconditions"
+        ]["external_visibility"] = "hidden"
         toolkit.submit_scene_skeleton(skeleton)
 
         result = toolkit.request_design_options(max_options=1)
@@ -1725,6 +1735,7 @@ class PlanningDesignTest(unittest.TestCase):
                 "carrier_id": None,
                 "path_type": "linear" if index == 1 else "stationary",
                 "timeline_event_id": "arrival_and_boarding",
+                "narrative_required": True,
                 "postconditions": {
                     "contained_by_id": "car" if index == 2 else None,
                     "external_visibility": "hidden" if index == 2 else "unchanged",
@@ -1733,9 +1744,23 @@ class PlanningDesignTest(unittest.TestCase):
             }
         skeleton = _pickup_skeleton()
         skeleton["motion_phases"][1]["timeline_event_id"] = "arrival_and_boarding"
+        skeleton["motion_phases"][1].update(
+            direction_mode="toward_target",
+            target_id="man",
+        )
         skeleton["motion_phases"][2]["timeline_event_id"] = "arrival_and_boarding"
+        skeleton["motion_phases"][2].update(
+            kind="local_transform",
+            direction_mode="none",
+            target_id=None,
+            path_family="stationary",
+            local_components=["rotation", "scale"],
+        )
         skeleton["motion_phases"][3]["timeline_event_id"] = "arrival_and_boarding"
         skeleton["relations"][1]["timeline_event_id"] = "arrival_and_boarding"
+        toolkit.objective_brief.scene_design["relationships"][0][
+            "timeline_event_id"
+        ] = "arrival_and_boarding"
         toolkit.submit_scene_skeleton(skeleton)
 
         options = toolkit.request_design_options(max_options=1)
@@ -1750,13 +1775,12 @@ class PlanningDesignTest(unittest.TestCase):
             ],
             [3.0, 5.958333333333333],
         )
-        self.assertEqual(
-            [
-                item.time_seconds
-                for item in state.motion_tracks["design_motion_man"].keyframes
-            ],
-            [0.0, 3.9583333333333335, 6.0, 7.958333333333333],
-        )
+        man_times = [
+            item.time_seconds
+            for item in state.motion_tracks["design_motion_man"].keyframes
+        ]
+        self.assertEqual(man_times[0], 6.0)
+        self.assertEqual(man_times[-1], 7.958333333333333)
         codes = {item["code"] for item in toolkit.validate_candidate()["violations"]}
         self.assertNotIn("MOTION_MODE_STATIONARY_VIOLATED", codes)
 
@@ -1824,8 +1848,8 @@ class PlanningDesignTest(unittest.TestCase):
                 "action_kind": "approach",
                 "motion_type": "moving",
                 "motion_mode": "self_propelled",
-                "direction_mode": "toward_target",
-                "target_id": "man",
+                "direction_mode": "world_forward",
+                "target_id": None,
                 "carrier_id": None,
                 "path_type": "linear",
                 "timeline_event_id": "wait_and_arrive",
@@ -1854,8 +1878,8 @@ class PlanningDesignTest(unittest.TestCase):
                 "action_kind": "depart",
                 "motion_type": "moving",
                 "motion_mode": "self_propelled",
-                "direction_mode": "away_from_target",
-                "target_id": "man",
+                "direction_mode": "world_forward",
+                "target_id": None,
                 "carrier_id": None,
                 "path_type": "linear",
                 "timeline_event_id": "departure",
@@ -1882,10 +1906,16 @@ class PlanningDesignTest(unittest.TestCase):
             },
         }
         for index, value in semantics.items():
+            value["narrative_required"] = True
             toolkit.objective_brief.subject_motion[index]["motion_semantics"] = value
         skeleton = _pickup_skeleton()
+        skeleton["motion_phases"][1]["direction_mode"] = "world_forward"
+        skeleton["motion_phases"][2].update(
+            direction_mode="toward_target",
+            target_id="car",
+        )
         skeleton["motion_phases"][5]["target_id"] = None
-        skeleton["motion_phases"][5]["direction_mode"] = "world_right"
+        skeleton["motion_phases"][5]["direction_mode"] = "world_forward"
         toolkit.submit_scene_skeleton(skeleton)
 
         options = toolkit.request_design_options(max_options=1)
@@ -1893,16 +1923,12 @@ class PlanningDesignTest(unittest.TestCase):
         toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
         state = toolkit.store.get()
         car_track = state.motion_tracks["design_motion_car"]
-        man_position = state.entities["man"].solved_transform.translation_m
         approach_start = car_track.keyframes[0].value.translation_m
         approach_end = car_track.keyframes[1].value.translation_m
         departure_start = car_track.keyframes[-2].value.translation_m
         departure_end = car_track.keyframes[-1].value.translation_m
 
-        self.assertGreater(
-            abs(approach_start[0] - man_position[0]),
-            abs(approach_end[0] - man_position[0]),
-        )
+        self.assertGreater(math.dist(approach_start, approach_end), 0.5)
         self.assertGreater(
             abs(departure_end[0] - departure_start[0])
             + abs(departure_end[1] - departure_start[1]),
@@ -1930,6 +1956,7 @@ class PlanningDesignTest(unittest.TestCase):
                 "carrier_id": None,
                 "path_type": "linear",
                 "timeline_event_id": "wait_and_arrive" if index == 1 else "departure",
+                "narrative_required": True,
                 "postconditions": {
                     "contained_by_id": None,
                     "external_visibility": "unchanged",
@@ -1940,8 +1967,6 @@ class PlanningDesignTest(unittest.TestCase):
         skeleton = _pickup_skeleton()
         skeleton["motion_phases"][1].update(direction_mode="none", target_id=None)
         skeleton["motion_phases"][5].update(direction_mode="none", target_id=None)
-        # 推断的进入用显隐和后续载运表达，不虚构朝载体移动。
-        del skeleton["motion_phases"][2]
         toolkit.submit_scene_skeleton(skeleton)
 
         options = toolkit.request_design_options(max_options=1)
@@ -1971,8 +1996,15 @@ class PlanningDesignTest(unittest.TestCase):
         skeleton = _pickup_skeleton()
         skeleton["relations"][1].update(
             timeline_event_id="boarding",
+            temporal_mode="at_start",
         )
-        skeleton["relations"][2]["temporal_mode"] = "at_start"
+        toolkit.objective_brief.scene_design["relationships"][0][
+            "timeline_event_id"
+        ] = "boarding"
+        toolkit.objective_brief.scene_design["relationships"][0][
+            "temporal_mode"
+        ] = "at_start"
+        del skeleton["relations"][2]
         skeleton["motion_phases"][1].update(
             direction_mode="none",
             target_id=None,
@@ -1982,7 +2014,6 @@ class PlanningDesignTest(unittest.TestCase):
             target_id=None,
         )
         skeleton["route_intents"][0]["continuity"] = "preserve_direction"
-        del skeleton["motion_phases"][2]
         accepted = toolkit.submit_scene_skeleton(skeleton)
 
         self.assertEqual(accepted["data"]["route_intent_count"], 1)
@@ -2025,15 +2056,23 @@ class PlanningDesignTest(unittest.TestCase):
         )
         toolkit = ScenePlanningToolkit(objective)
         skeleton = _pickup_skeleton()
-        skeleton["relations"][1].update(timeline_event_id="boarding")
-        skeleton["relations"][2]["temporal_mode"] = "at_start"
+        skeleton["relations"][1].update(
+            timeline_event_id="boarding",
+            temporal_mode="at_start",
+        )
+        toolkit.objective_brief.scene_design["relationships"][0][
+            "timeline_event_id"
+        ] = "boarding"
+        toolkit.objective_brief.scene_design["relationships"][0][
+            "temporal_mode"
+        ] = "at_start"
+        del skeleton["relations"][2]
         skeleton["motion_phases"][1].update(direction_mode="none", target_id=None)
         skeleton["motion_phases"][5].update(direction_mode="none", target_id=None)
         skeleton["route_intents"][0].update(
             axis_reference_id="road",
             continuity="preserve_direction",
         )
-        del skeleton["motion_phases"][2]
         toolkit.submit_scene_skeleton(skeleton)
 
         options = toolkit.request_design_options(max_options=1)
@@ -2089,6 +2128,7 @@ class PlanningDesignTest(unittest.TestCase):
             "path_type": "linear",
             "direction_mode": "toward_target",
             "timeline_event_id": "boarding",
+            "narrative_required": True,
             "postconditions": {
                 "contained_by_id": "car",
                 "external_visibility": "hidden",
@@ -2345,7 +2385,7 @@ def _typed_solar_toolkit() -> ScenePlanningToolkit:
         )
     objective = source.objective_brief.model_copy(
         update={
-            "schema_version": "0.6",
+            "schema_version": "0.7",
             "scene_dynamics": {
                 "mode": "dynamic",
                 "source_status": "inferred",
@@ -2447,7 +2487,7 @@ def _pickup_skeleton() -> dict:
                 "subject_id": "man",
                 "reference_id": "road",
                 "source_status": "inferred",
-                "source_ref": "content.scene_design.relationships[0]",
+                "source_ref": "translation_parameters.scene.asset_key",
             },
             {
                 "relation_id": "car_stops_beside_man",
@@ -2457,7 +2497,7 @@ def _pickup_skeleton() -> dict:
                 "timeline_event_id": "wait_and_arrive",
                 "temporal_mode": "at_end",
                 "source_status": "explicit",
-                "source_ref": "content.scene_design.relationships[1]",
+                "source_ref": "content.scene_design.relationships[0]",
             },
             {
                 "relation_id": "man_boards_car",
@@ -2467,7 +2507,7 @@ def _pickup_skeleton() -> dict:
                 "timeline_event_id": "boarding",
                 "temporal_mode": "at_end",
                 "source_status": "inferred",
-                "source_ref": "content.scene_design.relationships[2]",
+                "source_ref": "content.scene_design.relationships[1]",
             },
         ],
         "motion_phases": [
@@ -2478,8 +2518,6 @@ def _pickup_skeleton() -> dict:
                 "path_move",
                 1,
                 event="wait_and_arrive",
-                target_id="man",
-                direction="toward_target",
                 path="linear",
             ),
             _symbolic_phase(
@@ -2488,9 +2526,8 @@ def _pickup_skeleton() -> dict:
                 "path_move",
                 2,
                 event="boarding",
-                target_id="car",
-                direction="toward_target",
                 path="linear",
+                motion_id="man_board",
             ),
             {
                 **_symbolic_phase(
@@ -2499,6 +2536,7 @@ def _pickup_skeleton() -> dict:
                     "visibility",
                     2,
                     event="boarding",
+                    motion_id="man_board",
                 ),
                 "visibility_state": "hidden",
                 "transition_at": "at_end",
@@ -2512,8 +2550,6 @@ def _pickup_skeleton() -> dict:
                 "path_move",
                 4,
                 event="departure",
-                target_id="man",
-                direction="away_from_target",
                 path="linear",
             ),
             _symbolic_phase(
@@ -2592,9 +2628,11 @@ def _symbolic_phase(
     direction: str = "none",
     path: str = "stationary",
     status: str = "explicit",
+    motion_id: str | None = None,
 ) -> dict:
     return {
         "phase_id": phase_id,
+        "motion_id": motion_id or phase_id,
         "subject_id": subject_id,
         "kind": kind,
         "timeline_event_id": event,

@@ -242,7 +242,6 @@ def build_deterministic_scene_skeleton(
         )
 
     relations: list[dict[str, Any]] = []
-    orbit_targets: dict[str, str] = {}
     declared_ground_subjects = {
         str(relationship.get("subject_id"))
         for relationship in objective.scene_design.get("relationships", [])
@@ -279,9 +278,7 @@ def build_deterministic_scene_skeleton(
             # Carriage is represented by a typed Motion Phase, not a no-op relation.
             continue
         if meaning.kind == "orbit":
-            # Orbit topology is carried once by the motion phase. Legacy Briefs
-            # still use this relation to infer the target for that phase.
-            orbit_targets[str(subject_id)] = str(reference_id)
+            # Current Briefs carry orbit topology only in typed motion semantics.
             continue
         kind = {
             "far": "camera_depth_order",
@@ -318,7 +315,6 @@ def build_deterministic_scene_skeleton(
             else {}
         )
         motion_type = semantics.get("motion_type")
-        path_type = semantics.get("path_type")
         event_id = semantics.get("timeline_event_id") or _mock_motion_event_id(
             objective,
             motion,
@@ -353,60 +349,12 @@ def build_deterministic_scene_skeleton(
                 if semantics
                 else f"content.subject_motion[{index}].action"
             )
-        motion_mode = semantics.get("motion_mode")
         typed_shape = planning_motion_shape(semantics)
-        if typed_shape is not None:
-            kind = typed_shape.kind
-            path_family = typed_shape.path_family
-            direction_mode = typed_shape.direction_mode
-            target_id = typed_shape.target_id
-            carrier_id = typed_shape.carrier_id
-        elif path_type in {"circular", "elliptical", "orbit_around"} or (
-            motion_mode is None and subject_id in orbit_targets
-        ):
-            kind = "path_move"
-            path_family = "ellipse" if path_type == "elliptical" else "circle"
-            direction_mode = "relative_to_target"
-            target_id = semantics.get("target_id") or orbit_targets.get(subject_id)
-            carrier_id = semantics.get("carrier_id")
-        elif motion_mode is None and (
-            motion_type == "interactive" or speed_intent == "stationary"
-        ):
-            kind = "local_transform" if motion_type == "interactive" else "hold"
-            path_family = "stationary"
-            direction_mode = "none"
-            target_id = None
-            carrier_id = None
-        elif (
-            motion_mode is None
-            and motion_type is None
-            and path_type is None
-            and speed_intent == "unspecified"
-            and _annotated_value(motion.get("trajectory")) is None
-        ):
-            # Legacy Briefs predate typed motion semantics.  Absence of both a
-            # structured trajectory and a non-zero speed is not evidence for
-            # translation; inventing a default line made stationary reference
-            # bodies (for example an orbit center) drift across the shot.
-            kind = "hold"
-            path_family = "stationary"
-            direction_mode = "none"
-            target_id = None
-            carrier_id = None
-        else:
-            kind = "path_move"
-            path_family = (
-                "parabolic"
-                if path_type == "parabolic"
-                else "catmull_rom"
-                if path_type == "s_curve"
-                else "lemniscate"
-                if path_type == "figure_eight"
-                else "linear"
-            )
-            target_id = semantics.get("target_id")
-            direction_mode = semantics.get("direction_mode") or "none"
-            carrier_id = semantics.get("carrier_id")
+        kind = typed_shape.kind
+        path_family = typed_shape.path_family
+        direction_mode = typed_shape.direction_mode
+        target_id = typed_shape.target_id
+        carrier_id = typed_shape.carrier_id
         phase_id = f"motion_{index + 1:02d}"
         phases.append(
             {
@@ -621,7 +569,7 @@ def build_deterministic_scene_skeleton(
 
 
 def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
-    """Backward-compatible test helper for the deterministic fallback builder."""
+    """Test alias for the deterministic fallback builder."""
 
     return build_deterministic_scene_skeleton(objective)
 

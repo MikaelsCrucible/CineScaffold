@@ -444,6 +444,7 @@ def _typed_motion_toolkit(
         "carrier_id": None,
         "path_type": path_type,
         "timeline_event_id": None,
+        "narrative_required": True,
         "postconditions": {
             "contained_by_id": contained_by_id,
             "external_visibility": external_visibility,
@@ -452,6 +453,7 @@ def _typed_motion_toolkit(
         "source_text": "generic audit motion",
     }
     motion = {
+        "motion_id": "generic_motion",
         "subject_id": subject_id,
         "action": {"value": "generic motion", "source_status": "explicit", "source_text": "generic motion"},
         "motion_semantics": semantics,
@@ -459,10 +461,15 @@ def _typed_motion_toolkit(
         "end_time_seconds": 6.0,
     }
     objective = ObjectivePlanningBrief(
-        schema_version="0.4",
+        schema_version="0.7",
         source_brief_sha256="sha256:generality-audit",
         subjects=[{"id": subject_id}, {"id": target_id}],
         subject_motion=[motion],
+        scene_dynamics={
+            "mode": "static" if motion_mode == "stationary" else "dynamic",
+            "source_status": "inferred",
+            "reason": "generic audit fixture",
+        },
         scene_design={"relationships": []},
         composition={},
         camera={},

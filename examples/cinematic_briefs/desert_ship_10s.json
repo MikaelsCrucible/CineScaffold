@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1",
+  "schema_version": "0.7",
   "content": {
     "summary": "一个男人站在荒漠里，远处有巨大的飞船，整体孤独而压迫，镜头缓慢推近。",
     "subjects": [
@@ -51,11 +51,29 @@
     ],
     "subject_motion": [
       {
+        "motion_id": "default_hold_man_01",
         "subject_id": "man_01",
         "action": {
-          "value": "静止站立",
-          "source_status": "inferred",
-          "source_text": "一个男人站在荒漠里"
+          "value": "站立/静止",
+          "source_status": "default",
+          "source_text": null
+        },
+        "motion_semantics": {
+          "action_kind": "hold",
+          "motion_type": "static",
+          "motion_mode": "stationary",
+          "direction_mode": "none",
+          "target_id": null,
+          "carrier_id": null,
+          "path_type": "stationary",
+          "timeline_event_id": null,
+          "narrative_required": false,
+          "postconditions": {
+            "contained_by_id": null,
+            "external_visibility": "unchanged"
+          },
+          "source_status": "default",
+          "source_text": null
         },
         "direction": {
           "value": null,
@@ -64,16 +82,60 @@
         },
         "speed": {
           "value": "静止",
-          "source_status": "inferred",
-          "source_text": "一个男人站在荒漠里"
+          "source_status": "default",
+          "source_text": null
         },
         "trajectory": {
           "value": null,
           "source_status": "unknown",
           "source_text": null
         },
-        "start_time_seconds": null,
-        "end_time_seconds": null,
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 10.0,
+        "secondary_motion": []
+      },
+      {
+        "motion_id": "default_hold_ship_01",
+        "subject_id": "ship_01",
+        "action": {
+          "value": "站立/静止",
+          "source_status": "default",
+          "source_text": null
+        },
+        "motion_semantics": {
+          "action_kind": "hold",
+          "motion_type": "static",
+          "motion_mode": "stationary",
+          "direction_mode": "none",
+          "target_id": null,
+          "carrier_id": null,
+          "path_type": "stationary",
+          "timeline_event_id": null,
+          "narrative_required": false,
+          "postconditions": {
+            "contained_by_id": null,
+            "external_visibility": "unchanged"
+          },
+          "source_status": "default",
+          "source_text": null
+        },
+        "direction": {
+          "value": null,
+          "source_status": "unknown",
+          "source_text": null
+        },
+        "speed": {
+          "value": "静止",
+          "source_status": "default",
+          "source_text": null
+        },
+        "trajectory": {
+          "value": null,
+          "source_status": "unknown",
+          "source_text": null
+        },
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 10.0,
         "secondary_motion": []
       }
     ],
@@ -109,12 +171,14 @@
       ],
       "relationships": [
         {
-          "type": "远处",
+          "type": "far_from",
           "subject_id": "ship_01",
           "reference_id": "man_01",
-          "strength": "明显",
+          "strength": "scene_relative",
           "source_status": "explicit",
-          "source_text": "远处有巨大的飞船"
+          "source_text": "远处有巨大的飞船",
+          "timeline_event_id": null,
+          "temporal_mode": "throughout"
         }
       ],
       "environmental_motion": [
@@ -145,7 +209,28 @@
           "source_text": "感觉很孤独"
         }
       ],
-      "lighting_intent": [],
+      "lighting_intent": [
+        {
+          "value": "主光垂直角度 -90°",
+          "source_status": "inferred",
+          "source_text": "感觉很孤独"
+        },
+        {
+          "value": "环境光强度 0.2",
+          "source_status": "inferred",
+          "source_text": "感觉很孤独"
+        },
+        {
+          "value": "阴影硬度 0.9",
+          "source_status": "inferred",
+          "source_text": "感觉很孤独"
+        },
+        {
+          "value": "仅供最终视频生成，不应用到 Blender 白模",
+          "source_status": "inferred",
+          "source_text": "感觉很孤独"
+        }
+      ],
       "atmosphere": [
         {
           "value": "冷峻",
@@ -162,37 +247,37 @@
       },
       "patterns": [
         {
-          "value": "人物小比例",
+          "value": "主体占画幅 1%-5%",
           "source_status": "inferred",
-          "source_text": "一个男人站在荒漠里，远处有巨大的飞船"
+          "source_text": "感觉很孤独"
         },
         {
-          "value": "巨物主义",
+          "value": "负空间占比 70%-100%",
           "source_status": "inferred",
-          "source_text": "巨大的飞船"
+          "source_text": "感觉很孤独"
         },
         {
-          "value": "负空间",
+          "value": "主要物体占画幅 10%-30%",
           "source_status": "inferred",
-          "source_text": "荒漠里，远处有巨大的飞船"
+          "source_text": "感觉很孤独"
         }
       ],
       "screen_placements": [],
       "visual_scales": [
-        {
-          "subject_id": "man_01",
-          "scale": {
-            "value": "画面中小比例",
-            "source_status": "inferred",
-            "source_text": "一个男人站在荒漠里，远处有巨大的飞船"
-          }
-        },
         {
           "subject_id": "ship_01",
           "scale": {
             "value": "相对男人巨大",
             "source_status": "explicit",
             "source_text": "巨大的飞船"
+          }
+        },
+        {
+          "subject_id": "man_01",
+          "scale": {
+            "value": "1%-5%",
+            "source_status": "inferred",
+            "source_text": "感觉很孤独"
           }
         }
       ],
@@ -210,19 +295,19 @@
         "source_text": "巨大的飞船"
       },
       "camera_height": {
-        "value": "低机位",
+        "value": "1.2 m",
         "source_status": "inferred",
-        "source_text": "巨大的飞船"
+        "source_text": "感觉很孤独"
       },
       "lens_intent": {
-        "value": null,
-        "source_status": "unknown",
-        "source_text": null
+        "value": "50 mm",
+        "source_status": "inferred",
+        "source_text": "感觉很孤独"
       },
       "focus_target_id": {
         "value": "man_01",
         "source_status": "inferred",
-        "source_text": "一个男人站在荒漠里"
+        "source_text": "感觉很孤独"
       },
       "movement": {
         "type": {
@@ -243,24 +328,49 @@
         "trajectory": {
           "value": "直线",
           "source_status": "inferred",
-          "source_text": "镜头慢慢推近"
+          "source_text": "感觉很孤独"
         },
         "easing": {
           "value": null,
           "source_status": "unknown",
           "source_text": null
         },
-        "start_time_seconds": null,
-        "end_time_seconds": null
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 10.0,
+        "target_id": null
+      },
+      "view_relation_to_motion": {
+        "value": "unspecified",
+        "source_status": "unknown",
+        "source_text": null
       }
     },
     "timeline": {
       "duration_seconds": 10.0,
       "duration_range_seconds": null,
       "duration_source_status": "explicit",
-      "events": []
+      "events": [],
+      "relations": []
     },
-    "uncertainties": []
+    "uncertainties": [
+      {
+        "field": "subject_motion[man_01]",
+        "reason": "用户未明确提供该输入槽位，按转换规则使用缺省值",
+        "resolution": "use_default",
+        "selected_value": "站立/静止"
+      },
+      {
+        "field": "subject_motion[ship_01]",
+        "reason": "用户未明确提供该输入槽位，按转换规则使用缺省值",
+        "resolution": "use_default",
+        "selected_value": "站立/静止"
+      }
+    ],
+    "scene_dynamics": {
+      "mode": "static",
+      "source_status": "inferred",
+      "reason": "根据主体运动和状态转换确定"
+    }
   },
   "provenance": {
     "source_prompt": "我想要一个男人站在荒漠里，远处有巨大的飞船，感觉很孤独，镜头慢慢推近。视频时长10秒。",
@@ -268,6 +378,241 @@
     "model": "mock-cinematic-brief-v0.1",
     "parser_prompt_version": "semantic-parser-v0.1",
     "rules_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-    "response_id": "mock-response-001"
+    "response_id": "mock-response-001",
+    "translation_rules_sha256": "ef0c4829a8b10218543bc1c3bd58b9b53f3baf366fd03350d8aa69edf8ce46df"
+  },
+  "translation_parameters": {
+    "schema_version": "0.5",
+    "rules_version": "semantic-translation-v0.9",
+    "coordinate_system": {
+      "handedness": "right",
+      "up_axis": "+Z",
+      "forward_vector": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    "input_slots": {
+      "who": [
+        {
+          "value": "男人",
+          "source_status": "explicit",
+          "source_text": "一个男人"
+        },
+        {
+          "value": "飞船",
+          "source_status": "explicit",
+          "source_text": "巨大的飞船"
+        }
+      ],
+      "where": {
+        "value": "荒漠",
+        "source_status": "explicit",
+        "source_text": "荒漠里"
+      },
+      "doing": [
+        {
+          "value": "站立/静止",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "站立/静止",
+          "source_status": "default",
+          "source_text": null
+        }
+      ],
+      "feeling": [
+        {
+          "value": "孤独",
+          "source_status": "explicit",
+          "source_text": "感觉很孤独"
+        },
+        {
+          "value": "压迫",
+          "source_status": "inferred",
+          "source_text": "远处有巨大的飞船，感觉很孤独"
+        }
+      ]
+    },
+    "emotion_class": {
+      "class_id": "E1",
+      "label": "渺小",
+      "matched_keyword": "孤独",
+      "source_status": "explicit",
+      "derived_status": "inferred"
+    },
+    "subjects": [
+      {
+        "subject_id": "man_01",
+        "quantity_min": 1,
+        "quantity_max": 1,
+        "quantity_source_status": "inferred",
+        "reference_height_m": 1.75,
+        "height_source_status": "inferred",
+        "ground_contact_position_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "facing_direction_world": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "placement_source_status": "default",
+        "dominant_scale_multiplier_range": [
+          1.0,
+          1.0
+        ],
+        "minimum_footprint_m": null,
+        "minimum_height_m": null,
+        "default_scene_depth_ratio": null
+      },
+      {
+        "subject_id": "ship_01",
+        "quantity_min": 1,
+        "quantity_max": 1,
+        "quantity_source_status": "default",
+        "reference_height_m": 1.75,
+        "height_source_status": "default",
+        "ground_contact_position_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "facing_direction_world": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "placement_source_status": "default",
+        "dominant_scale_multiplier_range": [
+          1.5,
+          3.0
+        ],
+        "minimum_footprint_m": [
+          10.0,
+          10.0
+        ],
+        "minimum_height_m": null,
+        "default_scene_depth_ratio": 0.5
+      }
+    ],
+    "motions": [
+      {
+        "motion_index": 0,
+        "motion_id": "default_hold_man_01",
+        "subject_id": "man_01",
+        "action_kind": "hold",
+        "motion_type": "static",
+        "motion_mode": "stationary",
+        "speed_range_mps": [
+          0.0,
+          0.0
+        ],
+        "direction_mode": "none",
+        "direction_vector_world": null,
+        "target_id": null,
+        "carrier_id": null,
+        "path_type": "stationary",
+        "timeline_event_id": null,
+        "narrative_required": false,
+        "postconditions": {
+          "contained_by_id": null,
+          "external_visibility": "unchanged"
+        },
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 10.0,
+        "source_status": "default"
+      },
+      {
+        "motion_index": 1,
+        "motion_id": "default_hold_ship_01",
+        "subject_id": "ship_01",
+        "action_kind": "hold",
+        "motion_type": "static",
+        "motion_mode": "stationary",
+        "speed_range_mps": [
+          0.0,
+          0.0
+        ],
+        "direction_mode": "none",
+        "direction_vector_world": null,
+        "target_id": null,
+        "carrier_id": null,
+        "path_type": "stationary",
+        "timeline_event_id": null,
+        "narrative_required": false,
+        "postconditions": {
+          "contained_by_id": null,
+          "external_visibility": "unchanged"
+        },
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 10.0,
+        "source_status": "default"
+      }
+    ],
+    "scene_dynamics": {
+      "mode": "static",
+      "source_status": "inferred",
+      "reason": "根据主体运动和状态转换确定"
+    },
+    "temporal_relations": [],
+    "scene": {
+      "environment_label": "荒漠",
+      "asset_key": "desert",
+      "dimensions_m": [
+        200.0,
+        200.0
+      ],
+      "asset_resolution": "proxy_fallback",
+      "source_status": "inferred"
+    },
+    "camera": {
+      "height_m": 1.2,
+      "focal_length_mm": 50.0,
+      "movement": "push_in",
+      "speed_mps": 1.0,
+      "start_distance_m": 15.0,
+      "end_distance_m": 5.0,
+      "focus": "primary_subject",
+      "source_status": "explicit"
+    },
+    "composition": {
+      "subject_frame_ratio": [
+        0.01,
+        0.05
+      ],
+      "negative_space_ratio": [
+        0.7,
+        1.0
+      ],
+      "major_object_frame_ratio": [
+        0.1,
+        0.3
+      ],
+      "source_status": "inferred"
+    },
+    "lighting": {
+      "key_vertical_angle_degrees": -90.0,
+      "ambient_intensity": 0.2,
+      "shadow_hardness": 0.9,
+      "key_intensity": null,
+      "source_status": "inferred",
+      "application_scope": "final_video_generation_only",
+      "applied_to_blender_preview": false
+    },
+    "explicit_override_paths": [
+      "camera.movement.type",
+      "camera.movement.speed",
+      "composition.visual_scales[0].scale"
+    ],
+    "precedence": [
+      "explicit",
+      "inferred",
+      "default"
+    ]
   }
 }

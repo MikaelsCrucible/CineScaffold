@@ -22,6 +22,8 @@
 
 ### Changed
 
+- Core 0.8.25 / Semantic Parser v0.12 / Toolkit v0.42 建立不可回退的当前产物边界：只接受 Cinematic Brief v0.7、Constraint Plan v0.2、Scene IR v0.2 和 Executor API v0.3；删除旧 Brief 投影、缺字段 Scene IR 自动升级、`legacy_frozen` 时长类型以及无类型运动的确定性猜测分支。旧中间产物必须重新生成，已交付 MP4/GLB 不受影响。
+- Cinematic Brief v0.7 要求每条主体动作和已声明事件直接提供数值时间范围；Schema 不再允许 `null` 后再由规则层猜测恢复。动态场景的缺省斜侧机位在 Validator 阈值上保留安全余量，避免浮点与场景焦点偏移造成候选恰好 hard-fail。
 - Core 0.8.23 / Toolkit v0.41 将所有独立主体位移统一为 `path_move`；公转只由 `relative_to_target + target_id + circle/ellipse` 表达，不再在 Planning 层重复提交 `orbit` kind、`orbit_around` direction 或 Skeleton Relation。旧版 Brief 的公转关系仍作为兼容输入确定性转换。
 - 同一工具、同一 revision 的相同确定性失败连续出现两次时停止新的付费 Agent 轮次；Runner 先以无模型的确定性路径判断 Agent 无进展还是框架自身契约冲突，再进入简化交付或诊断结果。
 - Toolkit v0.36 收紧 Semantic→Skeleton→Design→Validator 契约：动态场景必须真实包含主体状态变化，关键 `motion_id` 必须由相容阶段实现；明确画幅比例和水平/垂直画面位置成为 hard constraint；只有线性主体运动启用缺省 20° 斜视规则。

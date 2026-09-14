@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1",
+  "schema_version": "0.7",
   "content": {
     "summary": "10秒内，地球绕太阳公转，同时月亮绕地球公转。",
     "subjects": [
@@ -86,7 +86,25 @@
         },
         "start_time_seconds": 0.0,
         "end_time_seconds": 10.0,
-        "secondary_motion": []
+        "secondary_motion": [],
+        "motion_id": "sun_hold",
+        "motion_semantics": {
+          "action_kind": "hold",
+          "motion_type": "static",
+          "motion_mode": "stationary",
+          "direction_mode": "none",
+          "target_id": null,
+          "carrier_id": null,
+          "path_type": "stationary",
+          "timeline_event_id": null,
+          "narrative_required": false,
+          "postconditions": {
+            "contained_by_id": null,
+            "external_visibility": "unchanged"
+          },
+          "source_status": "inferred",
+          "source_text": "地球绕太阳公转"
+        }
       },
       {
         "subject_id": "earth",
@@ -112,7 +130,25 @@
         },
         "start_time_seconds": 0.0,
         "end_time_seconds": 10.0,
-        "secondary_motion": []
+        "secondary_motion": [],
+        "motion_id": "earth_orbit",
+        "motion_semantics": {
+          "action_kind": "locomotion",
+          "motion_type": "moving",
+          "motion_mode": "self_propelled",
+          "direction_mode": "relative_to_target",
+          "target_id": "sun",
+          "carrier_id": null,
+          "path_type": "circular",
+          "timeline_event_id": null,
+          "narrative_required": true,
+          "postconditions": {
+            "contained_by_id": null,
+            "external_visibility": "unchanged"
+          },
+          "source_status": "inferred",
+          "source_text": "地球绕太阳公转"
+        }
       },
       {
         "subject_id": "moon",
@@ -138,13 +174,31 @@
         },
         "start_time_seconds": 0.0,
         "end_time_seconds": 10.0,
-        "secondary_motion": []
+        "secondary_motion": [],
+        "motion_id": "moon_orbit",
+        "motion_semantics": {
+          "action_kind": "locomotion",
+          "motion_type": "moving",
+          "motion_mode": "self_propelled",
+          "direction_mode": "relative_to_target",
+          "target_id": "earth",
+          "carrier_id": null,
+          "path_type": "circular",
+          "timeline_event_id": null,
+          "narrative_required": true,
+          "postconditions": {
+            "contained_by_id": null,
+            "external_visibility": "unchanged"
+          },
+          "source_status": "inferred",
+          "source_text": "月亮绕地球公转"
+        }
       }
     ],
     "scene_design": {
       "environment": {
-        "value": null,
-        "source_status": "unknown",
+        "value": "空白空间",
+        "source_status": "default",
         "source_text": null
       },
       "spatial_layers": [],
@@ -155,7 +209,9 @@
           "reference_id": "sun",
           "strength": null,
           "source_status": "explicit",
-          "source_text": "地球绕太阳公转"
+          "source_text": "地球绕太阳公转",
+          "timeline_event_id": null,
+          "temporal_mode": "throughout"
         },
         {
           "type": "orbit_around",
@@ -163,15 +219,44 @@
           "reference_id": "earth",
           "strength": null,
           "source_status": "explicit",
-          "source_text": "月亮绕地球公转"
+          "source_text": "月亮绕地球公转",
+          "timeline_event_id": null,
+          "temporal_mode": "throughout"
         }
       ],
       "environmental_motion": []
     },
     "mood": {
-      "emotional_tones": [],
+      "emotional_tones": [
+        {
+          "value": "中性",
+          "source_status": "default",
+          "source_text": null
+        }
+      ],
       "color_intent": [],
-      "lighting_intent": [],
+      "lighting_intent": [
+        {
+          "value": "主光垂直角度 -30°",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "环境光强度 0.5",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "阴影硬度 0.5",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "仅供最终视频生成，不应用到 Blender 白模",
+          "source_status": "default",
+          "source_text": null
+        }
+      ],
       "atmosphere": []
     },
     "composition": {
@@ -180,9 +265,34 @@
         "source_status": "unknown",
         "source_text": null
       },
-      "patterns": [],
+      "patterns": [
+        {
+          "value": "主体占画幅 5%-10%",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "负空间占比 60%-70%",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "主要物体占画幅 15%-30%",
+          "source_status": "default",
+          "source_text": null
+        }
+      ],
       "screen_placements": [],
-      "visual_scales": [],
+      "visual_scales": [
+        {
+          "subject_id": "sun",
+          "scale": {
+            "value": "5%-10%",
+            "source_status": "default",
+            "source_text": null
+          }
+        }
+      ],
       "visibility_requirements": []
     },
     "camera": {
@@ -197,24 +307,24 @@
         "source_text": null
       },
       "camera_height": {
-        "value": null,
-        "source_status": "unknown",
+        "value": "1.5 m",
+        "source_status": "default",
         "source_text": null
       },
       "lens_intent": {
-        "value": null,
-        "source_status": "unknown",
+        "value": "50 mm",
+        "source_status": "default",
         "source_text": null
       },
       "focus_target_id": {
         "value": null,
-        "source_status": "unknown",
+        "source_status": "default",
         "source_text": null
       },
       "movement": {
         "type": {
-          "value": null,
-          "source_status": "unknown",
+          "value": "static",
+          "source_status": "default",
           "source_text": null
         },
         "direction": {
@@ -223,13 +333,13 @@
           "source_text": null
         },
         "speed": {
-          "value": null,
-          "source_status": "unknown",
+          "value": "0 m/s",
+          "source_status": "default",
           "source_text": null
         },
         "trajectory": {
-          "value": null,
-          "source_status": "unknown",
+          "value": "静止",
+          "source_status": "default",
           "source_text": null
         },
         "easing": {
@@ -237,15 +347,22 @@
           "source_status": "unknown",
           "source_text": null
         },
-        "start_time_seconds": null,
-        "end_time_seconds": null
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 10.0,
+        "target_id": null
+      },
+      "view_relation_to_motion": {
+        "value": "unspecified",
+        "source_status": "unknown",
+        "source_text": null
       }
     },
     "timeline": {
       "duration_seconds": 10.0,
       "duration_range_seconds": null,
       "duration_source_status": "explicit",
-      "events": []
+      "events": [],
+      "relations": []
     },
     "uncertainties": [
       {
@@ -259,8 +376,25 @@
         "reason": "用户没有指定构图、机位、焦距或运镜",
         "resolution": "use_inference",
         "selected_value": null
+      },
+      {
+        "field": "scene_design.environment",
+        "reason": "用户未明确提供该输入槽位，按转换规则使用缺省值",
+        "resolution": "use_default",
+        "selected_value": "空白空间"
+      },
+      {
+        "field": "mood.emotional_tones",
+        "reason": "用户未明确提供该输入槽位，按转换规则使用缺省值",
+        "resolution": "use_default",
+        "selected_value": "中性"
       }
-    ]
+    ],
+    "scene_dynamics": {
+      "mode": "dynamic",
+      "source_status": "inferred",
+      "reason": "根据主体运动和状态转换确定"
+    }
   },
   "provenance": {
     "source_prompt": "我想要一个10秒视频 视频内容是地球绕太阳公转，同时月亮绕地球公转",
@@ -268,6 +402,291 @@
     "model": "codex-assisted-semantic-v0.1",
     "parser_prompt_version": "semantic-parser-v0.1",
     "rules_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-    "response_id": null
+    "response_id": null,
+    "translation_rules_sha256": "ef0c4829a8b10218543bc1c3bd58b9b53f3baf366fd03350d8aa69edf8ce46df"
+  },
+  "translation_parameters": {
+    "schema_version": "0.5",
+    "rules_version": "semantic-translation-v0.9",
+    "coordinate_system": {
+      "handedness": "right",
+      "up_axis": "+Z",
+      "forward_vector": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    "input_slots": {
+      "who": [
+        {
+          "value": "太阳",
+          "source_status": "explicit",
+          "source_text": "太阳"
+        },
+        {
+          "value": "地球",
+          "source_status": "explicit",
+          "source_text": "地球"
+        },
+        {
+          "value": "月亮",
+          "source_status": "explicit",
+          "source_text": "月亮"
+        }
+      ],
+      "where": {
+        "value": "空白空间",
+        "source_status": "default",
+        "source_text": null
+      },
+      "doing": [
+        {
+          "value": "作为参照中心保持位置不变",
+          "source_status": "inferred",
+          "source_text": "地球绕太阳公转"
+        },
+        {
+          "value": "绕太阳公转",
+          "source_status": "explicit",
+          "source_text": "地球绕太阳公转"
+        },
+        {
+          "value": "绕地球公转",
+          "source_status": "explicit",
+          "source_text": "月亮绕地球公转"
+        }
+      ],
+      "feeling": [
+        {
+          "value": "中性",
+          "source_status": "default",
+          "source_text": null
+        }
+      ]
+    },
+    "emotion_class": {
+      "class_id": "E6",
+      "label": "中性",
+      "matched_keyword": null,
+      "source_status": "default",
+      "derived_status": "default"
+    },
+    "subjects": [
+      {
+        "subject_id": "sun",
+        "quantity_min": 1,
+        "quantity_max": 1,
+        "quantity_source_status": "default",
+        "reference_height_m": 1.75,
+        "height_source_status": "default",
+        "ground_contact_position_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "facing_direction_world": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "placement_source_status": "default",
+        "dominant_scale_multiplier_range": [
+          1.0,
+          1.0
+        ],
+        "minimum_footprint_m": null,
+        "minimum_height_m": null,
+        "default_scene_depth_ratio": null
+      },
+      {
+        "subject_id": "earth",
+        "quantity_min": 1,
+        "quantity_max": 1,
+        "quantity_source_status": "default",
+        "reference_height_m": 1.75,
+        "height_source_status": "default",
+        "ground_contact_position_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "facing_direction_world": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "placement_source_status": "default",
+        "dominant_scale_multiplier_range": [
+          1.0,
+          1.0
+        ],
+        "minimum_footprint_m": null,
+        "minimum_height_m": null,
+        "default_scene_depth_ratio": null
+      },
+      {
+        "subject_id": "moon",
+        "quantity_min": 1,
+        "quantity_max": 1,
+        "quantity_source_status": "default",
+        "reference_height_m": 1.75,
+        "height_source_status": "default",
+        "ground_contact_position_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "facing_direction_world": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "placement_source_status": "default",
+        "dominant_scale_multiplier_range": [
+          1.0,
+          1.0
+        ],
+        "minimum_footprint_m": null,
+        "minimum_height_m": null,
+        "default_scene_depth_ratio": null
+      }
+    ],
+    "motions": [
+      {
+        "motion_index": 0,
+        "motion_id": "sun_hold",
+        "subject_id": "sun",
+        "action_kind": "hold",
+        "motion_type": "static",
+        "motion_mode": "stationary",
+        "speed_range_mps": [
+          0.0,
+          0.0
+        ],
+        "direction_mode": "none",
+        "direction_vector_world": null,
+        "target_id": null,
+        "carrier_id": null,
+        "path_type": "stationary",
+        "timeline_event_id": null,
+        "narrative_required": false,
+        "postconditions": {
+          "contained_by_id": null,
+          "external_visibility": "unchanged"
+        },
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 10.0,
+        "source_status": "inferred"
+      },
+      {
+        "motion_index": 1,
+        "motion_id": "earth_orbit",
+        "subject_id": "earth",
+        "action_kind": "locomotion",
+        "motion_type": "moving",
+        "motion_mode": "self_propelled",
+        "speed_range_mps": [
+          1.2,
+          1.2
+        ],
+        "direction_mode": "relative_to_target",
+        "direction_vector_world": null,
+        "target_id": "sun",
+        "carrier_id": null,
+        "path_type": "circular",
+        "timeline_event_id": null,
+        "narrative_required": true,
+        "postconditions": {
+          "contained_by_id": null,
+          "external_visibility": "unchanged"
+        },
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 10.0,
+        "source_status": "inferred"
+      },
+      {
+        "motion_index": 2,
+        "motion_id": "moon_orbit",
+        "subject_id": "moon",
+        "action_kind": "locomotion",
+        "motion_type": "moving",
+        "motion_mode": "self_propelled",
+        "speed_range_mps": [
+          1.2,
+          1.2
+        ],
+        "direction_mode": "relative_to_target",
+        "direction_vector_world": null,
+        "target_id": "earth",
+        "carrier_id": null,
+        "path_type": "circular",
+        "timeline_event_id": null,
+        "narrative_required": true,
+        "postconditions": {
+          "contained_by_id": null,
+          "external_visibility": "unchanged"
+        },
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 10.0,
+        "source_status": "inferred"
+      }
+    ],
+    "scene_dynamics": {
+      "mode": "dynamic",
+      "source_status": "inferred",
+      "reason": "根据主体运动和状态转换确定"
+    },
+    "temporal_relations": [],
+    "scene": {
+      "environment_label": "空白空间",
+      "asset_key": "blank",
+      "dimensions_m": [
+        200.0,
+        200.0
+      ],
+      "asset_resolution": "proxy_fallback",
+      "source_status": "default"
+    },
+    "camera": {
+      "height_m": 1.5,
+      "focal_length_mm": 50.0,
+      "movement": "static",
+      "speed_mps": 0.0,
+      "start_distance_m": 15.0,
+      "end_distance_m": 15.0,
+      "focus": "scene_center",
+      "source_status": "default"
+    },
+    "composition": {
+      "subject_frame_ratio": [
+        0.05,
+        0.1
+      ],
+      "negative_space_ratio": [
+        0.6,
+        0.7
+      ],
+      "major_object_frame_ratio": [
+        0.15,
+        0.3
+      ],
+      "source_status": "default"
+    },
+    "lighting": {
+      "key_vertical_angle_degrees": -30.0,
+      "ambient_intensity": 0.5,
+      "shadow_hardness": 0.5,
+      "key_intensity": null,
+      "source_status": "default",
+      "application_scope": "final_video_generation_only",
+      "applied_to_blender_preview": false
+    },
+    "explicit_override_paths": [],
+    "precedence": [
+      "explicit",
+      "inferred",
+      "default"
+    ]
   }
 }

@@ -145,7 +145,7 @@ class SkeletonMotionPhase(StrictModel):
     phase_id: str = Field(min_length=1)
     motion_id: str | None = Field(
         default=None,
-        description="Cinematic Brief v0.6 的稳定动作身份，用于叙事完整性校验",
+        description="Cinematic Brief v0.7 的稳定动作身份，用于叙事完整性校验",
     )
     subject_id: str
     kind: Literal[
@@ -682,7 +682,7 @@ def validate_scene_skeleton(
                     f"{first[2]} / {second[2]}"
                 )
 
-    if objective.schema_version == "0.6":
+    if objective.schema_version == "0.7":
         objective_motion_subjects = {
             str(item.get("motion_id")): str(item.get("subject_id"))
             for item in objective.subject_motion
@@ -732,7 +732,7 @@ def validate_scene_skeleton(
         if status == "explicit" and source_ref not in valid_explicit_refs:
             raise ValueError(f"Scene Skeleton explicit source_ref 不存在：{source_ref}")
 
-    if objective.schema_version == "0.6":
+    if objective.schema_version == "0.7":
         _validate_typed_source_bindings(objective, value)
 
     camera = objective.camera
@@ -781,7 +781,7 @@ def _phase_matches_motion_semantics(
         expected = planning_motion_shape(semantics)
     except ValueError:
         return False
-    return phase.kind == expected.kind if expected is not None else phase.kind != "hold"
+    return phase.kind == expected.kind
 
 
 def _is_orbit_phase(phase: SkeletonMotionPhase) -> bool:
@@ -845,7 +845,7 @@ def _validate_typed_source_bindings(
     objective: ObjectivePlanningBrief,
     skeleton: SceneSkeleton,
 ) -> None:
-    """Keep v0.6 symbolic choices attached to the typed fact they cite."""
+    """Keep v0.7 symbolic choices attached to the typed fact they cite."""
 
     relationship_prefix = "content.scene_design.relationships["
     objective_relationships = objective.scene_design.get("relationships", [])
@@ -996,8 +996,6 @@ def _validate_typed_source_bindings(
                 f"Motion Phase 与 source_ref 的运动模式不一致：{phase.phase_id}"
             )
         expected_shape = planning_motion_shape(semantics)
-        if expected_shape is None:
-            continue
         if expected_shape.kind == "carried" and (
             phase.carrier_id != expected_shape.carrier_id
         ):
@@ -1433,10 +1431,11 @@ def _camera_yaw_degrees(
         )
     if view == "unspecified":
         # A static scene has no motion axis that could justify an arbitrary
-        # oblique view. Align it with canonical scene depth; moving scenes use
-        # only the validator's frozen minimum until the Agent selects a view.
+        # oblique view. Align it with canonical scene depth; moving scenes keep
+        # a safety margin because the camera aims at the scene focus while an
+        # individual subject may cross that focus.
         return (
-            base_yaw + minimum_motion_obliqueness_degrees
+            base_yaw + min(89.0, minimum_motion_obliqueness_degrees + 25.0)
             if subject_motion_readability_applicable
             else 0.0
         )
@@ -3444,8 +3443,6 @@ def _design_assumptions(
         ),
         "所有范围都保留 explicit > inferred > default 的来源优先级",
     ]
-    if not objective.translation_parameters:
-        assumptions.append("旧版 Brief 缺少量化快照，使用冻结 Research Profile")
     if any(_is_orbit_phase(item) for item in skeleton.motion_phases):
         assumptions.append("未指定嵌套周期时，子轨道使用不同 cycle_count 避免同相锁定")
     assumptions.extend(
@@ -3814,11 +3811,6 @@ def _phase_range(
             ) from error
         start_value = motion.get("start_time_seconds")
         end_value = motion.get("end_time_seconds")
-        if start_value is None and end_value is None:
-            # Untimed legacy/static actions intentionally span their containing
-            # event, or the whole shot when no event was declared.  This is a
-            # default, not a recovery from a malformed/unknown reference.
-            return _event_range(objective, phase.timeline_event_id, duration)
         if not isinstance(start_value, (int, float)) or isinstance(start_value, bool):
             raise ValueError(f"Motion Phase 缺少有效开始时间：{phase.phase_id}")
         if not isinstance(end_value, (int, float)) or isinstance(end_value, bool):

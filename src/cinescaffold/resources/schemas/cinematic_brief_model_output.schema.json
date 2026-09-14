@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/cinematic_brief_model_output.schema.json",
-  "title": "Cinematic Brief Model Output v0.6",
+  "title": "Cinematic Brief Model Output v0.7",
   "type": "object",
   "properties": {
     "summary": {"type": "string"},
@@ -98,8 +98,8 @@
         "direction": {"$ref": "#/$defs/annotatedText"},
         "speed": {"$ref": "#/$defs/annotatedText"},
         "trajectory": {"$ref": "#/$defs/annotatedText"},
-        "start_time_seconds": {"type": ["number", "null"]},
-        "end_time_seconds": {"type": ["number", "null"]},
+        "start_time_seconds": {"type": "number"},
+        "end_time_seconds": {"type": "number"},
         "secondary_motion": {
           "type": "array",
           "items": {"$ref": "#/$defs/semanticStatement"}
@@ -346,8 +346,8 @@
       "properties": {
         "id": {"type": "string"},
         "description": {"type": "string"},
-        "start_time_seconds": {"type": ["number", "null"]},
-        "end_time_seconds": {"type": ["number", "null"]},
+        "start_time_seconds": {"type": "number"},
+        "end_time_seconds": {"type": "number"},
         "reference_ids": {"type": "array", "items": {"type": "string"}},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
         "source_text": {"type": ["string", "null"]}

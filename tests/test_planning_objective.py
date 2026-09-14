@@ -4,7 +4,6 @@ import unittest
 
 from cinescaffold.planning.objective import (
     ObjectivePlanningBrief,
-    has_subject_spatial_motion,
     project_objective_brief,
 )
 from cinescaffold.semantic_rules import apply_translation_rules, load_translation_rules
@@ -92,7 +91,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
             "最终视频生成层", ignored["content.scene_design.environmental_motion"]
         )
 
-    def test_v02_passes_quantitative_objectives_but_strips_feeling_and_lighting(
+    def test_current_brief_passes_quantitative_objectives_but_strips_subjective_fields(
         self,
     ) -> None:
         brief = _valid_brief()
@@ -110,7 +109,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
                 / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
             ),
         )
-        brief["schema_version"] = "0.2"
+        brief["schema_version"] = "0.7"
         brief["content"] = normalized
         brief["translation_parameters"] = parameters
         brief["provenance"]["translation_rules_sha256"] = "1" * 64
@@ -118,66 +117,26 @@ class ObjectiveProjectionTest(unittest.TestCase):
         result = project_objective_brief(brief)
         objective = result.objective_brief
 
-        self.assertEqual(objective.schema_version, "0.2")
+        self.assertEqual(objective.schema_version, "0.7")
         self.assertEqual(objective.translation_parameters["camera"]["height_m"], 1.2)
         self.assertNotIn("lighting", objective.translation_parameters)
         self.assertNotIn("emotion_class", objective.translation_parameters)
         self.assertNotIn("feeling", objective.translation_parameters["input_slots"])
 
-    def test_legacy_hold_motions_remain_a_static_subject_scene(self) -> None:
+    def test_old_brief_versions_are_rejected(self) -> None:
         brief = _valid_brief()
-        normalized, parameters = apply_translation_rules(
-            brief["content"],
-            load_translation_rules(
-                ROOT
-                / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
-            ),
-        )
-        del normalized["scene_dynamics"]
-        brief.update(
-            schema_version="0.5",
-            content=normalized,
-            translation_parameters=parameters,
-        )
-        brief["provenance"]["translation_rules_sha256"] = "1" * 64
+        brief["schema_version"] = "0.6"
 
-        objective = project_objective_brief(brief).objective_brief
+        with self.assertRaisesRegex(ValueError, "仅支持当前 Cinematic Brief v0.7"):
+            project_objective_brief(brief)
 
-        self.assertEqual(objective.scene_dynamics["mode"], "static")
-        self.assertIn("主体运动与状态转换", objective.scene_dynamics["reason"])
-
-    def test_loading_legacy_objective_recovers_subject_only_dynamics(self) -> None:
+    def test_objective_missing_current_scene_dynamics_is_rejected(self) -> None:
         projected = project_objective_brief(_valid_brief()).objective_brief
         payload = projected.model_dump(mode="json")
         payload.pop("scene_dynamics")
-        payload["subject_motion"] = [
-            {
-                "subject_id": "legacy_actor",
-                "motion_semantics": {
-                    "motion_mode": "stationary",
-                    "postconditions": {
-                        "contained_by_id": None,
-                        "external_visibility": "unchanged",
-                    },
-                },
-                "trajectory": {"value": "静止"},
-            }
-        ]
 
-        restored = ObjectivePlanningBrief.model_validate(payload)
-
-        self.assertEqual(restored.scene_dynamics["mode"], "static")
-        self.assertFalse(has_subject_spatial_motion(restored))
-
-        payload["subject_motion"][0].pop("motion_semantics")
-        payload["subject_motion"][0]["trajectory"] = {
-            "value": "直线",
-            "source_status": "inferred",
-            "source_text": None,
-        }
-        moving = ObjectivePlanningBrief.model_validate(payload)
-        self.assertEqual(moving.scene_dynamics["mode"], "dynamic")
-        self.assertTrue(has_subject_spatial_motion(moving))
+        with self.assertRaisesRegex(ValueError, "scene_dynamics"):
+            ObjectivePlanningBrief.model_validate(payload)
 
     def test_projection_repairs_legacy_camera_parameters_that_conflict_with_explicit_motion(
         self,
@@ -202,7 +161,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
             end_distance_m=15.0,
             source_status="default",
         )
-        brief["schema_version"] = "0.6"
+        brief["schema_version"] = "0.7"
         brief["content"] = normalized
         brief["translation_parameters"] = parameters
         brief["provenance"]["translation_rules_sha256"] = "1" * 64
@@ -218,15 +177,24 @@ class ObjectiveProjectionTest(unittest.TestCase):
 
 
 def _valid_brief() -> dict:
+    content, parameters = apply_translation_rules(
+        valid_model_output(),
+        load_translation_rules(
+            ROOT
+            / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
+        ),
+    )
     return {
-        "schema_version": "0.1",
-        "content": valid_model_output(),
+        "schema_version": "0.7",
+        "content": content,
+        "translation_parameters": parameters,
         "provenance": {
             "source_prompt": "不应进入 Agent 1",
             "provider": "mock",
             "model": "mock-cinematic-brief-v0.1",
             "parser_prompt_version": "semantic-parser-v0.1",
             "rules_sha256": "0" * 64,
+            "translation_rules_sha256": "1" * 64,
             "response_id": "mock-response-001",
         },
     }

@@ -1,14 +1,14 @@
 {
-  "schema_version": "0.1",
+  "schema_version": "0.7",
   "content": {
-    "summary": "12\u79d2\u5185\uff0c\u4e00\u4e2a\u7537\u4eba\u5728\u9a6c\u8def\u8fb9\u7b49\u5f85\uff1b\u4e00\u8f86\u8f66\u505c\u5728\u4ed6\u8eab\u8fb9\uff0c\u7537\u4eba\u4e0a\u8f66\u540e\u8f66\u8f86\u9a76\u79bb\u3002",
+    "summary": "12秒内，一个男人在马路边等待；一辆车停在他身边，男人上车后车辆驶离。",
     "subjects": [
       {
         "id": "man",
         "category": {
-          "value": "\u7537\u4eba",
+          "value": "男人",
           "source_status": "explicit",
-          "source_text": "\u4e00\u4e2a\u7537\u4eba"
+          "source_text": "一个男人"
         },
         "description": {
           "value": null,
@@ -16,18 +16,18 @@
           "source_text": null
         },
         "narrative_role": {
-          "value": "\u7b49\u5f85\u5e76\u4e0a\u8f66\u7684\u4e58\u5ba2",
+          "value": "等待并上车的乘客",
           "source_status": "inferred",
-          "source_text": "\u7b49\u5f85\uff1b\u4ed6\u4e0a\u4e86\u8f66"
+          "source_text": "等待；他上了车"
         },
         "attributes": []
       },
       {
         "id": "car",
         "category": {
-          "value": "\u6c7d\u8f66",
+          "value": "汽车",
           "source_status": "explicit",
-          "source_text": "\u4e00\u8f86\u8f66"
+          "source_text": "一辆车"
         },
         "description": {
           "value": null,
@@ -35,9 +35,9 @@
           "source_text": null
         },
         "narrative_role": {
-          "value": "\u63a5\u8d70\u7537\u4eba\u7684\u8f66\u8f86",
+          "value": "接走男人的车辆",
           "source_status": "inferred",
-          "source_text": "\u8f66\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9\uff1b\u8f66\u5f00\u8d70\u4e86"
+          "source_text": "车停在了他身边；车开走了"
         },
         "attributes": []
       }
@@ -47,9 +47,9 @@
         "motion_id": "man_wait",
         "subject_id": "man",
         "action": {
-          "value": "\u5728\u9a6c\u8def\u8fb9\u7b49\u5f85",
+          "value": "在马路边等待",
           "source_status": "explicit",
-          "source_text": "\u4e00\u4e2a\u7537\u4eba\u5728\u9a6c\u8def\u8fb9\u4e0a\u7b49\u5f85"
+          "source_text": "一个男人在马路边上等待"
         },
         "direction": {
           "value": null,
@@ -81,7 +81,7 @@
             "external_visibility": "unchanged"
           },
           "source_status": "explicit",
-          "source_text": "\u4e00\u4e2a\u7537\u4eba\u5728\u9a6c\u8def\u8fb9\u4e0a\u7b49\u5f85"
+          "source_text": "一个男人在马路边上等待"
         },
         "start_time_seconds": 0.0,
         "end_time_seconds": 4.0,
@@ -91,30 +91,30 @@
         "motion_id": "car_arrive",
         "subject_id": "car",
         "action": {
-          "value": "\u9a76\u5230\u7537\u4eba\u8eab\u8fb9\u5e76\u505c\u8f66",
+          "value": "驶到男人身边并停车",
           "source_status": "explicit",
-          "source_text": "\u4e00\u8f86\u8f66\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9"
+          "source_text": "一辆车停在了他身边"
         },
         "direction": {
-          "value": "\u6cbf\u9a6c\u8def\u671d\u7537\u4eba\u6240\u5728\u4f4d\u7f6e\u884c\u9a76",
+          "value": "沿马路朝男人所在位置行驶",
           "source_status": "inferred",
-          "source_text": "\u8f66\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9"
+          "source_text": "车停在了他身边"
         },
         "speed": {
-          "value": "\u9010\u6e10\u51cf\u901f\u81f3\u9759\u6b62",
+          "value": "逐渐减速至静止",
           "source_status": "inferred",
-          "source_text": "\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9"
+          "source_text": "停在了他身边"
         },
         "trajectory": {
-          "value": "\u6cbf\u9a6c\u8def\u7ebf\u6027\u63a5\u8fd1\u7537\u4eba",
+          "value": "沿马路线性接近男人",
           "source_status": "inferred",
-          "source_text": "\u8f66\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9"
+          "source_text": "车停在了他身边"
         },
         "motion_semantics": {
-          "action_kind": "move",
+          "action_kind": "locomotion",
           "motion_type": "moving",
           "motion_mode": "self_propelled",
-          "direction_mode": "world_forward",
+          "direction_mode": "none",
           "target_id": null,
           "carrier_id": null,
           "path_type": "linear",
@@ -125,7 +125,7 @@
             "external_visibility": "unchanged"
           },
           "source_status": "explicit",
-          "source_text": "\u4e00\u8f86\u8f66\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9"
+          "source_text": "一辆车停在了他身边"
         },
         "start_time_seconds": 0.0,
         "end_time_seconds": 4.0,
@@ -135,14 +135,14 @@
         "motion_id": "man_board",
         "subject_id": "man",
         "action": {
-          "value": "\u8d70\u5230\u8f66\u65c1\u5e76\u4e0a\u8f66",
+          "value": "走到车旁并上车",
           "source_status": "explicit",
-          "source_text": "\u4ed6\u4e0a\u4e86\u8f66"
+          "source_text": "他上了车"
         },
         "direction": {
-          "value": "\u671d\u6c7d\u8f66\u79fb\u52a8",
+          "value": "朝汽车移动",
           "source_status": "inferred",
-          "source_text": "\u4e0a\u4e86\u8f66"
+          "source_text": "上了车"
         },
         "speed": {
           "value": null,
@@ -150,16 +150,16 @@
           "source_text": null
         },
         "trajectory": {
-          "value": "\u4ece\u8def\u8fb9\u7b49\u5f85\u4f4d\u7f6e\u79fb\u52a8\u81f3\u6c7d\u8f66\u4f4d\u7f6e",
+          "value": "从路边等待位置移动至汽车位置",
           "source_status": "inferred",
-          "source_text": "\u4e0a\u4e86\u8f66"
+          "source_text": "上了车"
         },
         "motion_semantics": {
-          "action_kind": "enter",
+          "action_kind": "locomotion",
           "motion_type": "moving",
           "motion_mode": "self_propelled",
-          "direction_mode": "toward_target",
-          "target_id": "car",
+          "direction_mode": "none",
+          "target_id": null,
           "carrier_id": null,
           "path_type": "linear",
           "timeline_event_id": "boarding",
@@ -169,7 +169,7 @@
             "external_visibility": "hidden"
           },
           "source_status": "explicit",
-          "source_text": "\u4ed6\u4e0a\u4e86\u8f66"
+          "source_text": "他上了车"
         },
         "start_time_seconds": 4.0,
         "end_time_seconds": 7.0,
@@ -179,9 +179,9 @@
         "motion_id": "car_wait",
         "subject_id": "car",
         "action": {
-          "value": "\u505c\u8f66\u7b49\u5f85\u7537\u4eba\u4e0a\u8f66",
+          "value": "停车等待男人上车",
           "source_status": "inferred",
-          "source_text": "\u8f66\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9\uff1b\u4ed6\u4e0a\u4e86\u8f66"
+          "source_text": "车停在了他身边；他上了车"
         },
         "direction": {
           "value": null,
@@ -189,9 +189,9 @@
           "source_text": null
         },
         "speed": {
-          "value": "\u9759\u6b62",
+          "value": "静止",
           "source_status": "inferred",
-          "source_text": "\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9"
+          "source_text": "停在了他身边"
         },
         "trajectory": {
           "value": null,
@@ -213,7 +213,7 @@
             "external_visibility": "unchanged"
           },
           "source_status": "inferred",
-          "source_text": "\u8f66\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9\uff1b\u4ed6\u4e0a\u4e86\u8f66"
+          "source_text": "车停在了他身边；他上了车"
         },
         "start_time_seconds": 4.0,
         "end_time_seconds": 7.0,
@@ -223,30 +223,30 @@
         "motion_id": "car_depart",
         "subject_id": "car",
         "action": {
-          "value": "\u8f7d\u7740\u7537\u4eba\u6cbf\u9a6c\u8def\u5f00\u8d70",
+          "value": "载着男人沿马路开走",
           "source_status": "explicit",
-          "source_text": "\u7136\u540e\u8f66\u5f00\u8d70\u4e86"
+          "source_text": "然后车开走了"
         },
         "direction": {
-          "value": "\u6cbf\u9a6c\u8def\u8fdc\u79bb\u505c\u8f66\u4f4d\u7f6e",
+          "value": "沿马路远离停车位置",
           "source_status": "inferred",
-          "source_text": "\u8f66\u5f00\u8d70\u4e86"
+          "source_text": "车开走了"
         },
         "speed": {
-          "value": "\u4ece\u9759\u6b62\u5f00\u59cb\u52a0\u901f",
+          "value": "从静止开始加速",
           "source_status": "inferred",
-          "source_text": "\u5f00\u8d70\u4e86"
+          "source_text": "开走了"
         },
         "trajectory": {
-          "value": "\u6cbf\u9a6c\u8def\u7ebf\u6027\u9a76\u79bb",
+          "value": "沿马路线性驶离",
           "source_status": "inferred",
-          "source_text": "\u8f66\u5f00\u8d70\u4e86"
+          "source_text": "车开走了"
         },
         "motion_semantics": {
-          "action_kind": "move",
+          "action_kind": "locomotion",
           "motion_type": "moving",
           "motion_mode": "self_propelled",
-          "direction_mode": "world_forward",
+          "direction_mode": "none",
           "target_id": null,
           "carrier_id": null,
           "path_type": "linear",
@@ -257,7 +257,7 @@
             "external_visibility": "unchanged"
           },
           "source_status": "explicit",
-          "source_text": "\u7136\u540e\u8f66\u5f00\u8d70\u4e86"
+          "source_text": "然后车开走了"
         },
         "start_time_seconds": 7.0,
         "end_time_seconds": 12.0,
@@ -267,33 +267,33 @@
         "motion_id": "man_carried",
         "subject_id": "man",
         "action": {
-          "value": "\u4e0a\u8f66\u540e\u968f\u6c7d\u8f66\u4e00\u8d77\u79bb\u5f00",
+          "value": "上车后随汽车一起离开",
           "source_status": "inferred",
-          "source_text": "\u4ed6\u4e0a\u4e86\u8f66\u7136\u540e\u8f66\u5f00\u8d70\u4e86"
+          "source_text": "他上了车然后车开走了"
         },
         "direction": {
-          "value": "\u4e0e\u6c7d\u8f66\u4e00\u81f4",
+          "value": "与汽车一致",
           "source_status": "inferred",
-          "source_text": "\u8f66\u5f00\u8d70\u4e86"
+          "source_text": "车开走了"
         },
         "speed": {
-          "value": "\u4e0e\u6c7d\u8f66\u4e00\u81f4",
+          "value": "与汽车一致",
           "source_status": "inferred",
-          "source_text": "\u8f66\u5f00\u8d70\u4e86"
+          "source_text": "车开走了"
         },
         "trajectory": {
-          "value": "\u7531\u6c7d\u8f66\u627f\u8f7d",
+          "value": "由汽车承载",
           "source_status": "inferred",
-          "source_text": "\u4e0a\u4e86\u8f66"
+          "source_text": "上了车"
         },
         "motion_semantics": {
-          "action_kind": "transport",
-          "motion_type": "moving",
+          "action_kind": "locomotion",
+          "motion_type": "carried",
           "motion_mode": "carried",
           "direction_mode": "none",
           "target_id": null,
           "carrier_id": "car",
-          "path_type": "linear",
+          "path_type": "stationary",
           "timeline_event_id": "departure",
           "narrative_required": true,
           "postconditions": {
@@ -301,7 +301,7 @@
             "external_visibility": "hidden"
           },
           "source_status": "inferred",
-          "source_text": "\u4ed6\u4e0a\u4e86\u8f66\u7136\u540e\u8f66\u5f00\u8d70\u4e86"
+          "source_text": "他上了车然后车开走了"
         },
         "start_time_seconds": 7.0,
         "end_time_seconds": 12.0,
@@ -310,39 +310,39 @@
     ],
     "scene_design": {
       "environment": {
-        "value": "\u9a6c\u8def\u53ca\u8def\u8fb9\u533a\u57df",
+        "value": "马路及路边区域",
         "source_status": "explicit",
-        "source_text": "\u9a6c\u8def\u8fb9\u4e0a"
+        "source_text": "马路边上"
       },
       "spatial_layers": [],
       "relationships": [
         {
-          "type": "beside_road",
-          "subject_id": "man",
-          "reference_id": null,
-          "strength": null,
-          "source_status": "inferred",
-          "source_text": "\u7537\u4eba\u5728\u9a6c\u8def\u8fb9\u4e0a",
-          "timeline_event_id": null,
-          "temporal_mode": "throughout"
-        },
-        {
-          "type": "stop_beside",
+          "type": "proximity",
           "subject_id": "car",
           "reference_id": "man",
-          "strength": "\u8fd1\u8ddd\u79bb",
+          "strength": "近距离",
           "source_status": "explicit",
-          "source_text": "\u8f66\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9",
+          "source_text": "车停在了他身边",
           "timeline_event_id": "wait_and_arrive",
           "temporal_mode": "at_end"
         },
         {
-          "type": "board_into",
+          "type": "proximity",
+          "subject_id": "man",
+          "reference_id": "car",
+          "strength": "近距离",
+          "source_status": "inferred",
+          "source_text": "他走到车旁准备上车",
+          "timeline_event_id": "boarding",
+          "temporal_mode": "at_end"
+        },
+        {
+          "type": "carried_by",
           "subject_id": "man",
           "reference_id": "car",
           "strength": null,
           "source_status": "inferred",
-          "source_text": "\u4ed6\u4e0a\u4e86\u8f66",
+          "source_text": "他上了车",
           "timeline_event_id": "boarding",
           "temporal_mode": "at_end"
         }
@@ -350,9 +350,36 @@
       "environmental_motion": []
     },
     "mood": {
-      "emotional_tones": [],
+      "emotional_tones": [
+        {
+          "value": "中性",
+          "source_status": "default",
+          "source_text": null
+        }
+      ],
       "color_intent": [],
-      "lighting_intent": [],
+      "lighting_intent": [
+        {
+          "value": "主光垂直角度 -30°",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "环境光强度 0.5",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "阴影硬度 0.5",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "仅供最终视频生成，不应用到 Blender 白模",
+          "source_status": "default",
+          "source_text": null
+        }
+      ],
       "atmosphere": []
     },
     "composition": {
@@ -361,16 +388,41 @@
         "source_status": "unknown",
         "source_text": null
       },
-      "patterns": [],
+      "patterns": [
+        {
+          "value": "主体占画幅 5%-10%",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "负空间占比 60%-70%",
+          "source_status": "default",
+          "source_text": null
+        },
+        {
+          "value": "主要物体占画幅 15%-30%",
+          "source_status": "default",
+          "source_text": null
+        }
+      ],
       "screen_placements": [],
-      "visual_scales": [],
+      "visual_scales": [
+        {
+          "subject_id": "man",
+          "scale": {
+            "value": "5%-10%",
+            "source_status": "default",
+            "source_text": null
+          }
+        }
+      ],
       "visibility_requirements": [
         {
           "subject_id": "man",
           "requirement": {
-            "value": "\u4e0a\u8f66\u5b8c\u6210\u540e\u5916\u90e8\u4eba\u7269\u4ee3\u7406\u4e0d\u518d\u5355\u72ec\u53ef\u89c1",
+            "value": "上车完成后外部人物代理不再单独可见",
             "source_status": "inferred",
-            "source_text": "\u4ed6\u4e0a\u4e86\u8f66"
+            "source_text": "他上了车"
           }
         }
       ]
@@ -387,24 +439,24 @@
         "source_text": null
       },
       "camera_height": {
-        "value": null,
-        "source_status": "unknown",
+        "value": "1.5 m",
+        "source_status": "default",
         "source_text": null
       },
       "lens_intent": {
-        "value": null,
-        "source_status": "unknown",
+        "value": "50 mm",
+        "source_status": "default",
         "source_text": null
       },
       "focus_target_id": {
         "value": null,
-        "source_status": "unknown",
+        "source_status": "default",
         "source_text": null
       },
       "movement": {
         "type": {
-          "value": null,
-          "source_status": "unknown",
+          "value": "static",
+          "source_status": "default",
           "source_text": null
         },
         "direction": {
@@ -413,13 +465,13 @@
           "source_text": null
         },
         "speed": {
-          "value": null,
-          "source_status": "unknown",
+          "value": "0 m/s",
+          "source_status": "default",
           "source_text": null
         },
         "trajectory": {
-          "value": null,
-          "source_status": "unknown",
+          "value": "静止",
+          "source_status": "default",
           "source_text": null
         },
         "easing": {
@@ -427,8 +479,14 @@
           "source_status": "unknown",
           "source_text": null
         },
-        "start_time_seconds": null,
-        "end_time_seconds": null
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 12.0,
+        "target_id": null
+      },
+      "view_relation_to_motion": {
+        "value": "three_quarter",
+        "source_status": "inferred",
+        "source_text": "确保车辆沿道路方向运动时在画面中可辨认"
       }
     },
     "timeline": {
@@ -438,7 +496,7 @@
       "events": [
         {
           "id": "wait_and_arrive",
-          "description": "\u7537\u4eba\u7b49\u5f85\uff0c\u6c7d\u8f66\u9a76\u5230\u5176\u8eab\u8fb9\u5e76\u505c\u4e0b",
+          "description": "男人等待，汽车驶到其身边并停下",
           "start_time_seconds": 0.0,
           "end_time_seconds": 4.0,
           "reference_ids": [
@@ -446,11 +504,11 @@
             "car"
           ],
           "source_status": "inferred",
-          "source_text": "\u7537\u4eba\u7b49\u5f85\uff1b\u8f66\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9"
+          "source_text": "男人等待；车停在了他身边"
         },
         {
           "id": "boarding",
-          "description": "\u6c7d\u8f66\u4fdd\u6301\u9759\u6b62\uff0c\u7537\u4eba\u5b8c\u6210\u4e0a\u8f66",
+          "description": "汽车保持静止，男人完成上车",
           "start_time_seconds": 4.0,
           "end_time_seconds": 7.0,
           "reference_ids": [
@@ -458,11 +516,11 @@
             "car"
           ],
           "source_status": "inferred",
-          "source_text": "\u4ed6\u4e0a\u4e86\u8f66"
+          "source_text": "他上了车"
         },
         {
           "id": "departure",
-          "description": "\u6c7d\u8f66\u8f7d\u7740\u7537\u4eba\u9a76\u79bb",
+          "description": "汽车载着男人驶离",
           "start_time_seconds": 7.0,
           "end_time_seconds": 12.0,
           "reference_ids": [
@@ -470,37 +528,438 @@
             "car"
           ],
           "source_status": "inferred",
-          "source_text": "\u7136\u540e\u8f66\u5f00\u8d70\u4e86"
+          "source_text": "然后车开走了"
+        }
+      ],
+      "relations": [
+        {
+          "relation_id": "wait_meets_boarding",
+          "source_event_id": "wait_and_arrive",
+          "target_event_id": "boarding",
+          "relation": "meets",
+          "minimum_gap_seconds": 0.0,
+          "maximum_gap_seconds": 0.0,
+          "source_status": "inferred",
+          "source_text": "车停下后人上车"
+        },
+        {
+          "relation_id": "boarding_meets_departure",
+          "source_event_id": "boarding",
+          "target_event_id": "departure",
+          "relation": "meets",
+          "minimum_gap_seconds": 0.0,
+          "maximum_gap_seconds": 0.0,
+          "source_status": "inferred",
+          "source_text": "人上车后车开走"
         }
       ]
     },
     "uncertainties": [
       {
         "field": "timeline.events",
-        "reason": "\u7528\u6237\u53ea\u660e\u786e\u603b\u65f6\u957f\u548c\u4e8b\u4ef6\u5148\u540e\uff0c\u6ca1\u6709\u7ed9\u51fa\u5404\u9636\u6bb5\u6301\u7eed\u65f6\u95f4",
+        "reason": "用户只明确总时长和事件先后，没有给出各阶段持续时间",
         "resolution": "use_inference",
-        "selected_value": "0-4\u79d2\u7b49\u5f85\u4e0e\u505c\u8f66\uff1b4-7\u79d2\u4e0a\u8f66\uff1b7-12\u79d2\u9a76\u79bb"
+        "selected_value": "0-4秒等待与停车；4-7秒上车；7-12秒驶离"
       },
       {
         "field": "boarding_representation",
-        "reason": "\u767d\u6a21\u53ea\u8868\u8fbe\u521a\u6027\u4ee3\u7406\u7684\u4f4d\u7f6e\u4e0e\u53ef\u89c1\u6027\uff0c\u4e0d\u5305\u542b\u4eba\u7269\u8fdb\u8f66\u7684\u9aa8\u9abc\u52a8\u4f5c",
+        "reason": "白模只表达刚性代理的位置与可见性，不包含人物进车的骨骼动作",
         "resolution": "use_inference",
-        "selected_value": "\u4eba\u7269\u4ee3\u7406\u79fb\u52a8\u81f3\u8f66\u65c1\uff0c\u4e0a\u8f66\u5b8c\u6210\u540e\u4e0d\u518d\u4f5c\u4e3a\u5916\u90e8\u4ee3\u7406\u5355\u72ec\u53ef\u89c1"
+        "selected_value": "人物代理移动至车旁，上车完成后不再作为外部代理单独可见"
       },
       {
         "field": "camera",
-        "reason": "\u7528\u6237\u6ca1\u6709\u6307\u5b9a\u6784\u56fe\u3001\u673a\u4f4d\u3001\u7126\u8ddd\u6216\u8fd0\u955c",
+        "reason": "用户没有指定构图、机位、焦距或运镜",
         "resolution": "use_inference",
         "selected_value": null
+      },
+      {
+        "field": "mood.emotional_tones",
+        "reason": "用户未明确提供该输入槽位，按转换规则使用缺省值",
+        "resolution": "use_default",
+        "selected_value": "中性"
       }
-    ]
+    ],
+    "scene_dynamics": {
+      "mode": "dynamic",
+      "source_status": "inferred",
+      "reason": "根据主体运动和状态转换确定"
+    }
   },
   "provenance": {
-    "source_prompt": "\u4e00\u4e2a\u7537\u4eba\u5728\u9a6c\u8def\u8fb9\u4e0a\u7b49\u5f85 \u4e00\u8f86\u8f66\u505c\u5728\u4e86\u4ed6\u8eab\u8fb9 \u4ed6\u4e0a\u4e86\u8f66\u7136\u540e\u8f66\u5f00\u8d70\u4e86",
+    "source_prompt": "一个男人在马路边上等待 一辆车停在了他身边 他上了车然后车开走了",
     "provider": "manual",
     "model": "codex-assisted-semantic-v0.1",
     "parser_prompt_version": "semantic-parser-v0.1",
     "rules_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-    "response_id": "roadside-pickup-v1-20260830"
+    "response_id": "roadside-pickup-v1-20260830",
+    "translation_rules_sha256": "ef0c4829a8b10218543bc1c3bd58b9b53f3baf366fd03350d8aa69edf8ce46df"
+  },
+  "translation_parameters": {
+    "schema_version": "0.5",
+    "rules_version": "semantic-translation-v0.9",
+    "coordinate_system": {
+      "handedness": "right",
+      "up_axis": "+Z",
+      "forward_vector": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    "input_slots": {
+      "who": [
+        {
+          "value": "男人",
+          "source_status": "explicit",
+          "source_text": "一个男人"
+        },
+        {
+          "value": "汽车",
+          "source_status": "explicit",
+          "source_text": "一辆车"
+        }
+      ],
+      "where": {
+        "value": "马路及路边区域",
+        "source_status": "explicit",
+        "source_text": "马路边上"
+      },
+      "doing": [
+        {
+          "value": "在马路边等待",
+          "source_status": "explicit",
+          "source_text": "一个男人在马路边上等待"
+        },
+        {
+          "value": "驶到男人身边并停车",
+          "source_status": "explicit",
+          "source_text": "一辆车停在了他身边"
+        },
+        {
+          "value": "走到车旁并上车",
+          "source_status": "explicit",
+          "source_text": "他上了车"
+        },
+        {
+          "value": "停车等待男人上车",
+          "source_status": "inferred",
+          "source_text": "车停在了他身边；他上了车"
+        },
+        {
+          "value": "载着男人沿马路开走",
+          "source_status": "explicit",
+          "source_text": "然后车开走了"
+        },
+        {
+          "value": "上车后随汽车一起离开",
+          "source_status": "inferred",
+          "source_text": "他上了车然后车开走了"
+        }
+      ],
+      "feeling": [
+        {
+          "value": "中性",
+          "source_status": "default",
+          "source_text": null
+        }
+      ]
+    },
+    "emotion_class": {
+      "class_id": "E6",
+      "label": "中性",
+      "matched_keyword": null,
+      "source_status": "default",
+      "derived_status": "default"
+    },
+    "subjects": [
+      {
+        "subject_id": "man",
+        "quantity_min": 1,
+        "quantity_max": 1,
+        "quantity_source_status": "inferred",
+        "reference_height_m": 1.75,
+        "height_source_status": "inferred",
+        "ground_contact_position_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "facing_direction_world": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "placement_source_status": "default",
+        "dominant_scale_multiplier_range": [
+          1.0,
+          1.0
+        ],
+        "minimum_footprint_m": null,
+        "minimum_height_m": null,
+        "default_scene_depth_ratio": null
+      },
+      {
+        "subject_id": "car",
+        "quantity_min": 1,
+        "quantity_max": 1,
+        "quantity_source_status": "inferred",
+        "reference_height_m": 1.75,
+        "height_source_status": "default",
+        "ground_contact_position_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "facing_direction_world": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "placement_source_status": "default",
+        "dominant_scale_multiplier_range": [
+          1.0,
+          1.0
+        ],
+        "minimum_footprint_m": null,
+        "minimum_height_m": null,
+        "default_scene_depth_ratio": null
+      }
+    ],
+    "motions": [
+      {
+        "motion_index": 0,
+        "motion_id": "man_wait",
+        "subject_id": "man",
+        "action_kind": "hold",
+        "motion_type": "static",
+        "motion_mode": "stationary",
+        "speed_range_mps": [
+          0.0,
+          0.0
+        ],
+        "direction_mode": "none",
+        "direction_vector_world": null,
+        "target_id": null,
+        "carrier_id": null,
+        "path_type": "stationary",
+        "timeline_event_id": "wait_and_arrive",
+        "narrative_required": true,
+        "postconditions": {
+          "contained_by_id": null,
+          "external_visibility": "unchanged"
+        },
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 4.0,
+        "source_status": "explicit"
+      },
+      {
+        "motion_index": 1,
+        "motion_id": "car_arrive",
+        "subject_id": "car",
+        "action_kind": "locomotion",
+        "motion_type": "moving",
+        "motion_mode": "self_propelled",
+        "speed_range_mps": [
+          1.2,
+          1.2
+        ],
+        "direction_mode": "none",
+        "direction_vector_world": null,
+        "target_id": null,
+        "carrier_id": null,
+        "path_type": "linear",
+        "timeline_event_id": "wait_and_arrive",
+        "narrative_required": true,
+        "postconditions": {
+          "contained_by_id": null,
+          "external_visibility": "unchanged"
+        },
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 4.0,
+        "source_status": "explicit"
+      },
+      {
+        "motion_index": 2,
+        "motion_id": "man_board",
+        "subject_id": "man",
+        "action_kind": "locomotion",
+        "motion_type": "moving",
+        "motion_mode": "self_propelled",
+        "speed_range_mps": [
+          1.2,
+          1.2
+        ],
+        "direction_mode": "none",
+        "direction_vector_world": null,
+        "target_id": null,
+        "carrier_id": null,
+        "path_type": "linear",
+        "timeline_event_id": "boarding",
+        "narrative_required": true,
+        "postconditions": {
+          "contained_by_id": "car",
+          "external_visibility": "hidden"
+        },
+        "start_time_seconds": 4.0,
+        "end_time_seconds": 7.0,
+        "source_status": "explicit"
+      },
+      {
+        "motion_index": 3,
+        "motion_id": "car_wait",
+        "subject_id": "car",
+        "action_kind": "hold",
+        "motion_type": "static",
+        "motion_mode": "stationary",
+        "speed_range_mps": [
+          0.0,
+          0.0
+        ],
+        "direction_mode": "none",
+        "direction_vector_world": null,
+        "target_id": null,
+        "carrier_id": null,
+        "path_type": "stationary",
+        "timeline_event_id": "boarding",
+        "narrative_required": true,
+        "postconditions": {
+          "contained_by_id": null,
+          "external_visibility": "unchanged"
+        },
+        "start_time_seconds": 4.0,
+        "end_time_seconds": 7.0,
+        "source_status": "inferred"
+      },
+      {
+        "motion_index": 4,
+        "motion_id": "car_depart",
+        "subject_id": "car",
+        "action_kind": "locomotion",
+        "motion_type": "moving",
+        "motion_mode": "self_propelled",
+        "speed_range_mps": [
+          1.2,
+          1.2
+        ],
+        "direction_mode": "none",
+        "direction_vector_world": null,
+        "target_id": null,
+        "carrier_id": null,
+        "path_type": "linear",
+        "timeline_event_id": "departure",
+        "narrative_required": true,
+        "postconditions": {
+          "contained_by_id": null,
+          "external_visibility": "unchanged"
+        },
+        "start_time_seconds": 7.0,
+        "end_time_seconds": 12.0,
+        "source_status": "explicit"
+      },
+      {
+        "motion_index": 5,
+        "motion_id": "man_carried",
+        "subject_id": "man",
+        "action_kind": "locomotion",
+        "motion_type": "carried",
+        "motion_mode": "carried",
+        "speed_range_mps": [
+          0.0,
+          0.0
+        ],
+        "direction_mode": "none",
+        "direction_vector_world": null,
+        "target_id": null,
+        "carrier_id": "car",
+        "path_type": "stationary",
+        "timeline_event_id": "departure",
+        "narrative_required": true,
+        "postconditions": {
+          "contained_by_id": "car",
+          "external_visibility": "hidden"
+        },
+        "start_time_seconds": 7.0,
+        "end_time_seconds": 12.0,
+        "source_status": "inferred"
+      }
+    ],
+    "scene_dynamics": {
+      "mode": "dynamic",
+      "source_status": "inferred",
+      "reason": "根据主体运动和状态转换确定"
+    },
+    "temporal_relations": [
+      {
+        "relation_id": "wait_meets_boarding",
+        "source_event_id": "wait_and_arrive",
+        "target_event_id": "boarding",
+        "relation": "meets",
+        "minimum_gap_seconds": 0.0,
+        "maximum_gap_seconds": 0.0,
+        "source_status": "inferred",
+        "source_text": "车停下后人上车"
+      },
+      {
+        "relation_id": "boarding_meets_departure",
+        "source_event_id": "boarding",
+        "target_event_id": "departure",
+        "relation": "meets",
+        "minimum_gap_seconds": 0.0,
+        "maximum_gap_seconds": 0.0,
+        "source_status": "inferred",
+        "source_text": "人上车后车开走"
+      }
+    ],
+    "scene": {
+      "environment_label": "马路及路边区域",
+      "asset_key": "city",
+      "dimensions_m": [
+        100.0,
+        100.0
+      ],
+      "asset_resolution": "proxy_fallback",
+      "source_status": "inferred"
+    },
+    "camera": {
+      "height_m": 1.5,
+      "focal_length_mm": 50.0,
+      "movement": "static",
+      "speed_mps": 0.0,
+      "start_distance_m": 15.0,
+      "end_distance_m": 15.0,
+      "focus": "scene_center",
+      "source_status": "default"
+    },
+    "composition": {
+      "subject_frame_ratio": [
+        0.05,
+        0.1
+      ],
+      "negative_space_ratio": [
+        0.6,
+        0.7
+      ],
+      "major_object_frame_ratio": [
+        0.15,
+        0.3
+      ],
+      "source_status": "default"
+    },
+    "lighting": {
+      "key_vertical_angle_degrees": -30.0,
+      "ambient_intensity": 0.5,
+      "shadow_hardness": 0.5,
+      "key_intensity": null,
+      "source_status": "default",
+      "application_scope": "final_video_generation_only",
+      "applied_to_blender_preview": false
+    },
+    "explicit_override_paths": [],
+    "precedence": [
+      "explicit",
+      "inferred",
+      "default"
+    ]
   }
 }

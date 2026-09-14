@@ -864,10 +864,6 @@ class InferredDurationRequest(StrictModel):
     mode: Literal["inferred"]
 
 
-class LegacyDurationRequest(StrictModel):
-    mode: Literal["legacy_frozen"]
-
-
 class BriefDurationRequest(StrictModel):
     mode: Literal["cinematic_brief"]
     source_status: Literal["explicit", "inferred", "default"]
@@ -878,7 +874,6 @@ DurationRequest = Annotated[
     ExactDurationRequest
     | RangeDurationRequest
     | InferredDurationRequest
-    | LegacyDurationRequest
     | BriefDurationRequest,
     Field(discriminator="mode"),
 ]
@@ -890,7 +885,6 @@ class DurationResolution(StrictModel):
         "user_exact",
         "agent_within_user_range",
         "agent_inferred",
-        "legacy_frozen",
         "brief_explicit",
         "brief_inferred",
         "brief_default",
@@ -937,7 +931,7 @@ class ValidationReport(StrictModel):
 
 
 class CandidateState(StrictModel):
-    schema_version: Literal["0.1"] = "0.1"
+    schema_version: Literal["0.2"] = "0.2"
     scene_id: str
     revision: int = 0
     timeline: TimelineSpec

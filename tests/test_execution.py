@@ -216,11 +216,9 @@ class ExecutionTest(unittest.TestCase):
     def test_execution_validation_accepts_committed_ir(self) -> None:
         validate_scene_ir_for_execution(self.scene_ir)
 
-    def test_runner_upgrades_legacy_timeline_and_ground_defaults(self) -> None:
+    def test_runner_rejects_scene_ir_without_current_duration_contract(self) -> None:
         payload = self.scene_ir.model_dump(mode="json")
         del payload["timeline"]["duration_resolution"]
-        for entity in payload["entities"]:
-            del entity["ground_interaction"]
         with tempfile.TemporaryDirectory() as directory:
             runner = _FakeExecutionRunner(
                 ExecutionConfig(
@@ -230,9 +228,23 @@ class ExecutionTest(unittest.TestCase):
                 ),
                 adapter=_FakeAdapter(),
             )
-            result = asyncio.run(runner.run(payload))
+            with self.assertRaisesRegex(Exception, "duration_resolution"):
+                asyncio.run(runner.run(payload))
 
-        self.assertEqual(result.status, "success")
+    def test_runner_rejects_previous_scene_ir_version(self) -> None:
+        payload = self.scene_ir.model_dump(mode="json")
+        payload["schema_version"] = "0.1"
+        with tempfile.TemporaryDirectory() as directory:
+            runner = _FakeExecutionRunner(
+                ExecutionConfig(
+                    output_dir=Path(directory),
+                    build_backend="mcp",
+                    render_backend="mcp",
+                ),
+                adapter=_FakeAdapter(),
+            )
+            with self.assertRaisesRegex(Exception, "schema_version"):
+                asyncio.run(runner.run(payload))
 
     def test_scene_ir_engine_maps_to_blender_5_2_enum(self) -> None:
         self.assertEqual(_blender_render_engine("BLENDER_EEVEE_NEXT"), "BLENDER_EEVEE")

@@ -21,6 +21,11 @@ class PlanningDurationTest(unittest.TestCase):
                 "duration_source_status": "explicit",
             }
         )
+        for motion in brief["content"]["subject_motion"]:
+            motion["end_time_seconds"] = 5.0
+        for motion in brief["translation_parameters"]["motions"]:
+            motion["end_time_seconds"] = 5.0
+        brief["content"]["camera"]["movement"]["end_time_seconds"] = 5.0
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory)
             result = asyncio.run(

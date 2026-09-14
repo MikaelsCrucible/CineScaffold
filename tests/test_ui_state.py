@@ -19,16 +19,16 @@ class UiStateTest(unittest.TestCase):
             UiRunInputs(source_kind="textual_six", textual_six="主体：测试")
         )
         brief = source_from_inputs(
-            UiRunInputs(source_kind="brief", brief_json=json.dumps({"schema_version": "0.5"}))
+            UiRunInputs(source_kind="brief", brief_json=json.dumps({"schema_version": "0.7"}))
         )
         scene_ir = source_from_inputs(
-            UiRunInputs(source_kind="scene_ir", scene_ir_json=json.dumps({"schema_version": "0.1"}))
+            UiRunInputs(source_kind="scene_ir", scene_ir_json=json.dumps({"schema_version": "0.2"}))
         )
 
         self.assertEqual(text.kind, "text")
         self.assertEqual(textual.kind, "textual_six")
-        self.assertEqual(brief.payload["schema_version"], "0.5")
-        self.assertEqual(scene_ir.payload["schema_version"], "0.1")
+        self.assertEqual(brief.payload["schema_version"], "0.7")
+        self.assertEqual(scene_ir.payload["schema_version"], "0.2")
 
     def test_rejects_invalid_json_before_starting_workflow(self) -> None:
         with self.assertRaisesRegex(ValueError, "JSON 无效"):

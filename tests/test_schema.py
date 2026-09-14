@@ -62,6 +62,23 @@ class SchemaTest(unittest.TestCase):
         with self.assertRaises(SchemaValidationError):
             validate_model_output(value, self.schema)
 
+    def test_null_timeline_event_range_fails(self) -> None:
+        value = valid_model_output()
+        value["timeline"]["events"] = [
+            {
+                "id": "event_01",
+                "description": "事件",
+                "start_time_seconds": None,
+                "end_time_seconds": None,
+                "reference_ids": [],
+                "source_status": "inferred",
+                "source_text": "事件",
+            }
+        ]
+
+        with self.assertRaises(SchemaValidationError):
+            validate_model_output(value, self.schema)
+
 
 def _annotated(value: str) -> dict[str, str]:
     return {"value": value, "source_status": "explicit", "source_text": value}

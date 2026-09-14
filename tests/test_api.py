@@ -22,7 +22,7 @@ class PublicApiTest(unittest.IsolatedAsyncioTestCase):
         runner_type.return_value.run.assert_awaited_once_with(source)
 
     async def test_execute_scene_ir_delegates_to_execution_service(self) -> None:
-        scene_ir = {"schema_version": "0.1"}
+        scene_ir = {"schema_version": "0.2"}
         config = object()
         expected = object()
 

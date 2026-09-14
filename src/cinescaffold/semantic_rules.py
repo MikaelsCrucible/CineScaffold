@@ -474,7 +474,6 @@ def _apply_timeline_rules(
     if len(event_ids) != len(set(event_ids)):
         raise ValueError("timeline.events 的 id 必须唯一")
 
-    _normalize_missing_event_ranges(content, events, duration)
     for event in events:
         start = event.get("start_time_seconds")
         end = event.get("end_time_seconds")
@@ -500,7 +499,6 @@ def _apply_timeline_rules(
 
     _normalize_temporal_relations(timeline.get("relations", []), events)
     _validate_temporal_relations(timeline.get("relations", []), events)
-    _align_full_timeline_motions(content, events, duration)
     _validate_motion_ranges(content.get("subject_motion", []), duration)
 
 
@@ -519,52 +517,6 @@ def _validate_relationship_timing(
             continue
         if event_id not in event_ids:
             raise ValueError(f"空间关系引用未知事件：{event_id}")
-
-
-def _normalize_missing_event_ranges(
-    content: dict[str, Any],
-    events: list[dict[str, Any]],
-    duration: float,
-) -> None:
-    """Repair only event ranges that are uniquely implied by existing semantics."""
-
-    motions_by_event: dict[str, list[dict[str, Any]]] = {}
-    for motion in content.get("subject_motion", []):
-        semantics = motion.get("motion_semantics")
-        event_id = (
-            semantics.get("timeline_event_id") if isinstance(semantics, dict) else None
-        )
-        if isinstance(event_id, str):
-            motions_by_event.setdefault(event_id, []).append(motion)
-
-    static_scene = content.get("scene_dynamics", {}).get("mode") == "static"
-    for event in events:
-        start = event.get("start_time_seconds")
-        end = event.get("end_time_seconds")
-        if _is_number(start) and _is_number(end):
-            continue
-        linked_ranges = [
-            (
-                float(motion["start_time_seconds"]),
-                float(motion["end_time_seconds"]),
-            )
-            for motion in motions_by_event.get(str(event.get("id")), [])
-            if _is_number(motion.get("start_time_seconds"))
-            and _is_number(motion.get("end_time_seconds"))
-        ]
-        if linked_ranges:
-            if not _is_number(start):
-                event["start_time_seconds"] = min(item[0] for item in linked_ranges)
-            if not _is_number(end):
-                event["end_time_seconds"] = max(item[1] for item in linked_ranges)
-            continue
-        if static_scene:
-            # A static subject scene has no competing state boundary. A stray
-            # model-authored event with nullable bounds therefore spans the shot.
-            if not _is_number(start):
-                event["start_time_seconds"] = 0.0
-            if not _is_number(end):
-                event["end_time_seconds"] = duration
 
 
 def _contains_sequential_marker(text: str, timeline_rules: dict[str, Any]) -> bool:
@@ -1012,52 +964,6 @@ def _apply_scene_dynamics(content: dict[str, Any]) -> None:
                 "reason": "模型分类与主体时间线不一致，已按类型化动作确定性纠正",
             }
         )
-
-
-def _align_full_timeline_motions(
-    content: dict[str, Any],
-    events: list[dict[str, Any]],
-    duration: float,
-) -> None:
-    subject_counts: dict[str, int] = {}
-    for motion in content["subject_motion"]:
-        subject_id = str(motion.get("subject_id"))
-        subject_counts[subject_id] = subject_counts.get(subject_id, 0) + 1
-    for motion in content["subject_motion"]:
-        if not _covers_full_timeline(
-            motion.get("start_time_seconds"),
-            motion.get("end_time_seconds"),
-            duration,
-        ):
-            continue
-        event = _matching_timeline_event(motion, events)
-        if event is None:
-            if (
-                motion.get("start_time_seconds") is None
-                and motion.get("end_time_seconds") is None
-                and subject_counts.get(str(motion.get("subject_id"))) == 1
-            ):
-                motion["start_time_seconds"] = 0.0
-                motion["end_time_seconds"] = duration
-            continue
-        start = event.get("start_time_seconds")
-        end = event.get("end_time_seconds")
-        if _is_number(start) and _is_number(end):
-            motion["start_time_seconds"] = float(start)
-            motion["end_time_seconds"] = float(end)
-
-
-def _matching_timeline_event(
-    motion: dict[str, Any],
-    events: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    semantics = motion.get("motion_semantics")
-    event_id = (
-        semantics.get("timeline_event_id") if isinstance(semantics, dict) else None
-    )
-    if event_id is None:
-        return None
-    return next((event for event in events if event.get("id") == event_id), None)
 
 
 def _validate_motion_ranges(

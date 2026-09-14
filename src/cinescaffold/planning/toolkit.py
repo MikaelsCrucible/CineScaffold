@@ -68,7 +68,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 from cinescaffold.relationships import classify_relationship
 
-TOOLKIT_VERSION = "0.41"
+TOOLKIT_VERSION = "0.42"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -4247,7 +4247,7 @@ def _typed_motion_semantic_violations(
     profile: PlanningProfile,
 ) -> list[Violation]:
     """逐阶段复验类型化运动语义，不依赖动作文本或场景身份。"""
-    if objective_brief.schema_version not in {"0.3", "0.4", "0.5", "0.6"}:
+    if objective_brief.schema_version != "0.7":
         return []
     frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
     last_frame_time = state.timeline.duration_seconds - frame_step
@@ -5523,8 +5523,7 @@ def _objective_orbit_pairs(
         except ValueError:
             continue
         if (
-            shape is None
-            or shape.direction_mode != "relative_to_target"
+            shape.direction_mode != "relative_to_target"
             or shape.path_family not in {"circle", "ellipse"}
         ):
             continue
@@ -6988,7 +6987,7 @@ def _required_constraint_types(
         if not has_entity_pair:
             return set()
         required = {"distance_range"}
-        if objective_brief.schema_version == "0.6" and not (
+        if objective_brief.schema_version == "0.7" and not (
             _relationship_allows_containment_overlap(
                 objective_brief,
                 relationship,

@@ -24,7 +24,7 @@ from cinescaffold.planning.toolkit import (
     _entity_transform_at,
     _orbit_entity_intersection_violations,
 )
-from tests.helpers import valid_model_output
+from tests.helpers import valid_model_output, valid_planning_brief
 
 
 class ScenePlanningToolkitTest(unittest.TestCase):
@@ -559,7 +559,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         toolkit = _toolkit()
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
             update={
-                "schema_version": "0.6",
+                "schema_version": "0.7",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -746,9 +746,15 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         toolkit = _toolkit()
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
             update={
-                "schema_version": "0.3",
+                "schema_version": "0.7",
+                "scene_dynamics": {
+                    "mode": "dynamic",
+                    "source_status": "inferred",
+                    "reason": "人物被载运并隐藏",
+                },
                 "subject_motion": [
                     {
+                        "motion_id": "man_carried",
                         "subject_id": "man_01",
                         "action": _annotated("随飞船离开", "被飞船接走"),
                         "motion_semantics": {
@@ -760,6 +766,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                             "carrier_id": "ship_01",
                             "path_type": "stationary",
                             "timeline_event_id": None,
+                            "narrative_required": True,
                             "postconditions": {
                                 "contained_by_id": "ship_01",
                                 "external_visibility": "hidden",
@@ -775,7 +782,21 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                         "secondary_motion": [],
                     }
                 ],
-                "translation_parameters": None,
+                "translation_parameters": {
+                    "motions": [
+                        {
+                            "motion_index": 0,
+                            "subject_id": "man_01",
+                            "motion_type": "carried",
+                            "motion_mode": "carried",
+                            "direction_mode": "none",
+                            "carrier_id": "ship_01",
+                            "path_type": "stationary",
+                            "start_time_seconds": 3.0,
+                            "end_time_seconds": 6.0,
+                        }
+                    ]
+                },
             }
         )
         toolkit.apply_entity_patch([_man_entity(), _ship_entity()], [])
@@ -831,7 +852,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         toolkit = _toolkit()
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
             update={
-                "schema_version": "0.6",
+                "schema_version": "0.7",
                 "subject_motion": [
                     {
                         "motion_id": "man_circle",
@@ -3643,50 +3664,7 @@ def _apply_hold_constraint(
 
 
 def _toolkit() -> ScenePlanningToolkit:
-    content = valid_model_output()
-    content["subjects"] = [
-        {
-            "id": "man_01",
-            "category": _annotated("男人", "一个男人"),
-            "description": _unknown(),
-            "narrative_role": _unknown(),
-            "attributes": [],
-        },
-        {
-            "id": "ship_01",
-            "category": _annotated("飞船", "巨大的飞船"),
-            "description": _unknown(),
-            "narrative_role": _unknown(),
-            "attributes": [],
-        },
-    ]
-    content["scene_design"]["relationships"] = [
-        {
-            "type": "远处",
-            "subject_id": "ship_01",
-            "reference_id": "man_01",
-            "strength": "明显",
-            "source_status": "explicit",
-            "source_text": "远处有飞船",
-        }
-    ]
-    content["camera"]["movement"]["type"] = _annotated("缓慢推近", "镜头慢慢推近")
-    content["timeline"].update(
-        {"duration_seconds": 6.0, "duration_source_status": "inferred"}
-    )
-    brief = {
-        "schema_version": "0.1",
-        "content": content,
-        "provenance": {
-            "source_prompt": "一个男人站在荒漠里，远处有飞船，镜头慢慢推近。",
-            "provider": "mock",
-            "model": "mock-cinematic-brief-v0.1",
-            "parser_prompt_version": "semantic-parser-v0.1",
-            "rules_sha256": "0" * 64,
-            "response_id": "mock-response-001",
-        },
-    }
-    objective = project_objective_brief(brief).objective_brief
+    objective = project_objective_brief(valid_planning_brief()).objective_brief
     resolution = freeze_brief_duration(
         objective.timeline,
         fps_numerator=24,
@@ -3703,12 +3681,49 @@ def _projected_motion_toolkit(
     toolkit = _toolkit()
     toolkit.objective_brief = toolkit.objective_brief.model_copy(
         update={
+            "scene_dynamics": {
+                "mode": "dynamic",
+                "source_status": "inferred",
+                "reason": "测试主体线性位移",
+            },
+            "subject_motion": [
+                {
+                    "motion_id": "man_motion",
+                    "subject_id": "man_01",
+                    "action": _annotated("移动", "移动"),
+                    "motion_semantics": {
+                        "action_kind": "locomotion",
+                        "motion_type": "moving",
+                        "motion_mode": "self_propelled",
+                        "direction_mode": "none",
+                        "target_id": None,
+                        "carrier_id": None,
+                        "path_type": "linear",
+                        "timeline_event_id": None,
+                        "narrative_required": True,
+                        "postconditions": {
+                            "contained_by_id": None,
+                            "external_visibility": "unchanged",
+                        },
+                        "source_status": "inferred",
+                        "source_text": "移动",
+                    },
+                    "direction": _unknown(),
+                    "speed": _unknown(),
+                    "trajectory": _unknown(),
+                    "start_time_seconds": 0.0,
+                    "end_time_seconds": 6.0,
+                    "secondary_motion": [],
+                }
+            ],
             "translation_parameters": {
                 "motions": [
                     {
                         "motion_index": 0,
                         "subject_id": "man_01",
                         "motion_type": "moving",
+                        "motion_mode": "self_propelled",
+                        "direction_mode": "none",
                         "path_type": "linear",
                         "start_time_seconds": 0.0,
                         "end_time_seconds": 6.0,

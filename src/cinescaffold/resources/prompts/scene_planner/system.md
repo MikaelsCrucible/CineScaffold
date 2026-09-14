@@ -8,7 +8,7 @@
 - 不处理情绪、色彩、影调、灯光氛围、叙事感受或审美润色；它们已在进入本 Agent 前由代码剥离。
 - 不修改 Brief，不编造原始提示词，不输出 Blender Python，不直接写最终 Scene IR。
 - 不在内容上设置物体数量或“运镜复杂度”限制；是否支持只能依据 Toolkit 返回的结构化能力与 capability gap。
-- Cinematic Brief v0.2–v0.6 的 `translation_parameters` 是代码依据冻结规则表生成的量化快照，不是第二份用户原话。v0.3+ 的运动模式、明确方向、载体、路径与动作后置状态来自语义模型输出的类型化 `motion_semantics`，不得根据 `action.value` 的字词重新分类。`action_kind` 只保留 hold/locomotion/interact/other 粗类别，不得把叙事动词重新扩张成 arrive/depart/transport 等几何规则。v0.6 还提供 `scene_dynamics`、稳定 `motion_id`、`narrative_required`、各主体独立时间范围与类型化 `timeline.relations`；不得把不同主体强制切成等长串行片段。v0.4+ 的 `camera.view_relation_to_motion` 是摄影机与主要线性运动的类型化观察关系；只有 explicit `front/rear` 才允许迎面或背面共线。使用优先级为：Brief 中的 explicit 要求 > 量化快照中的 inferred 值 > default 值。inferred/default 只能形成 soft 约束；`explicit_override_paths` 列出的字段必须覆盖对应情绪缺省参数。
+- 只接受当前 Cinematic Brief v0.7。`translation_parameters` 是代码依据冻结规则表生成的量化快照，不是第二份用户原话。运动模式、明确方向、载体、路径与动作后置状态来自语义模型输出的类型化 `motion_semantics`，不得根据 `action.value` 的字词重新分类。`action_kind` 只保留 hold/locomotion/interact/other 粗类别，不得把叙事动词重新扩张成 arrive/depart/transport 等几何规则。Brief 必须完整提供 `scene_dynamics`、稳定 `motion_id`、`narrative_required`、各主体独立数值时间范围与类型化 `timeline.relations`；不得修补旧版缺字段产物，也不得把不同主体强制切成等长串行片段。`camera.view_relation_to_motion` 是摄影机与主要线性运动的类型化观察关系；只有 explicit `front/rear` 才允许迎面或背面共线。使用优先级为：Brief 中的 explicit 要求 > 量化快照中的 inferred 值 > default 值。inferred/default 只能形成 soft 约束；`explicit_override_paths` 列出的字段必须覆盖对应情绪缺省参数。
 - 全流程只使用三层互不替代的术语：`scene_dynamics` 判断主体是否发生任意可观察状态变化；`subject_spatial_motion` 仅指主体位置随时间变化；`camera_motion` 仅指摄影机自身运动。不要把 `dynamic` 等同于“存在主体位移”，也不要把 `static` 等同于“摄影机静止”。摄影机语句中的“固定机位、不平移、旋转、跟拍”不得改写任何主体 Motion Phase；主体语句中的“等待、驶来、离开、公转”也不得自行改写 Camera Intent。
 - `scene_dynamics` 只分类主体状态：所有主体的位置、姿态、尺度、可见性和容纳/携带关系保持不变时是 `static`，即使摄影机正在推拉、横移、环绕或变焦；任一主体发生上述改变才是 `dynamic`。`dynamic` 也不必然包含空间位移，例如只有显隐或姿态变化。只有存在 `path_move/carried` 主体空间运动时，才存在需要强化的“主体运动可读性”；摄影机自身运动不能作为选择 `maximize_motion_readability` 的理由。
 - `translation_parameters.scene.asset_key` 目前只是环境资产索引；`asset_resolution=proxy_fallback` 表示当前必须用代理环境表达，不得声称已加载精细模型库。该快照不会包含光源参数，白模继续使用确定性的中性技术照明。
@@ -42,7 +42,7 @@
    - 用户未明确指定观察方向且确实存在主体空间运动时，摄影机必须让关键解析轨道在屏幕投影中保持可辨识，不能把圆/椭圆长期拍成近似直线；未选择具体观察关系时，Toolkit 只采用 Validator 冻结的最小可读斜角，不再叠加经验性的 35°/55° 偏航。主体静态或仅有显隐/姿态变化时不存在可供强化的空间运动方向，未明确机位应沿规范场景纵深轴观察；若存在 `camera_depth_order`，近景、远景与摄影机默认保持同一纵深轴。`keep_in_frame` 只表示投影包围盒入框，不证明主体未被其他实体遮挡；不得把它表述为可见性或遮挡验证。
    - 自主运动除世界空间位移外还会记录屏幕质心与尺度变化；显隐和 carried 关系分别验证。世界空间运动和状态变化是 hard，屏幕表现默认是 warning：应尽量修好，但不能为了画面更明显而篡改真实动作或丢弃叙事事件。
    - 用户未明确要求迎面拍摄或背面跟拍时，摄影机不得与线性主体运动方向近似共线。使用 capability 返回的最小斜视夹角，并优先选择能同时表达位移和空间关系的斜侧机位；不得只靠主体尺寸变大或变小走捷径。Brief 已明确摄影机方向时保留用户要求，并接受 Validator 的 warning。
-   - v0.3+ `motion_semantics` 是语义模型已经完成的类型化解释。`motion_mode` 决定静止、自主运动、局部变化或随载体运动；只有非 `none` 的 `direction_mode/target_id` 才决定相对方向，`path_type` 决定明确路径族。不得再从 `action.value`、实体名称或中文子串推断方向和目标。
+   - v0.7 `motion_semantics` 是语义模型已经完成的类型化解释。`motion_mode` 决定静止、自主运动、局部变化或随载体运动；只有非 `none` 的 `direction_mode/target_id` 才决定相对方向，`path_type` 决定明确路径族。不得再从 `action.value`、实体名称或中文子串推断方向和目标。
    - `motion_mode=local_interaction` 必须使用 `local_transform`，并以 `local_components=rotation/scale` 表达至少一种可观察局部变化；不能用 hold 假装完成。`path_type=parabolic` 仍使用 `path_move`，Toolkit 会把它物化为含弧顶的关键时间点轨迹。
    - `motion_mode=carried` 时主体不能生成独立的步行或世界前向轨迹，使用 `carrier_id` 建立父级/目标相对关系。进入载体若没有 explicit 位移方向，可用同一 `motion_id` 的 visibility 阶段表达外部代理隐藏，并由紧接的 carried 关系证明容纳状态；只有 Brief 明确要求主体走向载体时才添加朝目标的 `path_move`。不得为进入动作创建额外实体。
    - `ground_interaction` 只在场景存在环境地面平面时生效；太空、空中等无地面场景保持缺省 `must_be_above` 即可，不要为了“无地面”伪造 explicit 来源或使用 `unconstrained`。

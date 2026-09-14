@@ -548,7 +548,6 @@
               "cinematic_brief": "#/$defs/BriefDurationRequest",
               "exact": "#/$defs/ExactDurationRequest",
               "inferred": "#/$defs/InferredDurationRequest",
-              "legacy_frozen": "#/$defs/LegacyDurationRequest",
               "range": "#/$defs/RangeDurationRequest"
             },
             "propertyName": "mode"
@@ -564,9 +563,6 @@
               "$ref": "#/$defs/InferredDurationRequest"
             },
             {
-              "$ref": "#/$defs/LegacyDurationRequest"
-            },
-            {
               "$ref": "#/$defs/BriefDurationRequest"
             }
           ],
@@ -577,7 +573,6 @@
             "user_exact",
             "agent_within_user_range",
             "agent_inferred",
-            "legacy_frozen",
             "brief_explicit",
             "brief_inferred",
             "brief_default"
@@ -1006,21 +1001,6 @@
       "title": "InferredDurationRequest",
       "type": "object"
     },
-    "LegacyDurationRequest": {
-      "additionalProperties": false,
-      "properties": {
-        "mode": {
-          "const": "legacy_frozen",
-          "title": "Mode",
-          "type": "string"
-        }
-      },
-      "required": [
-        "mode"
-      ],
-      "title": "LegacyDurationRequest",
-      "type": "object"
-    },
     "LightIR": {
       "additionalProperties": false,
       "properties": {
@@ -1334,15 +1314,7 @@
       "additionalProperties": false,
       "properties": {
         "cinematic_brief_schema_version": {
-          "default": "0.1",
-          "enum": [
-            "0.1",
-            "0.2",
-            "0.3",
-            "0.4",
-            "0.5",
-            "0.6"
-          ],
+          "const": "0.7",
           "title": "Cinematic Brief Schema Version",
           "type": "string"
         },
@@ -1351,8 +1323,8 @@
           "type": "string"
         },
         "constraint_plan_schema_version": {
-          "const": "0.1",
-          "default": "0.1",
+          "const": "0.2",
+          "default": "0.2",
           "title": "Constraint Plan Schema Version",
           "type": "string"
         },
@@ -1419,6 +1391,7 @@
         }
       },
       "required": [
+        "cinematic_brief_schema_version",
         "cinematic_brief_hash",
         "constraint_plan_hash",
         "candidate_revision",
@@ -1652,8 +1625,8 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": "0.1",
-      "default": "0.1",
+      "const": "0.2",
+      "default": "0.2",
       "title": "Schema Version",
       "type": "string"
     },
