@@ -61,6 +61,7 @@ class ExecutionConfig:
     render_backend: Literal["background", "mcp"] = "background"
     process_mode: Literal["fused", "split"] = "fused"
     render_profile: Literal["preview", "control"] = "preview"
+    render_video: bool = True
 
 
 class ExecutionRunner:
@@ -170,6 +171,28 @@ class ExecutionRunner:
             return result
 
         scene_blend = self.output_dir / "scene.blend"
+        if not self.config.render_video:
+            self._emit(
+                "render_skipped",
+                reason="disabled_by_host",
+                process_mode=process_mode,
+            )
+            result = ExecutionResult(
+                status="success",
+                scene_ir_hash=scene_ir_hash,
+                build=build,
+                render=None,
+                viewer=build.get("viewer"),
+                artifacts=self._existing_artifacts(),
+                elapsed_seconds=time.monotonic() - started,
+            )
+            self._write_manifest(scene_ir, result)
+            self._emit(
+                "execution_finished",
+                status=result.status,
+                elapsed_seconds=result.elapsed_seconds,
+            )
+            return result
         try:
             if process_mode != "fused":
                 self._emit_render_started(process_mode, scene_ir.timeline.frame_count)
@@ -742,6 +765,7 @@ class ExecutionRunner:
             "render_backend": self.config.render_backend,
             "requested_process_mode": self.config.process_mode,
             "process_mode": self._effective_process_mode(),
+            "render_video": self.config.render_video,
             "render_profile": self.config.render_profile,
             "blender_expected": scene_ir.provenance.expected_blender,
             "elapsed_seconds": result.elapsed_seconds,
@@ -767,7 +791,8 @@ class ExecutionRunner:
 
     def _effective_process_mode(self) -> Literal["fused", "split"]:
         if (
-            self.config.process_mode == "fused"
+            self.config.render_video
+            and self.config.process_mode == "fused"
             and self.config.build_backend == "background"
             and self.config.render_backend == "background"
         ):

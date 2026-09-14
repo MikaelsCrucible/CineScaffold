@@ -167,6 +167,7 @@ def _execution_config(
         render_backend=data.get("execution_render_backend", "background"),
         process_mode=data.get("execution_process_mode", "fused"),
         render_profile=render_profile or data.get("execution_render_profile", "preview"),
+        render_video=data.get("execution_render_video", "1") == "1",
         render_timeout_seconds=float(data.get("execution_render_timeout_seconds", "600")),
     )
 

@@ -35,7 +35,7 @@ async def execute_scene_ir(
     *,
     progress_callback: PipelineEventCallback | None = None,
 ) -> ExecutionResult:
-    """Build and render a validated Scene IR through the public API."""
+    """Build a validated Scene IR and optionally render its video."""
 
     return await ExecutionRunner(
         config,

@@ -573,6 +573,27 @@ class ExecutionTest(unittest.TestCase):
         self.assertEqual(result.status, "success")
         self.assertEqual(manifest["process_mode"], "split")
 
+    def test_render_video_false_finishes_after_build(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "execution"
+            events: list[str] = []
+            runner = _FakeBackgroundExecutionRunner(
+                ExecutionConfig(output_dir=output_dir, render_video=False),
+                progress_callback=lambda event, payload: events.append(event),
+            )
+            result = asyncio.run(runner.run(self.scene_ir.model_dump(mode="json")))
+            manifest = json.loads(
+                (output_dir / "execution_manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result.status, "success")
+        self.assertIsNone(result.render)
+        self.assertNotIn("diagnostic_preview", result.artifacts)
+        self.assertEqual(manifest["process_mode"], "split")
+        self.assertFalse(manifest["render_video"])
+        self.assertIn("render_skipped", events)
+        self.assertNotIn("render_started", events)
+
     def test_runner_completes_without_agent_and_writes_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory) / "execution"
