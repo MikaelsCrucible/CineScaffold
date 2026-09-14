@@ -248,7 +248,7 @@ DeepSeek 在 thinking 与 tools 同时启用时要求后续请求完整回传历
 
 常规规划默认使用面向长思考工具循环的研究预算：48 次模型请求、80 次工具调用、单请求 128K 输入上下文、整轮累计 200K 输出 token、20 分钟墙钟时间和 5 次外层规划尝试。外层尝试同时覆盖 Commit Gate 拒绝、Agent 过早声明不可行/不支持，以及可恢复的供应商返回异常。累计输入和输入输出总量默认不另设上限，但仍受上述单项门禁与供应商限制保护。每项均可通过 `--max-requests`、`--max-tool-calls`、`--max-context-tokens`、`--max-output-tokens`、`--max-seconds` 和 `--max-commit-attempts` 临时覆盖；论文批量实验应显式记录或冻结这些值。
 
-嵌入式宿主可以在 `PipelineRunConfig` 设置 `max_provider_cost`、`provider_cost_currency`，并为 Semantic 与 Planning 提供同币种的冻结 `CostRates`。Core 在每次 Provider 响应返回 usage 后发出 `provider_cost_incurred`，累计达到或超过上限后在下一次请求前停止；所以这是事后门禁，最后一个已经发生的请求可能越线。价格快照、跨任务/跨进程的日额度、预留和未知账单结算由宿主负责，Core 不把估算成本冒充 Provider 账单。
+嵌入式宿主可以在 `PipelineRunConfig` 设置 `max_provider_cost`、`provider_cost_currency`，并为 Semantic 与 Planning 提供同币种的冻结 `CostRates`。Core 在每次 Provider 响应返回 usage 后发出 `provider_cost_incurred`，累计达到或超过上限后在下一次请求前停止；所以这是事后门禁，最后一个已经发生的请求可能越线。模型响应前收到明确的非计费 HTTP 请求拒绝时，同一事件以零金额和 `billing_resolution=confirmed_not_billed` 关闭预留；超时、网络中断和服务端错误仍保持未知。价格快照、跨任务/跨进程的日额度、预留和未知账单结算由宿主负责，Core 不把估算成本冒充 Provider 账单。
 
 ## 使用
 
@@ -409,7 +409,7 @@ Runtime Validation 通过后，固定 Executor 还会在视频渲染前最佳努
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-Provider HTTP 边界使用无网络模拟回归覆盖认证拒绝（`401`）、限流（`429`）、余额不足（`402`）与超时；这些错误都归一为 `ProviderError`，且底层不会自动重试付费请求。金额越线另由 Workflow 测试确认 Semantic 已产生的费用先记录，随后在 Planning 前停止。
+Provider HTTP 边界使用无网络模拟回归覆盖认证拒绝（`401`）、限流（`429`）、余额不足（`402`）与超时；HTTP 拒绝保留类型化状态码且底层不会自动重试。模型响应前的明确请求拒绝会结算零费用，超时继续保留账单不确定性；金额越线另由 Workflow 测试确认 Semantic 已产生的费用先记录，随后在 Planning 前停止。
 
 JSON Schema 与 Prompt 位于 [`src/cinescaffold/resources/`](src/cinescaffold/resources/)，核心实现位于 [`src/cinescaffold/`](src/cinescaffold/)。这些资源是源码运行与 wheel 安装共用的唯一权威副本。
 

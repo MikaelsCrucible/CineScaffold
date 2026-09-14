@@ -6,7 +6,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from cinescaffold.errors import ProviderError
+from cinescaffold.errors import ProviderError, ProviderHTTPError
 
 
 HttpTransport = Callable[[str, dict[str, str], dict[str, Any], float], dict[str, Any]]
@@ -25,7 +25,7 @@ def post_json(
             raw = response.read().decode("utf-8")
     except HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
-        raise ProviderError(f"API 返回 HTTP {error.code}：{detail}") from error
+        raise ProviderHTTPError(error.code, detail) from error
     except URLError as error:
         raise ProviderError(f"API 网络错误：{error.reason}") from error
     except TimeoutError as error:

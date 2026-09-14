@@ -30,6 +30,8 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext
 from pydantic_ai.usage import RunUsage
 
+from cinescaffold.errors import http_status_is_confirmed_not_billed
+
 
 TraceEventCallback = Callable[[str, dict[str, Any]], None]
 
@@ -188,6 +190,7 @@ class TracingModel(WrapperModel):
                 error_type=type(error).__name__,
                 error=str(error),
             )
+            self._record_confirmed_zero_cost(error, self._request_index)
             raise
         self._record_completed_response(
             request_index=self._request_index,
@@ -252,6 +255,7 @@ class TracingModel(WrapperModel):
                 error_type=type(error).__name__,
                 error=str(error),
             )
+            self._record_confirmed_zero_cost(error, request_index)
             raise
         finally:
             self.active_stream_request_index = None
@@ -305,6 +309,29 @@ class TracingModel(WrapperModel):
                 currency=self.cost_rates.currency,
                 pricing_source=self.cost_rates.source,
             )
+
+    def _record_confirmed_zero_cost(
+        self,
+        error: Exception,
+        request_index: int,
+    ) -> None:
+        """Resolve only typed request-layer HTTP rejections as zero cost."""
+
+        if self.cost_rates is None or not http_status_is_confirmed_not_billed(
+            getattr(error, "status_code", None)
+        ):
+            return
+        self.trace.record(
+            "provider_cost_incurred",
+            stage="planning",
+            request_index=request_index,
+            amount="0.00000000",
+            cumulative_amount=_cost_text(self.cumulative_cost),
+            currency=self.cost_rates.currency,
+            pricing_source=self.cost_rates.source,
+            billing_resolution="confirmed_not_billed",
+            http_status=error.status_code,
+        )
 
     def _raise_if_cost_exhausted(self) -> None:
         if self.max_cost is None or self.cumulative_cost < self.max_cost:

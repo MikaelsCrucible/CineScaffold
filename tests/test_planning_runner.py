@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
     ModelResponse,
     PartDeltaEvent,
@@ -270,6 +271,38 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertEqual(calls, 1)
         self.assertIn("provider_cost_incurred", rendered)
         self.assertIn("provider_cost_limit_exceeded", rendered)
+
+    def test_tracing_model_closes_http_rejection_as_confirmed_zero_cost(self) -> None:
+        def callback(messages, info) -> ModelResponse:
+            raise ModelHTTPError(402, "probe", {"error": "insufficient balance"})
+
+        with tempfile.TemporaryDirectory() as directory:
+            events: list[tuple[str, dict[str, object]]] = []
+            trace = TraceRecorder(
+                Path(directory) / "trace.jsonl",
+                "rejected_cost_test",
+                event_callback=lambda name, payload: events.append((name, payload)),
+            )
+            model = TracingModel(
+                FunctionModel(callback, model_name="probe"),
+                trace,
+                cost_rates=CostRates(
+                    currency="CNY",
+                    input_per_million=Decimal("1"),
+                    output_per_million=Decimal("1"),
+                    source="test",
+                ),
+                max_cost=Decimal("2"),
+            )
+            agent = Agent(model, system_prompt="system")
+            with self.assertRaises(ModelHTTPError):
+                asyncio.run(agent.run("rejected"))
+
+        settlements = [payload for name, payload in events if name == "provider_cost_incurred"]
+        self.assertEqual(len(settlements), 1)
+        self.assertEqual(settlements[0]["amount"], "0.00000000")
+        self.assertEqual(settlements[0]["billing_resolution"], "confirmed_not_billed")
+        self.assertEqual(settlements[0]["http_status"], 402)
 
     def test_cost_limit_requires_a_price_snapshot(self) -> None:
         with self.assertRaisesRegex(ValueError, "price snapshot"):

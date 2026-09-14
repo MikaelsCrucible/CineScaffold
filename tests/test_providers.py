@@ -7,7 +7,7 @@ from unittest.mock import patch
 from typing import Any
 from urllib.error import HTTPError
 
-from cinescaffold.errors import ProviderError
+from cinescaffold.errors import ProviderError, ProviderHTTPError
 from cinescaffold.providers.deepseek import DeepSeekProvider
 from cinescaffold.providers.http import post_json
 from cinescaffold.providers.openai import OpenAIProvider
@@ -185,7 +185,7 @@ class ProviderTest(unittest.TestCase):
                     with self.assertRaisesRegex(
                         ProviderError,
                         rf"HTTP {status_code}.*{detail}",
-                    ):
+                    ) as raised:
                         post_json(
                             "https://provider.invalid/v1/test",
                             {"Authorization": "Bearer test-secret"},
@@ -194,6 +194,9 @@ class ProviderTest(unittest.TestCase):
                         )
 
                 mocked_urlopen.assert_called_once()
+                self.assertIsInstance(raised.exception, ProviderHTTPError)
+                self.assertEqual(raised.exception.status_code, status_code)
+                self.assertTrue(raised.exception.confirmed_not_billed)
 
     def test_http_provider_timeout_is_normalized(self) -> None:
         with patch(

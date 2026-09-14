@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from cinescaffold.errors import ProviderHTTPError
 from cinescaffold.execution.runner import ExecutionConfig, ExecutionRunner
 from cinescaffold.planning.runner import InterpreterRunConfig, InterpreterRunner
 from cinescaffold.planning.trace import (
@@ -345,7 +346,29 @@ class _MeteredProvider:
                 "provider_request_started",
                 {"stage": "semantic", "request_index": 1},
             )
-        response = self._wrapped.generate(system_prompt, user_prompt, schema)
+        try:
+            response = self._wrapped.generate(system_prompt, user_prompt, schema)
+        except ProviderHTTPError as error:
+            if (
+                self._rates is not None
+                and error.confirmed_not_billed
+                and self._progress_callback is not None
+            ):
+                # Close the host reservation without guessing from response text.
+                self._progress_callback(
+                    "provider_cost_incurred",
+                    {
+                        "stage": "semantic",
+                        "request_index": 1,
+                        "amount": "0.00000000",
+                        "cumulative_amount": "0.00000000",
+                        "currency": self._rates.currency,
+                        "pricing_source": self._rates.source,
+                        "billing_resolution": "confirmed_not_billed",
+                        "http_status": error.status_code,
+                    },
+                )
+            raise
         usage = response.raw_metadata.get("usage")
         if self._rates is None or not isinstance(usage, dict):
             return response
