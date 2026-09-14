@@ -8,6 +8,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from cinescaffold.camera_semantics import classify_camera_movement
+from cinescaffold.relationships import (
+    classify_relationship,
+    normalize_scene_relationships,
+)
 
 TRANSLATION_PARAMETERS_VERSION = "0.5"
 
@@ -32,7 +37,9 @@ def apply_translation_rules(
     _validate_rule_table(rules)
     content = deepcopy(model_content)
     _apply_semantic_defaults(content, rules)
+    normalize_scene_relationships(content)
     _normalize_spatial_layer_relationships(content)
+    normalize_scene_relationships(content)
     _normalize_motion_metadata(content)
     _apply_scene_dynamics(content)
     _apply_timeline_rules(content, rules, source_prompt)
@@ -128,6 +135,16 @@ def _apply_emotion_semantics(
         "trajectory",
         _annotated(_camera_trajectory(camera_profile["movement"]), status, source_text),
     )
+    movement_kind = classify_camera_movement(_value(movement.get("type")))
+    if (
+        _status(movement.get("type")) != "explicit"
+        and movement_kind in {"pan", "follow", "orbit"}
+        and movement.get("target_id") is None
+    ):
+        # The emotion table generated both the movement and its focus, so this
+        # target is part of one deterministic rule. Explicit user movement must
+        # carry its own target and is never repaired from focus after the fact.
+        movement["target_id"] = focus_target
     if movement.get("start_time_seconds") is None:
         movement["start_time_seconds"] = 0.0
     if movement.get("end_time_seconds") is None:
@@ -238,13 +255,12 @@ def reconcile_translation_parameters(
     movement_node = content.get("camera", {}).get("movement", {}).get("type")
     if _status(movement_node) != "explicit":
         return reconciled
-    movement = _camera_movement_kind(_value(movement_node))
+    movement = classify_camera_movement(_value(movement_node))
     camera = reconciled.get("camera")
     if movement is None or not isinstance(camera, dict):
         return reconciled
 
-    duration = _number_or(content.get("timeline", {}).get("duration_seconds"), 15.0)
-    duration = max(duration, 1e-6)
+    duration = _camera_active_duration(content)
     start = _number_or(camera.get("start_distance_m"), 15.0)
     end_value = camera.get("end_distance_m")
     end = float(end_value) if _is_number(end_value) else None
@@ -261,13 +277,25 @@ def reconcile_translation_parameters(
             end = max(start * 1.5, start + 0.1)
         camera["end_distance_m"] = end
         camera["speed_mps"] = abs(end - start) / duration
-    elif movement == "static":
-        camera["end_distance_m"] = start
-        camera["speed_mps"] = 0.0
-    elif movement == "pan":
+    elif movement == "static" or movement == "pan":
         camera["end_distance_m"] = start
         camera["speed_mps"] = 0.0
     return reconciled
+
+
+def _camera_active_duration(content: dict[str, Any]) -> float:
+    total = max(
+        _number_or(content.get("timeline", {}).get("duration_seconds"), 15.0),
+        1e-6,
+    )
+    movement = content.get("camera", {}).get("movement", {})
+    if not isinstance(movement, dict):
+        return total
+    start = movement.get("start_time_seconds")
+    end = movement.get("end_time_seconds")
+    if _is_number(start) and _is_number(end) and float(end) > float(start):
+        return float(end) - float(start)
+    return total
 
 
 def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> None:
@@ -303,7 +331,11 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
 
     timeline = content.setdefault("timeline", {})
     duration = timeline.get("duration_seconds")
-    if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
+    if (
+        not isinstance(duration, (int, float))
+        or isinstance(duration, bool)
+        or duration <= 0
+    ):
         resolved_range_duration = _resolve_duration_range(timeline, defaults)
         if resolved_range_duration is not None:
             timeline["duration_seconds"] = resolved_range_duration
@@ -406,15 +438,8 @@ def _normalize_spatial_layer_relationships(content: dict[str, Any]) -> None:
                 isinstance(relationship, dict)
                 and relationship.get("subject_id") == far_id
                 and relationship.get("reference_id") == reference_id
-                and any(
-                    marker
-                    in str(
-                        relationship.get("type")
-                        or relationship.get("strength")
-                        or ""
-                    ).lower()
-                    for marker in far_markers
-                )
+                and (classify_relationship(relationship) is not None)
+                and classify_relationship(relationship).kind == "far"
                 for relationship in relationships
             )
             if already_mapped:
@@ -427,6 +452,8 @@ def _normalize_spatial_layer_relationships(content: dict[str, Any]) -> None:
                     "strength": "scene_relative",
                     "source_status": layer.get("source_status", "inferred"),
                     "source_text": layer.get("source_text"),
+                    "timeline_event_id": None,
+                    "temporal_mode": "throughout",
                 }
             )
 
@@ -455,9 +482,10 @@ def _apply_timeline_rules(
         if not 0.0 <= float(start) < float(end) <= duration:
             raise ValueError(f"timeline event 时间范围无效：{event.get('id')}")
 
+    _validate_relationship_timing(content, set(event_ids))
+
     sequential = bool(
-        source_prompt
-        and _contains_sequential_marker(source_prompt, rules["timeline"])
+        source_prompt and _contains_sequential_marker(source_prompt, rules["timeline"])
     )
     if sequential:
         if len(events) < 2:
@@ -475,6 +503,23 @@ def _apply_timeline_rules(
     _validate_motion_ranges(content.get("subject_motion", []), duration)
 
 
+def _validate_relationship_timing(
+    content: dict[str, Any],
+    event_ids: set[Any],
+) -> None:
+    for relationship in content.get("scene_design", {}).get("relationships", []):
+        if not isinstance(relationship, dict):
+            continue
+        event_id = relationship.get("timeline_event_id")
+        temporal_mode = relationship.get("temporal_mode", "throughout")
+        if event_id is None:
+            if temporal_mode != "throughout":
+                raise ValueError("关系使用 at_start/at_end 时必须引用 timeline event")
+            continue
+        if event_id not in event_ids:
+            raise ValueError(f"空间关系引用未知事件：{event_id}")
+
+
 def _normalize_missing_event_ranges(
     content: dict[str, Any],
     events: list[dict[str, Any]],
@@ -486,9 +531,7 @@ def _normalize_missing_event_ranges(
     for motion in content.get("subject_motion", []):
         semantics = motion.get("motion_semantics")
         event_id = (
-            semantics.get("timeline_event_id")
-            if isinstance(semantics, dict)
-            else None
+            semantics.get("timeline_event_id") if isinstance(semantics, dict) else None
         )
         if isinstance(event_id, str):
             motions_by_event.setdefault(event_id, []).append(motion)
@@ -591,7 +634,10 @@ def _validate_temporal_relations(
             valid = max(source_start, target_start) < min(source_end, target_end)
         elif relation == "during":
             gap = 0.0
-            valid = target_start - tolerance <= source_start and source_end <= target_end + tolerance
+            valid = (
+                target_start - tolerance <= source_start
+                and source_end <= target_end + tolerance
+            )
         elif relation == "starts_before":
             gap = target_start - source_start
             valid = gap >= -tolerance
@@ -635,13 +681,10 @@ def _normalize_temporal_relations(
         target = event_map.get(str(item.get("target_event_id")))
         if source is None or target is None:
             continue
-        minimum_gap = item.get("minimum_gap_seconds")
-        maximum_gap = item.get("maximum_gap_seconds")
-        has_explicit_gap = item.get("source_status") == "explicit" and (
-            _is_number(maximum_gap)
-            or (_is_number(minimum_gap) and float(minimum_gap) > 0.0)
-        )
-        if has_explicit_gap:
+        # An explicit qualitative relation is itself a user requirement, even
+        # when it has no numeric gap. Never rewrite it to fit model-produced
+        # event ranges; validation must expose the contradiction.
+        if item.get("source_status") == "explicit":
             continue
         if _relation_matches_ranges(item, source, target):
             continue
@@ -822,7 +865,10 @@ def _reconcile_motion_mode(semantics: dict[str, Any]) -> str | None:
     if semantics.get("carrier_id") is not None:
         votes["carried"] += 1
     postconditions = semantics.get("postconditions")
-    if isinstance(postconditions, dict) and postconditions.get("contained_by_id") is not None:
+    if (
+        isinstance(postconditions, dict)
+        and postconditions.get("contained_by_id") is not None
+    ):
         votes["carried"] += 1
 
     if not votes:
@@ -833,7 +879,7 @@ def _reconcile_motion_mode(semantics: dict[str, Any]) -> str | None:
 
 
 def _normalize_camera_movement(content: dict[str, Any]) -> None:
-    """Validate camera-only timing and recover a uniquely typed tracking target."""
+    """Validate camera-only timing without conflating focus and movement target."""
 
     movement = content.get("camera", {}).get("movement")
     if not isinstance(movement, dict):
@@ -856,40 +902,9 @@ def _normalize_camera_movement(content: dict[str, Any]) -> None:
     if target_id is not None and target_id not in subject_ids:
         raise ValueError("camera.movement.target_id 未引用有效主体")
 
-    kind = _camera_movement_kind(_value(movement.get("type")))
-    if kind not in {"pan", "follow", "orbit"} or target_id is not None:
-        return
-    focus_id = _value(content.get("camera", {}).get("focus_target_id"))
-    if focus_id in subject_ids:
-        movement["target_id"] = focus_id
-        return
-
-    active_subjects = {
-        motion.get("subject_id")
-        for motion in content.get("subject_motion", [])
-        if isinstance(motion, dict)
-        and isinstance(motion.get("motion_semantics"), dict)
-        and motion["motion_semantics"].get("motion_mode") == "self_propelled"
-        and _ranges_overlap(
-            float(start),
-            float(end),
-            motion.get("start_time_seconds"),
-            motion.get("end_time_seconds"),
-        )
-    }
-    active_subjects.discard(None)
-    if len(active_subjects) == 1:
-        movement["target_id"] = next(iter(active_subjects))
-        return
-    raise ValueError(f"camera.movement.type={kind} 缺少唯一 target_id")
-
-
-def _ranges_overlap(start: float, end: float, other_start: Any, other_end: Any) -> bool:
-    return (
-        _is_number(other_start)
-        and _is_number(other_end)
-        and max(start, float(other_start)) < min(end, float(other_end))
-    )
+    kind = classify_camera_movement(_value(movement.get("type")))
+    if kind in {"pan", "follow", "orbit"} and target_id is None:
+        raise ValueError(f"camera.movement.type={kind} 缺少独立 target_id")
 
 
 def _apply_scene_dynamics(content: dict[str, Any]) -> None:
@@ -966,7 +981,9 @@ def _matching_timeline_event(
     events: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     semantics = motion.get("motion_semantics")
-    event_id = semantics.get("timeline_event_id") if isinstance(semantics, dict) else None
+    event_id = (
+        semantics.get("timeline_event_id") if isinstance(semantics, dict) else None
+    )
     if event_id is None:
         return None
     return next((event for event in events if event.get("id") == event_id), None)
@@ -1023,13 +1040,17 @@ def _classify_emotion(content: dict[str, Any], rules: dict[str, Any]) -> dict[st
     }
 
 
-def _subject_parameters(content: dict[str, Any], rules: dict[str, Any]) -> list[dict[str, Any]]:
+def _subject_parameters(
+    content: dict[str, Any], rules: dict[str, Any]
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for subject in content["subjects"]:
         category = _value(subject.get("category"))
         description = _value(subject.get("description"))
         source_text = _source_text(subject.get("category")) or ""
-        search_text = " ".join(item for item in (category, description, source_text) if item)
+        search_text = " ".join(
+            item for item in (category, description, source_text) if item
+        )
         height, height_status = _subject_height(search_text, rules)
         quantity, quantity_status = _subject_quantity(search_text)
         result.append(
@@ -1056,7 +1077,9 @@ def _subject_parameters(content: dict[str, Any], rules: dict[str, Any]) -> list[
     return result
 
 
-def _motion_parameters(content: dict[str, Any], rules: dict[str, Any]) -> list[dict[str, Any]]:
+def _motion_parameters(
+    content: dict[str, Any], rules: dict[str, Any]
+) -> list[dict[str, Any]]:
     duration = float(content["timeline"]["duration_seconds"])
     subject_ids = {
         str(subject["id"])
@@ -1072,10 +1095,12 @@ def _motion_parameters(content: dict[str, Any], rules: dict[str, Any]) -> list[d
     for index, motion in enumerate(content["subject_motion"]):
         semantics = _validated_motion_semantics(motion, subject_ids, event_ids, index)
         motion_type = semantics["motion_type"]
-        speed_range = deepcopy(rules["speed_ranges_mps"].get(
-            motion_type,
-            rules["defaults"]["moving_speed_mps"],
-        ))
+        speed_range = deepcopy(
+            rules["speed_ranges_mps"].get(
+                motion_type,
+                rules["defaults"]["moving_speed_mps"],
+            )
+        )
         direction_mode = semantics["direction_mode"]
         result.append(
             {
@@ -1099,7 +1124,9 @@ def _motion_parameters(content: dict[str, Any], rules: dict[str, Any]) -> list[d
                 "narrative_required": bool(semantics["narrative_required"]),
                 "postconditions": deepcopy(semantics["postconditions"]),
                 "start_time_seconds": _number_or(motion.get("start_time_seconds"), 0.0),
-                "end_time_seconds": _number_or(motion.get("end_time_seconds"), duration),
+                "end_time_seconds": _number_or(
+                    motion.get("end_time_seconds"), duration
+                ),
                 "source_status": semantics["source_status"],
             }
         )
@@ -1142,11 +1169,15 @@ def _validated_motion_semantics(
 
     target_id = semantics.get("target_id")
     direction_mode = semantics.get("direction_mode")
-    if direction_mode in {
-        "toward_target",
-        "away_from_target",
-        "relative_to_target",
-    } and target_id not in subject_ids:
+    if (
+        direction_mode
+        in {
+            "toward_target",
+            "away_from_target",
+            "relative_to_target",
+        }
+        and target_id not in subject_ids
+    ):
         raise ValueError(f"subject_motion[{index}] 的相对方向缺少有效 target_id")
     if target_id == subject_id:
         raise ValueError(f"subject_motion[{index}] 不能以自身作为 target_id")
@@ -1154,7 +1185,9 @@ def _validated_motion_semantics(
     carrier_id = semantics.get("carrier_id")
     if motion_mode == "carried":
         if carrier_id not in subject_ids or carrier_id == subject_id:
-            raise ValueError(f"subject_motion[{index}] 的 carried 运动缺少有效 carrier_id")
+            raise ValueError(
+                f"subject_motion[{index}] 的 carried 运动缺少有效 carrier_id"
+            )
     elif carrier_id is not None:
         raise ValueError(f"subject_motion[{index}] 仅 carried 运动可设置 carrier_id")
 
@@ -1168,10 +1201,12 @@ def _validated_motion_semantics(
         contained_by_id not in subject_ids or contained_by_id == subject_id
     ):
         raise ValueError(f"subject_motion[{index}] 的 contained_by_id 无效")
-    if contained_by_id is not None and target_id is not None and target_id != contained_by_id:
-        raise ValueError(
-            f"subject_motion[{index}] 的几何目标与 contained_by_id 冲突"
-        )
+    if (
+        contained_by_id is not None
+        and target_id is not None
+        and target_id != contained_by_id
+    ):
+        raise ValueError(f"subject_motion[{index}] 的几何目标与 contained_by_id 冲突")
 
     path_type = semantics.get("path_type")
     if motion_mode == "stationary" and path_type != "stationary":
@@ -1181,9 +1216,7 @@ def _validated_motion_semantics(
     if path_type in {"circular", "elliptical"} and (
         direction_mode != "relative_to_target" or target_id is None
     ):
-        raise ValueError(
-            f"subject_motion[{index}] 的相对闭合路径缺少有效几何目标"
-        )
+        raise ValueError(f"subject_motion[{index}] 的相对闭合路径缺少有效几何目标")
 
     timeline_event_id = semantics.get("timeline_event_id")
     if timeline_event_id is not None and timeline_event_id not in event_ids:
@@ -1299,7 +1332,7 @@ def _camera_profile_for_explicit_movement(
     movement_node = content.get("camera", {}).get("movement", {}).get("type")
     if _status(movement_node) != "explicit":
         return deepcopy(base_camera)
-    movement = _camera_movement_kind(_value(movement_node))
+    movement = classify_camera_movement(_value(movement_node))
     if movement is None:
         return deepcopy(base_camera)
 
@@ -1324,25 +1357,6 @@ def _camera_profile_for_explicit_movement(
         resolved["speed_mps"] = 0.0
         resolved["end_distance_m"] = resolved["start_distance_m"]
     return resolved
-
-
-def _camera_movement_kind(value: str | None) -> str | None:
-    if not value:
-        return None
-    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
-    aliases = (
-        ("pan", ("pan", "摇摄", "摇镜", "原地旋转", "固定机位旋转", "不平移")),
-        ("push_in", ("push_in", "pushin", "dolly_in", "推近", "推进")),
-        ("pull_out", ("pull_out", "pullout", "dolly_out", "拉远", "后拉", "拉开")),
-        ("orbit", ("orbit", "环绕", "绕拍")),
-        ("follow", ("follow", "跟随", "跟拍")),
-        ("lateral", ("lateral", "truck", "横移", "侧移")),
-        ("static", ("static", "fixed", "静止", "固定")),
-    )
-    for kind, markers in aliases:
-        if any(marker in normalized for marker in markers):
-            return kind
-    return None
 
 
 def _camera_trajectory(movement: str) -> str:
@@ -1383,7 +1397,9 @@ def _explicit_override_paths(content: dict[str, Any]) -> list[str]:
     paths: list[str] = []
     for root in ("camera", "composition"):
         _collect_explicit(content.get(root), root, paths)
-    _collect_explicit(content.get("mood", {}).get("lighting_intent"), "mood.lighting_intent", paths)
+    _collect_explicit(
+        content.get("mood", {}).get("lighting_intent"), "mood.lighting_intent", paths
+    )
     return paths
 
 
@@ -1425,16 +1441,31 @@ def _subject_quantity(text: str) -> tuple[int, str]:
     match = re.search(r"(?:^|\D)(\d+)(?:个|名|位|只|辆|艘|颗)?", text)
     if match:
         return max(1, int(match.group(1))), "inferred"
-    chinese = {"一个": 1, "一名": 1, "一位": 1, "一辆": 1, "一艘": 1, "两个": 2, "两名": 2, "两位": 2, "三 个": 3, "三个": 3}
+    chinese = {
+        "一个": 1,
+        "一名": 1,
+        "一位": 1,
+        "一辆": 1,
+        "一艘": 1,
+        "两个": 2,
+        "两名": 2,
+        "两位": 2,
+        "三 个": 3,
+        "三个": 3,
+    }
     for marker, quantity in chinese.items():
         if marker in text:
             return quantity, "inferred"
     return 1, "default"
 
 
-def _add_default_uncertainty(content: dict[str, Any], field: str, selected: str) -> None:
+def _add_default_uncertainty(
+    content: dict[str, Any], field: str, selected: str
+) -> None:
     uncertainties = content.setdefault("uncertainties", [])
-    if any(item.get("field") == field for item in uncertainties if isinstance(item, dict)):
+    if any(
+        item.get("field") == field for item in uncertainties if isinstance(item, dict)
+    ):
         return
     uncertainties.append(
         {
@@ -1453,7 +1484,9 @@ def _add_inference_uncertainty(
     reason: str,
 ) -> None:
     uncertainties = content.setdefault("uncertainties", [])
-    if any(item.get("field") == field for item in uncertainties if isinstance(item, dict)):
+    if any(
+        item.get("field") == field for item in uncertainties if isinstance(item, dict)
+    ):
         return
     uncertainties.append(
         {

@@ -50,7 +50,7 @@ from cinescaffold.planning.toolkit import (
 
 
 COMPILER_VERSION = "0.14"
-COMMIT_GATE_VERSION = "0.12"
+COMMIT_GATE_VERSION = "0.13"
 
 
 @dataclass(frozen=True)

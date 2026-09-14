@@ -4,12 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def valid_model_output() -> dict[str, Any]:
-    path = ROOT / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json"
+    path = (
+        ROOT / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json"
+    )
     value = json.loads(path.read_text(encoding="utf-8"))
     value["summary"] = "测试摘要"
     return value
@@ -37,12 +38,15 @@ def valid_planning_brief() -> dict[str, Any]:
             "attributes": [],
         },
     ]
+    content["subject_motion"] = []
     content["scene_design"]["relationships"] = [
         {
             "type": "远处",
             "subject_id": "ship_01",
             "reference_id": "man_01",
             "strength": "明显",
+            "timeline_event_id": None,
+            "temporal_mode": "throughout",
             "source_status": "explicit",
             "source_text": "远处有飞船",
         }

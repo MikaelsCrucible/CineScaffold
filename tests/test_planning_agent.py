@@ -201,6 +201,28 @@ class PlanningProtocolTest(unittest.TestCase):
         )
         self.assertIsNone(deps.pending_design_stall)
 
+    def test_identical_rejected_design_retry_starts_recovery_round(self) -> None:
+        failure = {
+            "status": "no_change",
+            "data": {
+                "failure_signature": "sha256:stable",
+                "failure_codes": ["SPEED_RANGE_VIOLATED"],
+                "failure_reasons": ["Design Option 未通过全部硬约束"],
+            },
+        }
+        duplicate = {
+            "status": "rejected",
+            "data": {},
+            "warnings": ["不得重复完全相同的 Design Options 请求"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), _toolkit())
+            deps._observe_design_search(failure)
+            deps._observe_design_search(duplicate)
+
+            with self.assertRaises(DesignSearchStalled):
+                _compact_tool_call_history(_context(deps), [])
+
     def test_tool_history_compacts_pure_text_response_once(self) -> None:
         response = ModelResponse(
             parts=[TextPart("无工具正文" * 2_000)],

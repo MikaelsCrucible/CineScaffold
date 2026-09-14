@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from cinescaffold.prompting import build_prompt
 from cinescaffold.providers.base import StructuredOutputProvider
+from cinescaffold.relationships import normalize_scene_relationships
 from cinescaffold.schema import load_schema, validate_model_output
 from cinescaffold.semantic_rules import (
     apply_translation_rules,
@@ -28,7 +29,7 @@ class SemanticParserConfig:
     model_output_schema_path: Path
     translation_rules_path: Path
     translation_parameters_schema_path: Path
-    prompt_version: str = "semantic-parser-v0.10"
+    prompt_version: str = "semantic-parser-v0.11"
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,9 @@ def parse_semantic_input(
 ) -> SemanticParseResult:
     if not source_text.strip():
         raise ValueError("语义输入不能为空")
-    source_six = parse_textual_six(source_text) if source_kind == "textual_six" else None
+    source_six = (
+        parse_textual_six(source_text) if source_kind == "textual_six" else None
+    )
 
     prompt = build_prompt(
         description=source_text,
@@ -65,6 +68,9 @@ def parse_semantic_input(
     )
     schema = load_schema(config.model_output_schema_path)
     response = provider.generate(prompt.system_prompt, prompt.user_prompt, schema)
+    # Older providers may omit the newly typed relationship timing fields.
+    # Normalize those compatibility defaults before strict schema validation.
+    normalize_scene_relationships(response.content)
     validate_model_output(response.content, schema)
 
     translation_rules = load_translation_rules(config.translation_rules_path)

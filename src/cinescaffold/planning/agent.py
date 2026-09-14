@@ -23,6 +23,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 from pydantic_ai.tools import ToolDefinition
 
+from cinescaffold.planning.design import EntitySizeRequest, SceneSkeleton
 from cinescaffold.planning.domain import (
     AgentTerminal,
     CameraStatic,
@@ -32,7 +33,6 @@ from cinescaffold.planning.domain import (
     StrictModel,
     TrackKeyframe,
 )
-from cinescaffold.planning.design import EntitySizeRequest, SceneSkeleton
 from cinescaffold.planning.toolkit import TOOLKIT_VERSION, ScenePlanningToolkit
 from cinescaffold.planning.trace import TraceRecorder
 
@@ -101,7 +101,9 @@ class ConstraintPatchInput(StrictModel):
     parameters: dict[str, Any] = Field(
         description="字段必须遵循 Design Option relevant_capabilities 或工具错误返回的对应契约"
     )
-    source_status: Literal["explicit", "inferred", "default", "agent_selected", "unknown"]
+    source_status: Literal[
+        "explicit", "inferred", "default", "agent_selected", "unknown"
+    ]
     source_ref: str
 
 
@@ -232,9 +234,8 @@ def compact_agent_payload(
     if isinstance(value, dict):
         compacted: dict[str, Any] = {}
         for key, item in value.items():
-            if (
-                (key == "violations" or key.endswith("_violations"))
-                and isinstance(item, list)
+            if (key == "violations" or key.endswith("_violations")) and isinstance(
+                item, list
             ):
                 compacted[key] = _compact_sampled_violations(
                     item,
@@ -501,15 +502,21 @@ def _compact_tool_call_history(
     compacted: list[ModelMessage] = []
     for message in messages:
         if isinstance(message, ModelResponse):
-            has_tool_call = any(isinstance(part, ToolCallPart) for part in message.parts)
+            has_tool_call = any(
+                isinstance(part, ToolCallPart) for part in message.parts
+            )
             text_parts = [part for part in message.parts if isinstance(part, TextPart)]
             if has_tool_call:
                 # DeepSeek thinking+tools 要求后续请求完整回传 reasoning_content。
-                parts = [part for part in message.parts if not isinstance(part, TextPart)]
+                parts = [
+                    part for part in message.parts if not isinstance(part, TextPart)
+                ]
                 message = replace(message, parts=parts)
             elif text_parts:
                 omitted_chars = sum(len(part.content) for part in text_parts)
-                parts = [part for part in message.parts if not isinstance(part, TextPart)]
+                parts = [
+                    part for part in message.parts if not isinstance(part, TextPart)
+                ]
                 parts.append(TextPart(NON_TOOL_TEXT_MARKER))
                 message = replace(message, parts=parts)
                 response_key = message.provider_response_id or str(message.timestamp)
@@ -559,7 +566,9 @@ class PlanningDeps:
     design_failure_repeat_count: int = 0
     pending_design_stall: dict[str, Any] | None = None
 
-    def call_tool(self, name: str, arguments: dict[str, Any], operation) -> dict[str, Any]:
+    def call_tool(
+        self, name: str, arguments: dict[str, Any], operation
+    ) -> dict[str, Any]:
         if (
             self.deadline_monotonic is not None
             and time.monotonic() >= self.deadline_monotonic
@@ -616,7 +625,10 @@ class PlanningDeps:
             self.inspected_calls.add(self._inspect_key(arguments, revision_before))
         if name == "request_design_options":
             self._observe_design_search(result)
-        if self.checkpoint_writer is not None and current_revision_after != revision_before:
+        if (
+            self.checkpoint_writer is not None
+            and current_revision_after != revision_before
+        ):
             checkpoint_path = self.checkpoint_writer(self.toolkit.store.get())
             self.trace.record(
                 "candidate_checkpoint_written",
@@ -626,9 +638,7 @@ class PlanningDeps:
         timeline = self.toolkit.store.get().timeline
         agent_result = compact_agent_payload(
             result,
-            frame_interval_seconds=(
-                timeline.fps_denominator / timeline.fps_numerator
-            ),
+            frame_interval_seconds=(timeline.fps_denominator / timeline.fps_numerator),
         )
         full_violation_count = _count_violation_items(result)
         agent_violation_count = _count_violation_items(agent_result)
@@ -644,10 +654,34 @@ class PlanningDeps:
 
     def _observe_design_search(self, result: dict[str, Any]) -> None:
         data = result.get("data")
-        if result.get("status") == "ok" and isinstance(data, dict) and data.get("options"):
+        if (
+            result.get("status") == "ok"
+            and isinstance(data, dict)
+            and data.get("options")
+        ):
             self.last_design_failure_signature = None
             self.design_failure_repeat_count = 0
             self.pending_design_stall = None
+            return
+        if (
+            result.get("status") == "rejected"
+            and self.last_design_failure_signature is not None
+            and any(
+                "重复完全相同" in str(item)
+                for item in result.get("warnings", [])
+            )
+        ):
+            # The first failed search already returned all deterministic
+            # evidence. Repeating the identical request cannot discover a new
+            # candidate, so move to a fresh RepairPacket instead of paying for
+            # an unbounded tool loop.
+            self.design_failure_repeat_count += 1
+            self.pending_design_stall = {
+                "failure_signature": self.last_design_failure_signature,
+                "failure_codes": [],
+                "failure_reasons": list(result.get("warnings", [])),
+                "repeat_count": self.design_failure_repeat_count,
+            }
             return
         if result.get("status") != "no_change" or not isinstance(data, dict):
             return
@@ -758,18 +792,26 @@ class PlanningDeps:
     def _inspect_key(arguments: dict[str, Any], current_revision: int) -> str:
         normalized = dict(arguments)
         normalized["revision"] = (
-            current_revision if arguments.get("revision") is None else arguments["revision"]
+            current_revision
+            if arguments.get("revision") is None
+            else arguments["revision"]
         )
-        return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return json.dumps(
+            normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
 
 
 class DesignSearchStalled(AgentRunError):
     def __init__(self, failure: dict[str, Any]) -> None:
         self.failure = deepcopy(failure)
-        super().__init__("相同的 Design 硬失败已连续出现，切换到新的 RepairPacket 恢复轮次")
+        super().__init__(
+            "相同的 Design 硬失败已连续出现，切换到新的 RepairPacket 恢复轮次"
+        )
 
 
-def _protocol_rejected(revision: int, message: str, next_actions: list[str]) -> dict[str, Any]:
+def _protocol_rejected(
+    revision: int, message: str, next_actions: list[str]
+) -> dict[str, Any]:
     return {
         "tool_version": TOOLKIT_VERSION,
         "status": "rejected",
@@ -963,7 +1005,9 @@ async def _prepare_repair_apply_tool(
     return prepared if ctx.deps.toolkit.has_current_repair_suggestions else None
 
 
-def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDeps, AgentTerminal]:
+def create_planning_agent(
+    model: Model, system_prompt: str
+) -> Agent[PlanningDeps, AgentTerminal]:
     agent: Agent[PlanningDeps, AgentTerminal] = Agent(
         model,
         output_type=AgentTerminal,
@@ -980,7 +1024,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         ctx: RunContext[PlanningDeps],
         skeleton: SceneSkeleton,
     ) -> dict[str, Any]:
-        """提交实体、关系、主体动作阶段、符号路径点和独立摄影机意图；不得包含坐标或尺寸。static 仅允许主体 hold，运镜不改变该分类。"""
+        """提交实体、关系、主体动作阶段、符号路径点和独立摄影机意图；local_transform 用于无世界位移的姿态/尺度变化；不得包含坐标或尺寸。static 仅允许主体 hold，运镜不改变该分类。"""
         arguments = {"skeleton": skeleton.model_dump(mode="json")}
         return ctx.deps.call_tool(
             "submit_scene_skeleton",
@@ -1004,8 +1048,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
             "preference": preference,
             "max_options": max_options,
             "custom_size_requests": [
-                item.model_dump(mode="json")
-                for item in (custom_size_requests or [])
+                item.model_dump(mode="json") for item in (custom_size_requests or [])
             ],
         }
         return ctx.deps.call_tool(
@@ -1118,9 +1161,7 @@ def create_planning_agent(model: Model, system_prompt: str) -> Agent[PlanningDep
         # The Agent is intentionally not allowed to author solved coordinates.
         # Omitting this hidden field lets Toolkit preserve it for existing entities
         # while keeping it unresolved for genuinely new entities.
-        payload = [
-            item.model_dump(mode="json", exclude_unset=True) for item in upserts
-        ]
+        payload = [item.model_dump(mode="json", exclude_unset=True) for item in upserts]
         arguments = {"upserts": payload, "remove_ids": remove_ids}
         return ctx.deps.call_tool(
             "apply_entity_patch",

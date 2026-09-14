@@ -16,15 +16,27 @@ from cinescaffold.planning.design import (
     validate_scene_skeleton,
 )
 from cinescaffold.planning.domain import PlanningProfile, ValidationReport, Violation
-from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
+from cinescaffold.planning.duration import (
+    attach_duration_resolution,
+    freeze_brief_duration,
+)
 from cinescaffold.planning.geometry import surface_clearance_ratio
-from cinescaffold.planning.models import _mock_scene_skeleton
-from cinescaffold.planning.objective import ObjectiveRequirement, project_objective_brief
+from cinescaffold.planning.models import (
+    _environment_supports_ground,
+    _mock_proxy_family,
+    _mock_scale_intent,
+    _mock_scene_skeleton,
+    _mock_speed_intent,
+)
+from cinescaffold.planning.objective import (
+    ObjectiveRequirement,
+    project_objective_brief,
+)
 from cinescaffold.planning.toolkit import (
     ScenePlanningToolkit,
-    _WorldTransformResolver,
     _quaternion_angle_degrees,
     _route_anchor_failures,
+    _WorldTransformResolver,
 )
 from tests.helpers import valid_planning_brief
 
@@ -52,6 +64,70 @@ class PlanningDesignTest(unittest.TestCase):
         skeleton = SceneSkeleton.model_validate(value)
 
         self.assertIsNone(skeleton.camera_intent.focus_target_id)
+
+    def test_camera_focus_cannot_substitute_for_a_movement_target(self) -> None:
+        value = _desert_skeleton()
+        value["camera_intent"].update(
+            movement="pan",
+            focus_target_id="man_01",
+            movement_target_id=None,
+        )
+
+        with self.assertRaisesRegex(ValidationError, "movement_target_id"):
+            SceneSkeleton.model_validate(value)
+
+    def test_symbolic_stationary_states_reject_nonzero_speed_intents(self) -> None:
+        moving_hold = _desert_skeleton()
+        moving_hold["motion_phases"][0]["speed_intent"] = "fast"
+        moving_static_camera = _desert_skeleton()
+        moving_static_camera["camera_intent"].update(
+            movement="static",
+            speed_intent="slow",
+        )
+
+        with self.assertRaisesRegex(ValidationError, "hold"):
+            SceneSkeleton.model_validate(moving_hold)
+        with self.assertRaisesRegex(ValidationError, "静止摄影机"):
+            SceneSkeleton.model_validate(moving_static_camera)
+
+    def test_scene_skeleton_rejects_reversed_far_relations(self) -> None:
+        value = _desert_skeleton()
+        duplicate = dict(value["relations"][1])
+        duplicate.update(
+            relation_id="same_far_relation_reversed",
+            subject_id="man_01",
+            reference_id="ship_01",
+        )
+        value["relations"].append(duplicate)
+
+        with self.assertRaisesRegex(ValidationError, "互相都位于远景"):
+            SceneSkeleton.model_validate(value)
+
+    def test_scene_skeleton_rejects_far_and_near_for_same_pair_and_time(self) -> None:
+        value = _desert_skeleton()
+        value["relations"].append(
+            {
+                "relation_id": "ship_near_man",
+                "kind": "proximity",
+                "subject_id": "man_01",
+                "reference_id": "ship_01",
+                "source_status": "agent_selected",
+                "source_ref": "agent.layout",
+            }
+        )
+
+        with self.assertRaisesRegex(ValidationError, "同时远离并靠近"):
+            SceneSkeleton.model_validate(value)
+
+    def test_scene_skeleton_rejects_unresolvable_motion_source_before_design(
+        self,
+    ) -> None:
+        objective = project_objective_brief(valid_planning_brief()).objective_brief
+        skeleton = SceneSkeleton.model_validate(_desert_skeleton())
+        skeleton.motion_phases[0].source_ref = "content.subject_motion[99].action"
+
+        with self.assertRaisesRegex(ValueError, "source_ref 无法解析"):
+            validate_scene_skeleton(objective, skeleton)
 
     def test_scene_skeleton_rejects_duplicate_ids_and_non_ground_support(self) -> None:
         duplicate = _desert_skeleton()
@@ -307,7 +383,9 @@ class PlanningDesignTest(unittest.TestCase):
             fps_numerator=24,
             fps_denominator=1,
         )
-        toolkit = ScenePlanningToolkit(attach_duration_resolution(objective, resolution))
+        toolkit = ScenePlanningToolkit(
+            attach_duration_resolution(objective, resolution)
+        )
         toolkit.submit_scene_skeleton(_desert_skeleton())
 
         options = toolkit.request_design_options(max_options=1)
@@ -346,7 +424,8 @@ class PlanningDesignTest(unittest.TestCase):
                                     "value": text,
                                     "source_status": "explicit",
                                     "source_text": text,
-                                }
+                                },
+                                "target_id": "man_01" if movement == "orbit" else None,
                             }
                         },
                         "explicit_requirements": [
@@ -360,6 +439,9 @@ class PlanningDesignTest(unittest.TestCase):
                 skeleton = _desert_skeleton()
                 skeleton["relations"] = skeleton["relations"][:1]
                 skeleton["camera_intent"]["movement"] = movement
+                skeleton["camera_intent"]["movement_target_id"] = (
+                    "man_01" if movement == "orbit" else None
+                )
                 toolkit.submit_scene_skeleton(skeleton)
 
                 options = toolkit.request_design_options(max_options=1)
@@ -411,7 +493,8 @@ class PlanningDesignTest(unittest.TestCase):
                             "value": "跟拍",
                             "source_status": "explicit",
                             "source_text": "跟拍人物",
-                        }
+                        },
+                        "target_id": "man_01",
                     }
                 },
                 "explicit_requirements": [
@@ -433,6 +516,7 @@ class PlanningDesignTest(unittest.TestCase):
         )
         skeleton["camera_intent"].update(
             movement="follow",
+            movement_target_id="man_01",
             speed_intent="match_subject",
         )
         toolkit.submit_scene_skeleton(skeleton)
@@ -492,6 +576,11 @@ class PlanningDesignTest(unittest.TestCase):
                             "source_text": "先固定，之后只旋转跟随人物",
                         },
                         "target_id": "man_01",
+                        "speed": {
+                            "value": "缓慢",
+                            "source_status": "explicit",
+                            "source_text": "之后缓慢旋转",
+                        },
                         "start_time_seconds": 3.0,
                         "end_time_seconds": 6.0,
                     },
@@ -500,7 +589,11 @@ class PlanningDesignTest(unittest.TestCase):
                     ObjectiveRequirement(
                         path="content.camera.movement.type",
                         value="固定机位，不平移，只旋转跟随人物",
-                    )
+                    ),
+                    ObjectiveRequirement(
+                        path="content.camera.movement.speed",
+                        value="缓慢",
+                    ),
                 ],
             }
         )
@@ -517,6 +610,9 @@ class PlanningDesignTest(unittest.TestCase):
         skeleton["camera_intent"].update(
             movement="pan",
             movement_target_id="man_01",
+            speed_intent="slow",
+            speed_source_status="explicit",
+            speed_source_ref="content.camera.movement.speed",
         )
         toolkit.submit_scene_skeleton(skeleton)
 
@@ -528,6 +624,11 @@ class PlanningDesignTest(unittest.TestCase):
         ].candidate
         look_at = candidate.camera.tracks["design_camera_look_at"]
         self.assertEqual(look_at.time_range_seconds, (3.0, 6.0))
+        self.assertEqual(
+            look_at.source_refs,
+            ["content.camera.movement.speed"],
+        )
+        self.assertNotIn("skeleton_camera_speed", candidate.constraints)
         before = _WorldTransformResolver(candidate, 2.0, toolkit.profile).camera()[0]
         started = _WorldTransformResolver(candidate, 3.0, toolkit.profile).camera()[0]
         finished = _WorldTransformResolver(candidate, 5.95, toolkit.profile).camera()[0]
@@ -548,7 +649,9 @@ class PlanningDesignTest(unittest.TestCase):
             0.05,
         )
 
-    def test_explicit_screen_placement_becomes_axis_specific_hard_constraints(self) -> None:
+    def test_explicit_screen_placement_becomes_axis_specific_hard_constraints(
+        self,
+    ) -> None:
         source = _desert_toolkit()
         horizontal_ref = "content.composition.screen_placements[0].horizontal"
         vertical_ref = "content.composition.screen_placements[0].vertical"
@@ -621,18 +724,12 @@ class PlanningDesignTest(unittest.TestCase):
             result["route_planning"]["decision_owner"],
             "planning_agent",
         )
+        self.assertFalse(result["motion_readability"]["subject_translation_present"])
         self.assertFalse(
-            result["motion_readability"]["subject_translation_present"]
-        )
-        self.assertFalse(
-            result["motion_readability"][
-                "maximize_motion_readability_applicable"
-            ]
+            result["motion_readability"]["maximize_motion_readability_applicable"]
         )
         self.assertIsNone(
-            result["acceptance"][
-                "minimum_view_subject_motion_obliqueness_degrees"
-            ]
+            result["acceptance"]["minimum_view_subject_motion_obliqueness_degrees"]
         )
         self.assertEqual(result["next_tool"], "apply_design_option")
 
@@ -645,7 +742,9 @@ class PlanningDesignTest(unittest.TestCase):
 
     def test_skeleton_keeps_qualitative_proportion_without_numeric_size(self) -> None:
         value = _desert_skeleton()
-        ship = next(item for item in value["entities"] if item["entity_id"] == "ship_01")
+        ship = next(
+            item for item in value["entities"] if item["entity_id"] == "ship_01"
+        )
         ship["proxy_family"] = "generic_box"
         ship["proportion_intent"] = "flat"
         skeleton = SceneSkeleton.model_validate(value)
@@ -719,7 +818,9 @@ class PlanningDesignTest(unittest.TestCase):
             "materialize_design",
         )
 
-    def test_design_ground_has_canonical_identity_and_survives_semantic_patch(self) -> None:
+    def test_design_ground_has_canonical_identity_and_survives_semantic_patch(
+        self,
+    ) -> None:
         toolkit = _desert_toolkit()
         toolkit.submit_scene_skeleton(_desert_skeleton())
         suggested = toolkit.request_design_options(max_options=1)
@@ -745,15 +846,17 @@ class PlanningDesignTest(unittest.TestCase):
             before.entities["man_01"].solved_transform,
         )
         self.assertIn("man_01", result["data"]["preserved_solved_transform_ids"])
-        safety = toolkit.validate_candidate(checks=[
-            "schema",
-            "references",
-            "timeline",
-            "hierarchy",
-            "transforms",
-            "camera",
-            "rebuildability",
-        ])
+        safety = toolkit.validate_candidate(
+            checks=[
+                "schema",
+                "references",
+                "timeline",
+                "hierarchy",
+                "transforms",
+                "camera",
+                "rebuildability",
+            ]
+        )
         self.assertTrue(safety["data"]["hard_pass"], safety["violations"])
 
     def test_custom_size_request_is_selected_inside_validated_option(self) -> None:
@@ -849,7 +952,9 @@ class PlanningDesignTest(unittest.TestCase):
             (1.0, 0.0, 0.0, 0.0),
         )
 
-    def test_static_scene_rejects_motion_readability_strategy_and_aligns_scene_depth(self) -> None:
+    def test_static_scene_rejects_motion_readability_strategy_and_aligns_scene_depth(
+        self,
+    ) -> None:
         toolkit = _desert_toolkit()
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
             update={
@@ -991,7 +1096,8 @@ class PlanningDesignTest(unittest.TestCase):
 
         report = toolkit._validate(state, ["camera"])
         violations = [
-            item for item in report.violations
+            item
+            for item in report.violations
             if item.code == "CAMERA_GROUND_CLEARANCE_VIOLATED"
         ]
 
@@ -1056,7 +1162,9 @@ class PlanningDesignTest(unittest.TestCase):
             )
         )
 
-    def test_static_composition_keeps_small_subject_and_major_object_visible(self) -> None:
+    def test_static_composition_keeps_small_subject_and_major_object_visible(
+        self,
+    ) -> None:
         toolkit = _desert_toolkit()
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
             update={
@@ -1167,7 +1275,9 @@ class PlanningDesignTest(unittest.TestCase):
 
     def test_flat_generic_proxy_is_not_materialized_as_cube(self) -> None:
         value = _desert_skeleton()
-        ship = next(item for item in value["entities"] if item["entity_id"] == "ship_01")
+        ship = next(
+            item for item in value["entities"] if item["entity_id"] == "ship_01"
+        )
         ship["proxy_family"] = "generic_box"
         ship["scale_intent"] = "large"
         ship["proportion_intent"] = "flat"
@@ -1264,6 +1374,58 @@ class PlanningDesignTest(unittest.TestCase):
             minimum_moon_sun_clearance,
             toolkit.profile.orbit_surface_clearance_m,
         )
+
+    def test_legacy_orbit_center_without_trajectory_stays_stationary_end_to_end(
+        self,
+    ) -> None:
+        toolkit = _example_toolkit("solar_system_10s.json")
+        skeleton = _mock_scene_skeleton(toolkit.objective_brief)
+        sun_phase = next(
+            item for item in skeleton["motion_phases"] if item["subject_id"] == "sun"
+        )
+        self.assertEqual(sun_phase["kind"], "hold")
+        toolkit.submit_scene_skeleton(skeleton)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
+        toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
+
+        scene_ir = compile_scene_ir(
+            toolkit,
+            toolkit.store.get(),
+            agent_run_id="legacy_stationary_orbit_center",
+            trace_ref="test_trace.jsonl",
+        )
+        sun = next(item for item in scene_ir.entities if item.entity_id == "sun")
+
+        self.assertEqual(
+            sun.local_state_track.samples[0].value.translation_m,
+            sun.local_state_track.samples[-1].value.translation_m,
+        )
+
+    def test_orbit_subject_keeps_an_independent_visibility_phase(self) -> None:
+        toolkit = _example_toolkit("solar_system_10s.json")
+        skeleton = _solar_skeleton()
+        skeleton["motion_phases"].append(
+            {
+                **_symbolic_phase(
+                    "moon_hidden",
+                    "moon",
+                    "visibility",
+                    2,
+                    status="inferred",
+                ),
+                "visibility_state": "hidden",
+                "transition_at": "at_end",
+            }
+        )
+        toolkit.submit_scene_skeleton(skeleton)
+
+        result = toolkit.request_design_options(max_options=1)
+        option = result["data"]["options"][0]
+        toolkit.apply_design_option(0, option["option_id"])
+
+        self.assertIn("design_orbit_moon", toolkit.store.get().motion_tracks)
+        self.assertIn("design_visibility_moon", toolkit.store.get().motion_tracks)
 
     def test_unspecified_camera_focus_uses_fixed_scene_anchor(self) -> None:
         toolkit = _example_toolkit("solar_system_10s.json")
@@ -1364,11 +1526,18 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertEqual(set(state.entities), {"road", "man", "car"})
         self.assertEqual(
             [item.time_seconds for item in car_track.keyframes],
-            [0.0, 4.0, 7.0, 11.958333333333334],
+            [
+                0.0,
+                3.9583333333333335,
+                4.0,
+                6.958333333333333,
+                7.0,
+                11.958333333333334,
+            ],
         )
         self.assertEqual(
             [item.time_seconds for item in man_track.keyframes],
-            [0.0, 4.0, 7.0],
+            [0.0, 3.9583333333333335, 4.0, 6.958333333333333],
         )
         self.assertEqual(
             man_track.keyframes[0].value.translation_m,
@@ -1405,6 +1574,14 @@ class PlanningDesignTest(unittest.TestCase):
             "source_status": "inferred",
         }
         toolkit.objective_brief.timeline["events"].append(shared_event)
+        departure_event = next(
+            item
+            for item in toolkit.objective_brief.timeline["events"]
+            if item["id"] == "departure"
+        )
+        departure_event["start_time_seconds"] = 8.0
+        for index in (4, 5):
+            toolkit.objective_brief.subject_motion[index]["start_time_seconds"] = 8.0
         for index in (1, 2):
             toolkit.objective_brief.subject_motion[index]["motion_semantics"] = {
                 "action_kind": "approach" if index == 1 else "board",
@@ -1426,20 +1603,26 @@ class PlanningDesignTest(unittest.TestCase):
         skeleton["motion_phases"][2]["timeline_event_id"] = "arrival_and_boarding"
         skeleton["motion_phases"][3]["timeline_event_id"] = "arrival_and_boarding"
         skeleton["relations"][1]["timeline_event_id"] = "arrival_and_boarding"
-        skeleton["relations"][2]["timeline_event_id"] = "arrival_and_boarding"
         toolkit.submit_scene_skeleton(skeleton)
 
         options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
         toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
         state = toolkit.store.get()
 
         self.assertEqual(
-            [item.time_seconds for item in state.motion_tracks["design_motion_car"].keyframes[:2]],
-            [3.0, 6.0],
+            [
+                item.time_seconds
+                for item in state.motion_tracks["design_motion_car"].keyframes[:2]
+            ],
+            [3.0, 5.958333333333333],
         )
         self.assertEqual(
-            [item.time_seconds for item in state.motion_tracks["design_motion_man"].keyframes],
-            [0.0, 4.0, 6.0, 8.0],
+            [
+                item.time_seconds
+                for item in state.motion_tracks["design_motion_man"].keyframes
+            ],
+            [0.0, 3.9583333333333335, 6.0, 7.958333333333333],
         )
         codes = {item["code"] for item in toolkit.validate_candidate()["violations"]}
         self.assertNotIn("MOTION_MODE_STATIONARY_VIOLATED", codes)
@@ -1472,7 +1655,9 @@ class PlanningDesignTest(unittest.TestCase):
         toolkit.submit_scene_skeleton(_desert_skeleton())
 
         options = toolkit.request_design_options(max_options=1)
-        applied = toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
+        applied = toolkit.apply_design_option(
+            0, options["data"]["options"][0]["option_id"]
+        )
         constraint = toolkit.store.get().constraints["design_visibility_ship_01_0"]
 
         self.assertEqual(applied["status"], "ok")
@@ -1481,12 +1666,26 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertEqual(constraint.source_ref, visibility_ref)
         self.assertEqual(constraint.parameters.minimum_inside_fraction, 0.01)
 
-    def test_design_handles_late_approach_world_forward_and_carried_binding(self) -> None:
+    def test_design_handles_late_approach_world_forward_and_carried_binding(
+        self,
+    ) -> None:
         toolkit = _example_toolkit("roadside_pickup_12s.json")
         events = toolkit.objective_brief.timeline["events"]
         events[0].update(start_time_seconds=2.5, end_time_seconds=5.0)
         events[1].update(start_time_seconds=5.0, end_time_seconds=7.5)
         events[2].update(start_time_seconds=7.5, end_time_seconds=12.0)
+        for index, time_range in {
+            0: (2.5, 5.0),
+            1: (2.5, 5.0),
+            2: (5.0, 7.5),
+            3: (5.0, 7.5),
+            4: (7.5, 12.0),
+            5: (7.5, 12.0),
+        }.items():
+            toolkit.objective_brief.subject_motion[index].update(
+                start_time_seconds=time_range[0],
+                end_time_seconds=time_range[1],
+            )
         semantics = {
             1: {
                 "action_kind": "approach",
@@ -1557,14 +1756,15 @@ class PlanningDesignTest(unittest.TestCase):
         toolkit.submit_scene_skeleton(skeleton)
 
         options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
         toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
         state = toolkit.store.get()
         car_track = state.motion_tracks["design_motion_car"]
         man_position = state.entities["man"].solved_transform.translation_m
         approach_start = car_track.keyframes[0].value.translation_m
         approach_end = car_track.keyframes[1].value.translation_m
-        departure_start = car_track.keyframes[2].value.translation_m
-        departure_end = car_track.keyframes[3].value.translation_m
+        departure_start = car_track.keyframes[-2].value.translation_m
+        departure_end = car_track.keyframes[-1].value.translation_m
 
         self.assertGreater(
             abs(approach_start[0] - man_position[0]),
@@ -1618,7 +1818,10 @@ class PlanningDesignTest(unittest.TestCase):
         car_track = state.motion_tracks["design_motion_car"]
         points = [item.value.translation_m for item in car_track.keyframes]
         approach = (points[1][0] - points[0][0], points[1][1] - points[0][1])
-        departure = (points[3][0] - points[2][0], points[3][1] - points[2][1])
+        departure = (
+            points[-1][0] - points[-2][0],
+            points[-1][1] - points[-2][1],
+        )
         self.assertGreater(approach[0] * departure[0] + approach[1] * departure[1], 0.0)
         man = state.entities["man"].solved_transform.translation_m
         self.assertLessEqual(
@@ -1628,10 +1831,15 @@ class PlanningDesignTest(unittest.TestCase):
 
     def test_route_anchor_can_bind_motion_to_a_later_interaction_event(self) -> None:
         toolkit = _example_toolkit("roadside_pickup_12s.json")
+        for index in (1, 4):
+            toolkit.objective_brief.subject_motion[index]["motion_semantics"][
+                "direction_mode"
+            ] = "none"
         skeleton = _pickup_skeleton()
         skeleton["relations"][1].update(
             timeline_event_id="boarding",
         )
+        skeleton["relations"][2]["temporal_mode"] = "at_start"
         skeleton["motion_phases"][1].update(
             direction_mode="none",
             target_id=None,
@@ -1664,22 +1872,28 @@ class PlanningDesignTest(unittest.TestCase):
             3.0,
         )
         approach = (points[1][0] - points[0][0], points[1][1] - points[0][1])
-        departure = (points[3][0] - points[2][0], points[3][1] - points[2][1])
+        departure = (
+            points[-1][0] - points[-2][0],
+            points[-1][1] - points[-2][1],
+        )
         self.assertGreater(approach[0] * departure[0] + approach[1] * departure[1], 0.0)
 
     def test_route_can_take_its_axis_from_an_existing_reference_entity(self) -> None:
         source = _example_toolkit("roadside_pickup_12s.json")
+        for index in (1, 4):
+            source.objective_brief.subject_motion[index]["motion_semantics"][
+                "direction_mode"
+            ] = "none"
         objective = source.objective_brief.model_copy(
             deep=True,
             update={
-                "translation_parameters": {
-                    "scene": {"dimensions_m": [20.0, 100.0]}
-                }
+                "translation_parameters": {"scene": {"dimensions_m": [20.0, 100.0]}}
             },
         )
         toolkit = ScenePlanningToolkit(objective)
         skeleton = _pickup_skeleton()
         skeleton["relations"][1].update(timeline_event_id="boarding")
+        skeleton["relations"][2]["temporal_mode"] = "at_start"
         skeleton["motion_phases"][1].update(direction_mode="none", target_id=None)
         skeleton["motion_phases"][5].update(direction_mode="none", target_id=None)
         skeleton["route_intents"][0].update(
@@ -1694,9 +1908,7 @@ class PlanningDesignTest(unittest.TestCase):
         toolkit.apply_design_option(0, options["data"]["options"][0]["option_id"])
         points = [
             item.value.translation_m
-            for item in toolkit.store.get()
-            .motion_tracks["design_motion_car"]
-            .keyframes
+            for item in toolkit.store.get().motion_tracks["design_motion_car"].keyframes
         ]
         approach = (points[1][0] - points[0][0], points[1][1] - points[0][1])
 
@@ -1761,9 +1973,9 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertTrue(
             any(
                 item["subject_id"] == "man"
-                and item["kind"] == "hold"
+                and item["kind"] == "linear_move"
                 and item["timeline_event_id"] == "boarding"
-                and item["target_id"] is None
+                and item["target_id"] == "car"
                 for item in phases
             )
         )
@@ -1775,6 +1987,47 @@ class PlanningDesignTest(unittest.TestCase):
                 for item in phases
             )
         )
+
+    def test_deterministic_proxy_matching_uses_semantic_phrases_not_substrings(
+        self,
+    ) -> None:
+        self.assertEqual(_mock_proxy_family("人造卫星"), "celestial_sphere")
+        self.assertEqual(_mock_proxy_family("friendship symbol"), "generic_box")
+        self.assertEqual(_mock_proxy_family("starship"), "generic_box")
+        self.assertEqual(_mock_proxy_family("star ship"), "vehicle_box")
+        self.assertEqual(_mock_proxy_family("space_ship"), "vehicle_box")
+        self.assertEqual(
+            _mock_scale_intent({"category": {"value": "star ship"}}),
+            "large",
+        )
+
+    def test_local_transform_tempo_is_not_rewritten_as_stationary(self) -> None:
+        self.assertEqual(_mock_speed_intent("缓慢", "interactive"), "slow")
+        self.assertEqual(_mock_speed_intent(None, "interactive"), "unspecified")
+        self.assertEqual(_mock_speed_intent("缓慢", "static"), "stationary")
+
+    def test_deterministic_scale_does_not_leak_from_narrative_role(self) -> None:
+        subject = {
+            "category": {"value": "男人"},
+            "narrative_role": {"value": "被巨大的飞船压迫的前景主体"},
+            "attributes": [],
+        }
+        self.assertEqual(_mock_scale_intent(subject), "human")
+        subject["attributes"] = [
+            {"name": "尺寸", "value": "巨大", "source_status": "explicit"}
+        ]
+        self.assertEqual(_mock_scale_intent(subject), "huge")
+
+    def test_unknown_environment_does_not_find_ground_inside_background(self) -> None:
+        objective = project_objective_brief(valid_planning_brief()).objective_brief
+        objective = objective.model_copy(
+            deep=True,
+            update={"translation_parameters": {"scene": {"asset_key": "custom"}}},
+        )
+        self.assertFalse(
+            _environment_supports_ground(objective, "abstract space background")
+        )
+        self.assertTrue(_environment_supports_ground(objective, "desert ground"))
 
 
 def _desert_skeleton() -> dict:
@@ -1834,7 +2087,7 @@ def _desert_skeleton() -> dict:
                 "direction_mode": "none",
                 "path_family": "stationary",
                 "source_status": "inferred",
-                "source_ref": "content.subject_motion[0].action",
+                "source_ref": "content.subjects[0].category",
             }
         ],
         "camera_intent": {
@@ -1903,8 +2156,12 @@ def _solar_skeleton() -> dict:
     return {
         "entities": [
             _symbolic_entity("sun", "sun", "center", "celestial_sphere", "large", 0),
-            _symbolic_entity("earth", "earth", "planet", "celestial_sphere", "small", 1),
-            _symbolic_entity("moon", "moon", "satellite", "celestial_sphere", "tiny", 2),
+            _symbolic_entity(
+                "earth", "earth", "planet", "celestial_sphere", "small", 1
+            ),
+            _symbolic_entity(
+                "moon", "moon", "satellite", "celestial_sphere", "tiny", 2
+            ),
         ],
         "relations": [
             _symbolic_relation("earth_sun", "orbit_around", "earth", "sun", 0),
@@ -1943,7 +2200,7 @@ def _pickup_skeleton() -> dict:
                 "kind": "ground_support",
                 "subject_id": "man",
                 "reference_id": "road",
-                "source_status": "explicit",
+                "source_status": "inferred",
                 "source_ref": "content.scene_design.relationships[0]",
             },
             {
@@ -1963,7 +2220,7 @@ def _pickup_skeleton() -> dict:
                 "reference_id": "car",
                 "timeline_event_id": "boarding",
                 "temporal_mode": "at_end",
-                "source_status": "explicit",
+                "source_status": "inferred",
                 "source_ref": "content.scene_design.relationships[2]",
             },
         ],
@@ -2038,7 +2295,7 @@ def _pickup_skeleton() -> dict:
                 "continuity": "allow_turns",
             }
         ],
-        "camera_intent": _symbolic_camera("car"),
+        "camera_intent": _symbolic_camera(None),
     }
 
 
@@ -2104,7 +2361,7 @@ def _symbolic_phase(
     }
 
 
-def _symbolic_camera(focus_target_id: str) -> dict:
+def _symbolic_camera(focus_target_id: str | None) -> dict:
     return {
         "movement": "static",
         "focus_target_id": focus_target_id,

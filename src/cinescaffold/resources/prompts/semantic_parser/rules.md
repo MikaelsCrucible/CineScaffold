@@ -122,13 +122,14 @@
 - 当前不存在对应精细资产时仍输出资产索引，由下游使用白模代理环境回退。
 - 飞船等主要物体默认至少 10×10 m，大楼默认高度至少 20 m；“巨大/高耸”等明确尺度词在基础尺度上使用 1.5–3 倍范围。
 - “远处、后景、背景”等明确纵深词必须写入 `spatial_layers` 或主体关系；应用会把只存在于远景层中的实体确定性归一化为 Planning 可消费的纵深关系，不能因模型没有重复填写两个字段而丢失。
+- `scene_design.relationships` 的 `type` 与 `strength` 是一个整体，不能让其一遮蔽另一个。使用稳定关系类型：远景纵深=`far_from`、靠近=`proximity`、公转=`orbit_around`、尺度优势=`scale_dominance`；左右/前后/上下使用 `left_of/right_of/front_of/behind/above/below`。同一句事实不要同时输出同义或反向重复关系。
+- 摄影机的 `focus_target_id` 只表示取景关注对象，`camera.movement.target_id` 只表示 `pan/follow/orbit` 的运动或旋转目标。两者可以相同，但不能互相代填；若输出 `pan/follow/orbit`，必须同时明确填写后者。主体动作的 `target_id` 更不能拿来填写摄影机字段。
+- 关系持续成立时使用 `temporal_mode=throughout` 且 `timeline_event_id=null`。只在某事件起点或终点成立时，必须填写对应事件 ID，并使用 `at_start` 或 `at_end`；不得把“到达终点时靠近”扩张成整个移动阶段持续靠近。
 
 ### 摄影机、构图与光源
 
 - 摄影机与主体使用相互隔离的时间语义。`camera.movement` 只描述摄影机自身状态变化；`subject_motion` 中的 `motion_mode` 永远不受“固定机位、镜头不平移”等摄影机措辞影响。
 - `camera.movement` 当前表达一个连续的主动运镜区间；区间之前和之后保持相邻摄影机状态。先固定、后执行一次运镜时，只把后一个主动阶段写入该区间，不需要为前段另造主体事件。
-- 固定位置、只改变朝向以继续观察运动目标称为 `pan`，并在 `camera.movement.target_id` 填写目标主体 ID；它不同于位置和朝向都不变的 `static`，也不同于摄影机位置跟随主体平移的 `follow`。`pan` 的平移速度为 0，但朝向必须随目标产生可观察变化。
-
 `camera.view_relation_to_motion` 类型化记录摄影机相对主要线性运动的观察关系，只能使用：
 
 - `front`：摄影机位于运动主体前方，主体总体朝摄影机接近；

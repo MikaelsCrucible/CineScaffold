@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import unittest
 
+from cinescaffold.camera_semantics import (
+    camera_lens_focal_length,
+    classify_camera_movement,
+    classify_camera_view_angle,
+)
 from cinescaffold.schema import load_schema, validate_model_output
 from cinescaffold.semantic_rules import apply_translation_rules, load_translation_rules
 from tests.helpers import ROOT, valid_model_output
@@ -10,14 +15,31 @@ from tests.helpers import ROOT, valid_model_output
 class SemanticRulesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.rules = load_translation_rules(
-            ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
+            ROOT
+            / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
         )
         self.schema = load_schema(
-            ROOT / "src/cinescaffold/resources/schemas/semantic_translation_parameters.schema.json"
+            ROOT
+            / "src/cinescaffold/resources/schemas/semantic_translation_parameters.schema.json"
         )
         self.model_schema = load_schema(
-            ROOT / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json"
+            ROOT
+            / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json"
         )
+
+    def test_camera_movement_classifier_has_one_unambiguous_priority(self) -> None:
+        self.assertEqual(classify_camera_movement("固定机位，先静止后旋转"), "pan")
+        self.assertEqual(classify_camera_movement("环绕跟拍"), "orbit")
+        self.assertEqual(classify_camera_movement("slow push-in"), "push_in")
+        self.assertIsNone(classify_camera_movement("companion relationship"))
+
+    def test_camera_lens_and_angle_aliases_do_not_match_unrelated_words(self) -> None:
+        self.assertEqual(camera_lens_focal_length("50 mm"), 50.0)
+        self.assertEqual(camera_lens_focal_length("wide-angle lens"), 35.0)
+        self.assertIsNone(camera_lens_focal_length("worldwide release"))
+        self.assertIsNone(camera_lens_focal_length("normalization pass"))
+        self.assertEqual(classify_camera_view_angle("high-angle"), "high_angle")
+        self.assertEqual(classify_camera_view_angle("垂直俯拍"), "top_down")
 
     def test_loneliness_maps_to_fixed_profile_without_preview_lighting(self) -> None:
         content = valid_model_output()
@@ -42,9 +64,7 @@ class SemanticRulesTest(unittest.TestCase):
             )
         ]
         content["scene_design"]["environment"] = self._annotated("荒漠", "荒漠里")
-        content["mood"]["emotional_tones"] = [
-            self._statement("孤独", "感觉很孤独")
-        ]
+        content["mood"]["emotional_tones"] = [self._statement("孤独", "感觉很孤独")]
         content["timeline"].update(
             {"duration_seconds": 10.0, "duration_source_status": "explicit"}
         )
@@ -54,7 +74,9 @@ class SemanticRulesTest(unittest.TestCase):
         validate_model_output(parameters, self.schema)
         self.assertEqual(normalized["timeline"]["duration_seconds"], 10.0)
         self.assertEqual(normalized["camera"]["camera_height"]["value"], "1.2 m")
-        self.assertEqual(normalized["camera"]["camera_height"]["source_status"], "inferred")
+        self.assertEqual(
+            normalized["camera"]["camera_height"]["source_status"], "inferred"
+        )
         self.assertIn(
             "仅供最终视频生成",
             normalized["mood"]["lighting_intent"][-1]["value"],
@@ -71,8 +93,12 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(normalized["composition"]["screen_placements"], [])
         self.assertEqual(parameters["scene"]["asset_key"], "desert")
         self.assertEqual(parameters["subjects"][0]["reference_height_m"], 1.75)
-        self.assertEqual(parameters["subjects"][0]["facing_direction_world"], [0.0, -1.0, 0.0])
-        self.assertEqual(parameters["lighting"]["application_scope"], "final_video_generation_only")
+        self.assertEqual(
+            parameters["subjects"][0]["facing_direction_world"], [0.0, -1.0, 0.0]
+        )
+        self.assertEqual(
+            parameters["lighting"]["application_scope"], "final_video_generation_only"
+        )
         self.assertFalse(parameters["lighting"]["applied_to_blender_preview"])
 
     def test_radial_camera_speed_uses_actual_duration(self) -> None:
@@ -103,7 +129,8 @@ class SemanticRulesTest(unittest.TestCase):
 
     def test_invalid_radial_camera_rule_cannot_write_fixed_speed(self) -> None:
         rules = load_translation_rules(
-            ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
+            ROOT
+            / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
         )
         rules["emotion_classes"]["E1"]["camera"]["speed_mps"] = 0.67
 
@@ -128,9 +155,7 @@ class SemanticRulesTest(unittest.TestCase):
     def test_explicit_camera_is_recorded_as_override(self) -> None:
         content = valid_model_output()
         content["camera"]["view_angle"] = self._annotated("俯拍", "使用俯拍")
-        content["mood"]["emotional_tones"] = [
-            self._statement("孤独", "感觉孤独")
-        ]
+        content["mood"]["emotional_tones"] = [self._statement("孤独", "感觉孤独")]
 
         _, parameters = apply_translation_rules(content, self.rules)
 
@@ -242,6 +267,8 @@ class SemanticRulesTest(unittest.TestCase):
                     "strength": "scene_relative",
                     "source_status": "explicit",
                     "source_text": "远处有巨大的飞船",
+                    "timeline_event_id": None,
+                    "temporal_mode": "throughout",
                 }
             ],
         )
@@ -496,7 +523,9 @@ class SemanticRulesTest(unittest.TestCase):
             "固定位置旋转",
         )
 
-    def test_static_scene_repairs_null_event_range_without_another_model_call(self) -> None:
+    def test_static_scene_repairs_null_event_range_without_another_model_call(
+        self,
+    ) -> None:
         content = valid_model_output()
         content["camera"]["movement"]["type"] = self._annotated(
             "缓慢推近",
@@ -604,7 +633,9 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(camera["source_status"], "explicit")
         self.assertLess(camera["end_distance_m"], camera["start_distance_m"])
         self.assertGreater(camera["speed_mps"], 0.0)
-        self.assertEqual(normalized["camera"]["movement"]["trajectory"]["value"], "直线")
+        self.assertEqual(
+            normalized["camera"]["movement"]["trajectory"]["value"], "直线"
+        )
 
     def test_overlapping_before_relation_is_normalized_to_starts_before(self) -> None:
         content = valid_model_output()
@@ -643,8 +674,12 @@ class SemanticRulesTest(unittest.TestCase):
             "一个人在路边等待，一辆车开过来接走他，10 秒。",
         )
 
-        self.assertEqual(normalized["timeline"]["relations"][0]["relation"], "starts_before")
-        self.assertEqual(parameters["temporal_relations"][0]["relation"], "starts_before")
+        self.assertEqual(
+            normalized["timeline"]["relations"][0]["relation"], "starts_before"
+        )
+        self.assertEqual(
+            parameters["temporal_relations"][0]["relation"], "starts_before"
+        )
 
     def test_inferred_zero_gap_does_not_block_relation_normalization(self) -> None:
         content = valid_model_output()
@@ -765,7 +800,9 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(motion["speed_range_mps"], [0.0, 0.0])
         self.assertEqual(motion["postconditions"]["external_visibility"], "hidden")
 
-    def test_redundant_carried_semantics_are_reconciled_without_provider_retry(self) -> None:
+    def test_redundant_carried_semantics_are_reconciled_without_provider_retry(
+        self,
+    ) -> None:
         content = valid_model_output()
         content["subjects"] = [
             {
@@ -805,12 +842,15 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(semantics["path_type"], "stationary")
         self.assertEqual(parameters["motions"][0]["motion_mode"], "carried")
 
-    def test_locomotion_majority_repairs_stationary_mode_without_provider_retry(self) -> None:
+    def test_locomotion_majority_repairs_stationary_mode_without_provider_retry(
+        self,
+    ) -> None:
         content = valid_model_output()
         content["camera"]["movement"]["type"] = self._annotated(
             "固定机位旋转跟随车辆",
             "镜头不平移而是旋转地跟着车",
         )
+        content["camera"]["movement"]["target_id"] = "person_01"
         content["subject_motion"] = [
             self._motion(
                 "person_01",
@@ -835,7 +875,9 @@ class SemanticRulesTest(unittest.TestCase):
             "固定机位旋转跟随车辆",
         )
 
-    def test_hold_majority_repairs_inconsistent_motion_type_without_provider_retry(self) -> None:
+    def test_hold_majority_repairs_inconsistent_motion_type_without_provider_retry(
+        self,
+    ) -> None:
         content = valid_model_output()
         content["subject_motion"] = [
             self._motion(

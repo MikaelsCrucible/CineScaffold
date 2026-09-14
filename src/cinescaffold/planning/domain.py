@@ -13,7 +13,9 @@ TimeRange = tuple[float, float]
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # A NaN/Infinity can make comparisons silently false and survive until
+    # Scene IR serialization. Reject it at the shared schema boundary.
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class BoxGeometry(StrictModel):
@@ -278,6 +280,10 @@ class TrackSpec(StrictModel):
     interpolation: Literal["step", "linear", "smooth"] = "linear"
     locked_components: list[str] = Field(default_factory=list)
     source_ref: str | None = None
+    source_refs: list[str] = Field(
+        default_factory=list,
+        description="同一轨道同时实现的其他 Brief 来源；source_ref 保留主来源",
+    )
 
     @field_validator("path", mode="before")
     @classmethod
@@ -290,7 +296,12 @@ class TrackSpec(StrictModel):
     @model_validator(mode="after")
     def validate_track_shape(self) -> TrackSpec:
         start, end = self.time_range_seconds
-        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or start >= end:
+        if (
+            not math.isfinite(start)
+            or not math.isfinite(end)
+            or start < 0
+            or start >= end
+        ):
             raise ValueError("Track time_range_seconds 必须为合法半开区间")
         if self.type == "path_follow" and self.path is None:
             raise ValueError("path_follow Track 必须提供 path")
@@ -325,6 +336,10 @@ class TrackSpec(StrictModel):
             for item in self.keyframes
         ):
             raise ValueError("focal_length Track 的关键帧值必须为数值")
+        if self.source_ref is not None and self.source_ref in self.source_refs:
+            raise ValueError("Track source_ref 不得在 source_refs 中重复")
+        if len(self.source_refs) != len(set(self.source_refs)):
+            raise ValueError("Track source_refs 不得重复")
         return self
 
 
@@ -343,7 +358,9 @@ class GroundInteractionSpec(StrictModel):
     tolerance_m: float = Field(default=1e-3, ge=0)
     minimum_penetration_m: float | None = Field(default=None, ge=0)
     maximum_penetration_m: float | None = Field(default=None, ge=0)
-    source_status: Literal["explicit", "inferred", "default", "agent_selected"] = "default"
+    source_status: Literal["explicit", "inferred", "default", "agent_selected"] = (
+        "default"
+    )
     source_ref: str | None = None
 
     @model_validator(mode="after")
@@ -360,7 +377,10 @@ class GroundInteractionSpec(StrictModel):
                 raise ValueError("embedded 必须提供 maximum_penetration_m")
             if self.maximum_penetration_m < self.minimum_penetration_m:
                 raise ValueError("embedded 穿入范围上下界颠倒")
-        elif self.minimum_penetration_m is not None or self.maximum_penetration_m is not None:
+        elif (
+            self.minimum_penetration_m is not None
+            or self.maximum_penetration_m is not None
+        ):
             raise ValueError(f"{self.mode} 不接受穿入深度范围")
         if self.source_status == "explicit" and not self.source_ref:
             raise ValueError("explicit 地面交互必须提供 source_ref")
@@ -376,7 +396,9 @@ class EntitySpec(StrictModel):
     tags: list[str] = Field(default_factory=list)
     locked_fields: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
-    ground_interaction: GroundInteractionSpec = Field(default_factory=GroundInteractionSpec)
+    ground_interaction: GroundInteractionSpec = Field(
+        default_factory=GroundInteractionSpec
+    )
     solved_transform: TransformValue = Field(default_factory=TransformValue)
 
 
@@ -458,6 +480,15 @@ class RelativePositionParameters(StrictModel):
 
     @model_validator(mode="after")
     def validate_gap_range(self) -> RelativePositionParameters:
+        _validate_distinct_pair(
+            (self.subject_id, self.reference_id),
+            "relative_position entity ids",
+        )
+        values = [
+            item for item in (self.minimum_gap, self.maximum_gap) if item is not None
+        ]
+        if not all(math.isfinite(item) for item in values):
+            raise ValueError("relative_position 间距必须是有限数")
         if (
             self.minimum_gap is not None
             and self.maximum_gap is not None
@@ -472,19 +503,31 @@ class DistanceRangeParameters(StrictModel):
     minimum_meters: float = Field(ge=0)
     maximum_meters: float = Field(ge=0)
 
+    @model_validator(mode="after")
+    def validate_distance_range(self) -> DistanceRangeParameters:
+        _validate_distinct_pair(self.entity_ids, "distance_range.entity_ids")
+        _validate_finite_ordered_range(
+            self.minimum_meters,
+            self.maximum_meters,
+            "distance_range",
+        )
+        return self
+
 
 class SurfaceClearanceRangeParameters(StrictModel):
     entity_ids: tuple[str, str]
     minimum_ratio: float = Field(ge=0)
     preferred_ratio: float | None = Field(default=None, ge=0)
     maximum_ratio: float = Field(ge=0)
-    scale_basis: Literal["larger_directional_extent"] = (
-        "larger_directional_extent"
-    )
+    scale_basis: Literal["larger_directional_extent"] = "larger_directional_extent"
     space: Literal["world", "ground_plane"] = "ground_plane"
 
     @model_validator(mode="after")
     def validate_ratio_range(self) -> SurfaceClearanceRangeParameters:
+        _validate_distinct_pair(
+            self.entity_ids,
+            "surface_clearance_range.entity_ids",
+        )
         values = [self.minimum_ratio, self.maximum_ratio]
         if self.preferred_ratio is not None:
             values.append(self.preferred_ratio)
@@ -504,6 +547,13 @@ class CollisionClearanceParameters(StrictModel):
     minimum_meters: float = Field(ge=0)
     space: Literal["world", "ground_plane"] = "ground_plane"
 
+    @model_validator(mode="after")
+    def validate_clearance(self) -> CollisionClearanceParameters:
+        _validate_distinct_pair(self.entity_ids, "collision_clearance.entity_ids")
+        if not math.isfinite(self.minimum_meters):
+            raise ValueError("collision_clearance 净空必须是有限数")
+        return self
+
 
 class DepthOrderParameters(StrictModel):
     near_entity_id: str
@@ -511,10 +561,35 @@ class DepthOrderParameters(StrictModel):
     camera_id: str = "camera_main"
     minimum_depth_gap_meters: float | None = Field(default=None, ge=0)
 
+    @model_validator(mode="after")
+    def validate_depth_order(self) -> DepthOrderParameters:
+        _validate_distinct_pair(
+            (self.near_entity_id, self.far_entity_id),
+            "depth_order entity ids",
+        )
+        if self.minimum_depth_gap_meters is not None and not math.isfinite(
+            self.minimum_depth_gap_meters
+        ):
+            raise ValueError("depth_order 深度间距必须是有限数")
+        return self
+
 
 class ScreenRegionParameters(StrictModel):
     entity_id: str
     region: tuple[float, float, float, float]
+
+    @field_validator("region")
+    @classmethod
+    def validate_region(
+        cls,
+        value: tuple[float, float, float, float],
+    ) -> tuple[float, float, float, float]:
+        left, top, right, bottom = value
+        if not all(math.isfinite(item) and 0.0 <= item <= 1.0 for item in value):
+            raise ValueError("screen_region 必须使用 0..1 的有限归一化坐标")
+        if left > right or top > bottom:
+            raise ValueError("screen_region 边界顺序错误")
+        return value
 
 
 class ProjectedSizeParameters(StrictModel):
@@ -523,6 +598,11 @@ class ProjectedSizeParameters(StrictModel):
     minimum: float = Field(ge=0)
     maximum: float = Field(gt=0)
 
+    @model_validator(mode="after")
+    def validate_size_range(self) -> ProjectedSizeParameters:
+        _validate_finite_ordered_range(self.minimum, self.maximum, "projected_size")
+        return self
+
 
 class ProjectedScaleRatioParameters(StrictModel):
     numerator_entity_id: str
@@ -530,6 +610,19 @@ class ProjectedScaleRatioParameters(StrictModel):
     measurement: Literal["height", "width", "diameter"] = "height"
     minimum_ratio: float = Field(ge=0)
     maximum_ratio: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_ratio_range(self) -> ProjectedScaleRatioParameters:
+        _validate_distinct_pair(
+            (self.numerator_entity_id, self.denominator_entity_id),
+            "projected_scale_ratio entity ids",
+        )
+        _validate_finite_ordered_range(
+            self.minimum_ratio,
+            self.maximum_ratio,
+            "projected_scale_ratio",
+        )
+        return self
 
 
 class KeepInFrameParameters(StrictModel):
@@ -567,11 +660,29 @@ class CameraDistanceParameters(StrictModel):
     minimum_meters: float = Field(ge=0)
     maximum_meters: float = Field(gt=0)
 
+    @model_validator(mode="after")
+    def validate_distance_range(self) -> CameraDistanceParameters:
+        _validate_finite_ordered_range(
+            self.minimum_meters,
+            self.maximum_meters,
+            "camera_distance",
+        )
+        return self
+
 
 class FocalLengthRangeParameters(StrictModel):
     camera_id: str = "camera_main"
     minimum_mm: float = Field(gt=0)
     maximum_mm: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_focal_range(self) -> FocalLengthRangeParameters:
+        _validate_finite_ordered_range(
+            self.minimum_mm,
+            self.maximum_mm,
+            "focal_length_range",
+        )
+        return self
 
 
 class MotionDirectionParameters(StrictModel):
@@ -597,6 +708,15 @@ class SpeedRangeParameters(StrictModel):
     maximum_mps: float = Field(gt=0)
     space: Literal["world"] = "world"
 
+    @model_validator(mode="after")
+    def validate_speed_range(self) -> SpeedRangeParameters:
+        _validate_finite_ordered_range(
+            self.minimum_mps,
+            self.maximum_mps,
+            "speed_range",
+        )
+        return self
+
 
 class PositionAtTimeParameters(StrictModel):
     target_id: str
@@ -607,9 +727,9 @@ class PositionAtTimeParameters(StrictModel):
 
 class HoldParameters(StrictModel):
     target_id: str
-    components: list[
-        Literal["translation", "rotation", "scale", "visibility"]
-    ] = Field(min_length=1)
+    components: list[Literal["translation", "rotation", "scale", "visibility"]] = Field(
+        min_length=1
+    )
     tolerance_m: float = Field(default=1e-4, ge=0)
     rotation_tolerance_degrees: float = Field(default=0.01, ge=0)
     scale_tolerance: float = Field(default=1e-4, ge=0)
@@ -651,13 +771,20 @@ class ConstraintSpec(StrictModel):
     subjects: list[str] = Field(default_factory=list)
     time_range_seconds: TimeRange
     parameters: ConstraintParameters
-    source_status: Literal["explicit", "inferred", "default", "agent_selected", "unknown"]
+    source_status: Literal[
+        "explicit", "inferred", "default", "agent_selected", "unknown"
+    ]
     source_ref: str
 
     @model_validator(mode="after")
     def validate_time_range(self) -> ConstraintSpec:
         start, end = self.time_range_seconds
-        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or start >= end:
+        if (
+            not math.isfinite(start)
+            or not math.isfinite(end)
+            or start < 0
+            or start >= end
+        ):
             raise ValueError("Constraint time_range_seconds 必须为合法半开区间")
         expected = {
             "relative_position": RelativePositionParameters,
@@ -843,6 +970,7 @@ class PlanningProfile(StrictModel):
     numeric_tolerance: float = Field(default=1e-8, gt=0)
     random_seed: int = 0
 
+
 class CommitRequest(StrictModel):
     type: Literal["commit_request"]
     candidate_revision: int = Field(ge=0)
@@ -867,6 +995,22 @@ AgentTerminal = Annotated[
     CommitRequest | UnsupportedResult | InfeasibleResult,
     Field(discriminator="type"),
 ]
+
+
+def _validate_distinct_pair(value: tuple[str, str], name: str) -> None:
+    if value[0] == value[1]:
+        raise ValueError(f"{name} 不得自引用")
+
+
+def _validate_finite_ordered_range(
+    minimum: float,
+    maximum: float,
+    name: str,
+) -> None:
+    if not math.isfinite(minimum) or not math.isfinite(maximum):
+        raise ValueError(f"{name} 范围必须是有限数")
+    if maximum < minimum:
+        raise ValueError(f"{name} 范围上下界颠倒")
 
 
 def _positive_vector(value: tuple[float, ...], name: str):

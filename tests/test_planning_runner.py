@@ -215,6 +215,40 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertIn("planning_recovery_requested", trace)
         self.assertIn("simplified_delivery_committed", trace)
 
+    def test_unexpected_non_budget_exception_uses_deterministic_delivery(self) -> None:
+        class CrashingAgent:
+            async def run(self, *args, **kwargs):
+                del args, kwargs
+                raise RuntimeError("simulated planner implementation defect")
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            config = InterpreterRunConfig(
+                provider="mock",
+                run_dir=run_dir,
+                run_id="pipeline_exception_fallback_test",
+            )
+            with patch(
+                "cinescaffold.planning.runner.create_planning_agent",
+                return_value=CrashingAgent(),
+            ):
+                result = asyncio.run(
+                    InterpreterRunner(config).run(valid_planning_brief())
+                )
+            trace = (run_dir / "planning_agent_tool_trace.jsonl").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(result.status, "success", result.error)
+        self.assertEqual(result.delivery_tier, "simplified")
+        self.assertEqual(result.terminal_type, "simplified_delivery")
+        self.assertEqual(
+            result.recovery_context["failure_class"],
+            "pipeline_exception:RuntimeError",
+        )
+        self.assertIn("simulated planner implementation defect", trace)
+        self.assertIn("simplified_delivery_committed", trace)
+
     def test_openai_provider_usage_uses_cache_aware_cost_snapshot(self) -> None:
         result = provider_usage_summary(
             {
@@ -572,7 +606,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "tool_call_completed" for item in trace))
         self.assertTrue(any(item["event_type"] == "commit_gate_completed" for item in trace))
         run_started = next(item for item in trace if item["event_type"] == "run_started")
-        self.assertEqual(run_started["payload"]["toolkit_version"], "0.38")
+        self.assertEqual(run_started["payload"]["toolkit_version"], "0.39")
         self.assertNotIn("孤独", "\n".join(trace_lines))
         # 普通运行保持精简日志：不记录对话内容，response 只记类型与规模。
         request_started = next(

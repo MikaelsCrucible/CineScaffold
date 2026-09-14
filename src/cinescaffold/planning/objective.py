@@ -5,10 +5,13 @@ import json
 from copy import deepcopy
 from typing import Any, Literal
 
-from cinescaffold.semantic_rules import objective_translation_parameters
-
 from pydantic import BaseModel, ConfigDict, Field
 
+from cinescaffold.relationships import (
+    CANONICAL_RELATIONSHIP_TYPES,
+    normalize_scene_relationships,
+)
+from cinescaffold.semantic_rules import objective_translation_parameters
 
 OBJECTIVE_CONTENT_FIELDS = (
     "subjects",
@@ -114,12 +117,18 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
     if not isinstance(content, dict) or not isinstance(provenance, dict):
         raise ValueError("Cinematic Brief 缺少 content 或 provenance")
     translation_parameters = brief.get("translation_parameters")
-    if schema_version in {"0.2", "0.3", "0.4", "0.5", "0.6"} and not isinstance(translation_parameters, dict):
-        raise ValueError(f"Cinematic Brief v{schema_version} 缺少 translation_parameters")
+    if schema_version in {"0.2", "0.3", "0.4", "0.5", "0.6"} and not isinstance(
+        translation_parameters, dict
+    ):
+        raise ValueError(
+            f"Cinematic Brief v{schema_version} 缺少 translation_parameters"
+        )
     if schema_version in {"0.2", "0.3", "0.4", "0.5", "0.6"} and not _optional_string(
         provenance.get("translation_rules_sha256")
     ):
-        raise ValueError(f"Cinematic Brief v{schema_version} 缺少 translation_rules_sha256")
+        raise ValueError(
+            f"Cinematic Brief v{schema_version} 缺少 translation_rules_sha256"
+        )
 
     if "scene_dynamics" not in content and schema_version != "0.6":
         content = deepcopy(content)
@@ -146,7 +155,12 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
         ),
         response_id=_optional_string(provenance.get("response_id")),
     )
-    objective_values = {name: deepcopy(content[name]) for name in OBJECTIVE_CONTENT_FIELDS}
+    objective_values = {
+        name: deepcopy(content[name]) for name in OBJECTIVE_CONTENT_FIELDS
+    }
+    normalize_scene_relationships(objective_values)
+    if schema_version == "0.6":
+        _validate_canonical_relationships(objective_values)
     requirements: list[ObjectiveRequirement] = []
     for name in OBJECTIVE_CONTENT_FIELDS:
         _collect_explicit_requirements(
@@ -191,6 +205,30 @@ def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
         objective_brief=objective_brief,
         ignored_subjective_fields=ignored,
     )
+
+
+def _validate_canonical_relationships(content: dict[str, Any]) -> None:
+    relationships = content.get("scene_design", {}).get("relationships", [])
+    subject_ids = {
+        item.get("id")
+        for item in content.get("subjects", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    for index, relationship in enumerate(relationships):
+        if not isinstance(relationship, dict):
+            raise ValueError(f"v0.6 relationship[{index}] 必须是对象")
+        relation_type = relationship.get("type")
+        if relation_type not in CANONICAL_RELATIONSHIP_TYPES:
+            raise ValueError(
+                f"v0.6 relationship[{index}] 使用了 Toolkit 不支持的类型："
+                f"{relation_type}"
+            )
+        subject_id = relationship.get("subject_id")
+        reference_id = relationship.get("reference_id")
+        if subject_id not in subject_ids or reference_id not in subject_ids:
+            raise ValueError(f"v0.6 relationship[{index}] 必须引用两个已声明实体")
+        if subject_id == reference_id:
+            raise ValueError(f"v0.6 relationship[{index}] 不得自引用")
 
 
 def _legacy_subject_scene_is_dynamic(
@@ -251,7 +289,10 @@ def _collect_explicit_requirements(
                     source_text=_optional_string(value.get("source_text")),
                 )
             )
-    if value.get("duration_source_status") == "explicit" and value.get("duration_seconds") is not None:
+    if (
+        value.get("duration_source_status") == "explicit"
+        and value.get("duration_seconds") is not None
+    ):
         output.append(
             ObjectiveRequirement(
                 path=f"{path}.duration_seconds",

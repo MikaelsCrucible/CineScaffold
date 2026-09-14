@@ -3,14 +3,21 @@ from __future__ import annotations
 import unittest
 
 from cinescaffold.planning.compiler import SceneIRCommitGate, compile_scene_ir
-from cinescaffold.planning.domain import CommitRequest
-from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
-from cinescaffold.planning.objective import ObjectiveRequirement, project_objective_brief
+from cinescaffold.planning.domain import CommitRequest, ConstraintSpec, EntitySpec
+from cinescaffold.planning.duration import (
+    attach_duration_resolution,
+    freeze_brief_duration,
+)
+from cinescaffold.planning.objective import (
+    ObjectiveRequirement,
+    project_objective_brief,
+)
 from cinescaffold.planning.toolkit import (
     EXECUTION_SAFETY_CHECKS,
     FULL_VALIDATION_CHECKS,
     NARRATIVE_FIDELITY_CHECKS,
     ScenePlanningToolkit,
+    _camera_state_at,
     _direction_matches,
     _entity_transform_at,
     _orbit_entity_intersection_violations,
@@ -36,7 +43,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         )
         self.assertIn("camera", result["data"]["inspect_views"])
         self.assertEqual(
-            result["data"]["constraint_parameter_schemas"]["relative_position"]["required"],
+            result["data"]["constraint_parameter_schemas"]["relative_position"][
+                "required"
+            ],
             ["subject_id", "reference_id", "relation"],
         )
         self.assertEqual(result["data"]["acceptance"]["minimum_soft_score"], 0.0)
@@ -73,9 +82,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             result["data"]["semantic_distinctions"]["scene_dynamics"],
         )
         self.assertEqual(
-            result["data"]["repair_suggestions"][
-                "maximize_motion_readability_scope"
-            ],
+            result["data"]["repair_suggestions"]["maximize_motion_readability_scope"],
             "subject_spatial_motion_only",
         )
         relative_schema = result["data"]["constraint_parameter_schemas"][
@@ -205,9 +212,18 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     "type": "transform",
                     "time_range_seconds": [0.0, 6.0],
                     "keyframes": [
-                        {"time_seconds": 0.0, "value": {"translation_m": [0.0, 0.0, 1.0]}},
-                        {"time_seconds": 3.0, "value": {"translation_m": [4.0, 0.0, 1.0]}},
-                        {"time_seconds": 5.999, "value": {"translation_m": [0.0, 0.0, 1.0]}},
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [0.0, 0.0, 1.0]},
+                        },
+                        {
+                            "time_seconds": 3.0,
+                            "value": {"translation_m": [4.0, 0.0, 1.0]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [0.0, 0.0, 1.0]},
+                        },
                     ],
                 }
             ],
@@ -245,7 +261,12 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                             "time_seconds": 3.0,
                             "value": {
                                 "translation_m": [0.0, 0.0, 1.0],
-                                "rotation_quaternion_wxyz": [0.70710678, 0.0, 0.0, 0.70710678],
+                                "rotation_quaternion_wxyz": [
+                                    0.70710678,
+                                    0.0,
+                                    0.0,
+                                    0.70710678,
+                                ],
                                 "scale": [2.0, 1.0, 1.0],
                             },
                         },
@@ -358,7 +379,8 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         self.assertFalse(
             any(
-                item["code"] in {
+                item["code"]
+                in {
                     "MOTION_POSTCONDITION_VISIBILITY_UNMET",
                     "CARRIED_SUBJECT_UNBOUND",
                 }
@@ -397,7 +419,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     "constraint_id": "camera_relative_position",
                     "type": "relative_position",
                     "strength": "soft",
-                    "subjects": ["man_01", "ship_01"],
+                    "subjects": ["man_01"],
                     "time_range_seconds": [0.0, 6.0],
                     "parameters": {
                         "subject_id": "man_01",
@@ -517,8 +539,8 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                         "subject_id": "man_01",
                         "reference_id": "ship_01",
                         "relation": "front",
-                        "minimum_gap": 2.0,
-                        "maximum_gap": 4.0,
+                        "minimum_gap": 0.0,
+                        "maximum_gap": 0.0,
                     },
                     "source_status": "agent_selected",
                     "source_ref": "agent.layout",
@@ -653,7 +675,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertIn("remove_ids", result["warnings"][0])
         self.assertEqual(toolkit.store.get().motion_tracks, {})
 
-    def test_same_id_remove_and_upsert_atomically_replaces_entity_and_track(self) -> None:
+    def test_same_id_remove_and_upsert_atomically_replaces_entity_and_track(
+        self,
+    ) -> None:
         toolkit = _toolkit()
         toolkit.apply_entity_patch([_man_entity()], [])
         replaced_entity = _man_entity() | {"label": "替换后的人物"}
@@ -680,7 +704,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(entity_result["status"], "ok")
         self.assertEqual(toolkit.store.get().entities["man_01"].label, "替换后的人物")
         self.assertEqual(track_result["status"], "ok")
-        self.assertEqual(len(toolkit.store.get().motion_tracks["man_move"].keyframes), 1)
+        self.assertEqual(
+            len(toolkit.store.get().motion_tracks["man_move"].keyframes), 1
+        )
 
     def test_entity_patch_without_hidden_transform_preserves_solved_state(self) -> None:
         toolkit = _toolkit()
@@ -704,7 +730,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         )
         self.assertEqual(result["data"]["preserved_solved_transform_ids"], ["man_01"])
 
-    def test_entity_patch_omitted_fields_preserve_complete_existing_entity(self) -> None:
+    def test_entity_patch_omitted_fields_preserve_complete_existing_entity(
+        self,
+    ) -> None:
         toolkit = _solved_toolkit()
         toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
         before = toolkit.store.get().entities["man_01"]
@@ -724,7 +752,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(after.ground_interaction, before.ground_interaction)
         self.assertEqual(after.solved_transform, before.solved_transform)
 
-    def test_manual_patch_regression_is_discarded_before_revision_is_created(self) -> None:
+    def test_manual_patch_regression_is_discarded_before_revision_is_created(
+        self,
+    ) -> None:
         toolkit = _solved_toolkit()
         baseline = toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
         self.assertTrue(baseline["data"]["hard_pass"], baseline["violations"])
@@ -816,7 +846,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok", result)
         self.assertEqual(result["revision_after"], revision + 1)
-        self.assertEqual(result["data"]["repair_domains_used"], ["constraints", "camera"])
+        self.assertEqual(
+            result["data"]["repair_domains_used"], ["constraints", "camera"]
+        )
         self.assertTrue(result["data"]["after_quality"]["execution_safe"])
         self.assertEqual(result["data"]["after_quality"]["full_fidelity_hard_count"], 0)
 
@@ -886,7 +918,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(result["revision_after"], 0)
         self.assertIn("explicit requirement", result["warnings"][0])
 
-    def test_hard_constraint_rejects_semantically_incompatible_explicit_source(self) -> None:
+    def test_hard_constraint_rejects_semantically_incompatible_explicit_source(
+        self,
+    ) -> None:
         toolkit = _toolkit()
 
         def add_environment_requirement(state):
@@ -953,14 +987,16 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             ["collision_clearance", "depth_order"],
         )
 
-    def test_surface_clearance_uses_rotated_proxy_edges_not_center_distance(self) -> None:
+    def test_surface_clearance_uses_rotated_proxy_edges_not_center_distance(
+        self,
+    ) -> None:
         toolkit = _solved_toolkit()
 
         def place_rotated_ship_nearby(state):
             ship = state.entities["ship_01"]
             ship.solved_transform = ship.solved_transform.model_copy(
                 update={
-                        "translation_m": (0.0, 10.0, 7.5),
+                    "translation_m": (0.0, 10.0, 7.5),
                     "rotation_quaternion_wxyz": (
                         0.70710678,
                         0.0,
@@ -1153,6 +1189,111 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             {item["code"] for item in validation["violations"]},
         )
 
+    def test_closed_path_speed_uses_traveled_distance_not_net_displacement(
+        self,
+    ) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "man_circle",
+                    "target_entity_id": "man_01",
+                    "type": "path_follow",
+                    "time_range_seconds": [0.0, 6.0],
+                    "path": {
+                        "representation": "circle",
+                        "space": "world",
+                        "closed": True,
+                        "radius_m": 2.0,
+                    },
+                }
+            ],
+            [],
+        )
+        result = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "man_speed",
+                    "type": "speed_range",
+                    "strength": "soft",
+                    "subjects": ["man_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "target_id": "man_01",
+                        "minimum_mps": 1.5,
+                        "maximum_mps": 3.0,
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.motion.speed",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "ok", result)
+        validation = toolkit.validate_candidate(checks=["motion"])
+        self.assertNotIn(
+            "SPEED_RANGE_VIOLATED",
+            {item["code"] for item in validation["violations"]},
+        )
+
+    def test_world_distance_constraint_does_not_require_a_camera(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity(), _ship_entity()], [])
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "entity_distance",
+                    "type": "distance_range",
+                    "strength": "hard",
+                    "subjects": ["man_01", "ship_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "entity_ids": ["man_01", "ship_01"],
+                        "minimum_meters": 0.0,
+                        "maximum_meters": 100.0,
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.layout.distance",
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+
+        self.assertNotIn(
+            "CAMERA_MISSING",
+            {item["code"] for item in validation["violations"]},
+        )
+
+    def test_constraint_subjects_cannot_claim_unrelated_binding(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity(), _ship_entity()], [])
+
+        result = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "miswired_distance",
+                    "type": "distance_range",
+                    "strength": "hard",
+                    "subjects": ["man_01"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "entity_ids": ["man_01", "ship_01"],
+                        "minimum_meters": 0.0,
+                        "maximum_meters": 1.0,
+                    },
+                    "source_status": "explicit",
+                    "source_ref": "content.scene_design.relationships[0]",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected", result)
+
     def test_position_at_time_supports_camera_target(self) -> None:
         toolkit = _toolkit()
         toolkit.apply_camera_patch(
@@ -1312,7 +1453,10 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         self.assertFalse(validation["data"]["hard_pass"])
         self.assertTrue(
-            any(item["code"] == "UNMAPPED_EXPLICIT_REQUIREMENT" for item in validation["violations"])
+            any(
+                item["code"] == "UNMAPPED_EXPLICIT_REQUIREMENT"
+                for item in validation["violations"]
+            )
         )
 
         request = CommitRequest(
@@ -1409,7 +1553,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 "explicit_requirements": [
                     ObjectiveRequirement(path=action_ref, value="围绕飞船公转"),
                     ObjectiveRequirement(path=direction_ref, value="环绕飞船"),
-                    ObjectiveRequirement(path=relationship_ref, value={"type": "orbits"}),
+                    ObjectiveRequirement(
+                        path=relationship_ref, value={"type": "orbits"}
+                    ),
                     ObjectiveRequirement(path=event_ref, value={"id": "event_orbit"}),
                 ],
             }
@@ -1524,7 +1670,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     },
                     "source_status": "explicit",
                     "source_ref": relationship_ref,
-                }
+                },
             ],
             [],
         )
@@ -1582,8 +1728,14 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     "type": "transform",
                     "time_range_seconds": [0.0, 6.0],
                     "keyframes": [
-                        {"time_seconds": 0.0, "value": {"translation_m": [-120.0, 2.0, 6.0]}},
-                        {"time_seconds": 143 / 24, "value": {"translation_m": [-60.0, 2.0, 6.0]}},
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [-120.0, 2.0, 6.0]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [-60.0, 2.0, 6.0]},
+                        },
                     ],
                 }
             ],
@@ -1593,6 +1745,67 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         validation = toolkit.validate_candidate(checks=["motion"])
 
         self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
+
+    def test_targetless_push_in_rejects_motion_backward_along_optical_axis(
+        self,
+    ) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "targetless_push",
+                    "type": "camera_motion_direction",
+                    "strength": "soft",
+                    "subjects": [],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "direction": "push_in",
+                        "minimum_displacement_m": 2.0,
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.camera_motion",
+                }
+            ],
+            [],
+        )
+        rotation = [2**-0.5, 2**-0.5, 0.0, 0.0]
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 50.0, "focus_target_id": None},
+            tracks=[
+                {
+                    "track_id": "backward_camera",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {
+                                "translation_m": [0.0, -10.0, 2.0],
+                                "rotation_quaternion_wxyz": rotation,
+                            },
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {
+                                "translation_m": [0.0, -14.0, 2.0],
+                                "rotation_quaternion_wxyz": rotation,
+                            },
+                        },
+                    ],
+                }
+            ],
+        )
+        toolkit.solve_candidate()
+
+        validation = toolkit.validate_candidate(checks=[])
+
+        self.assertIn(
+            "CAMERA_TARGET_DISTANCE_DIRECTION_VIOLATED",
+            {item["code"] for item in validation["violations"]},
+        )
 
     def test_projection_tolerance_accepts_numerically_full_visibility(self) -> None:
         toolkit = _solved_toolkit()
@@ -1653,8 +1866,14 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     "type": "transform",
                     "time_range_seconds": [0.0, 6.0],
                     "keyframes": [
-                        {"time_seconds": 0.0, "value": {"translation_m": [-120.0, 2.0, 6.0]}},
-                        {"time_seconds": 143 / 24, "value": {"translation_m": [-60.0, 2.0, 6.0]}},
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [-120.0, 2.0, 6.0]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [-60.0, 2.0, 6.0]},
+                        },
                     ],
                 }
             ],
@@ -1662,7 +1881,11 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         toolkit.solve_candidate()
         validation = toolkit.validate_candidate(checks=["transforms", "projection"])
-        ship_rotation = toolkit.store.get().entities["ship_01"].solved_transform.rotation_quaternion_wxyz
+        ship_rotation = (
+            toolkit.store.get()
+            .entities["ship_01"]
+            .solved_transform.rotation_quaternion_wxyz
+        )
 
         self.assertEqual(ship_rotation, (1.0, 0.0, 0.0, 0.0))
         self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
@@ -1709,26 +1932,30 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
     def test_execution_safety_does_not_evaluate_fidelity_constraints(self) -> None:
         toolkit = _solved_toolkit()
-        constraint = toolkit.apply_constraint_patch(
-            [
-                {
-                    "constraint_id": "camera_push_in",
-                    "type": "camera_motion_direction",
-                    "strength": "hard",
-                    "weight": 1.0,
-                    "subjects": [],
-                    "time_range_seconds": [0.0, 6.0],
-                    "parameters": {
-                        "direction": "pull_out",
-                        "minimum_displacement_m": 3.0,
-                    },
-                    "source_status": "explicit",
-                    "source_ref": "content.camera.movement.type",
-                }
-            ],
-            [],
+        failing_constraint = ConstraintSpec.model_validate(
+            {
+                "constraint_id": "camera_push_in",
+                "type": "camera_motion_direction",
+                "strength": "hard",
+                "weight": 1.0,
+                "subjects": [],
+                "time_range_seconds": [0.0, 6.0],
+                "parameters": {
+                    "direction": "pull_out",
+                    "minimum_displacement_m": 3.0,
+                },
+                "source_status": "explicit",
+                "source_ref": "content.camera.movement.type",
+            }
         )
-        self.assertEqual(constraint["status"], "ok", constraint)
+
+        def inject_fidelity_failure(state):
+            state.constraints[failing_constraint.constraint_id] = failing_constraint
+            return ([{"operation": "test", "path": "constraints"}], [])
+
+        # This test isolates validator check selection. The public mutation API
+        # correctly rejects introducing a new explicit hard failure.
+        toolkit.store.apply(inject_fidelity_failure)
         full = toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
         safety = toolkit.validate_candidate(checks=EXECUTION_SAFETY_CHECKS)
 
@@ -1842,7 +2069,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertAlmostEqual(moon_frame.translation_m[1], -2.0, places=8)
         self.assertEqual(moon_frame.translation_m[2], 0.0)
 
-    def test_nested_orbit_phase_lock_is_reported_without_rejecting_valid_ir(self) -> None:
+    def test_nested_orbit_phase_lock_is_reported_without_rejecting_valid_ir(
+        self,
+    ) -> None:
         toolkit = _relative_motion_toolkit(moon_cycle_count=1.0)
 
         validation = toolkit.validate_candidate(checks=["motion"])
@@ -1999,7 +2228,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(violation["severity"], "warning")
         self.assertEqual(collinear["severity"], "warning")
 
-    def test_explicit_camera_focus_and_motion_view_are_checked_geometrically(self) -> None:
+    def test_explicit_camera_focus_and_motion_view_are_checked_geometrically(
+        self,
+    ) -> None:
         toolkit = _projected_motion_toolkit(
             end_position=(8.0, 4.0, 0.9),
             camera_position=(-10.0, 4.0, 1.5),
@@ -2243,7 +2474,9 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
     def test_relative_motion_cycle_is_rejected_atomically(self) -> None:
         toolkit = _toolkit()
-        toolkit.apply_entity_patch([_sphere_entity("earth"), _sphere_entity("moon")], [])
+        toolkit.apply_entity_patch(
+            [_sphere_entity("earth"), _sphere_entity("moon")], []
+        )
         revision = toolkit.store.current_revision
 
         result = toolkit.apply_motion_patch(
@@ -2371,6 +2604,344 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             {item["code"] for item in validation["violations"]},
         )
 
+    def test_delayed_reference_frame_cycle_is_rejected_before_compilation(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch(
+            [_sphere_entity("first"), _sphere_entity("second")],
+            [],
+        )
+
+        result = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "first_relative_to_second",
+                    "target_entity_id": "first",
+                    "type": "transform",
+                    "time_range_seconds": [1.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 1.0,
+                            "value": {
+                                "translation_m": [1.0, 0.0, 0.0],
+                                "space": "target_relative",
+                                "target_id": "second",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "track_id": "second_relative_to_first",
+                    "target_entity_id": "second",
+                    "type": "transform",
+                    "time_range_seconds": [1.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 1.0,
+                            "value": {
+                                "translation_m": [-1.0, 0.0, 0.0],
+                                "space": "target_relative",
+                                "target_id": "first",
+                            },
+                        }
+                    ],
+                },
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("参考系依赖存在循环", result["warnings"][0])
+
+    def test_camera_focus_cycle_is_rejected_without_recursive_overflow(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_sphere_entity("marker")], [])
+        camera = toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0, "focus_target_id": "marker"},
+            tracks=[
+                {
+                    "track_id": "camera_position",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [0.0, -10.0, 2.0]},
+                        }
+                    ],
+                }
+            ],
+            remove_track_ids=[],
+        )
+        self.assertEqual(camera["status"], "ok")
+
+        result = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "marker_in_camera_space",
+                    "target_entity_id": "marker",
+                    "type": "path_follow",
+                    "time_range_seconds": [0.0, 6.0],
+                    "path": {
+                        "space": "camera",
+                        "control_points": [[0.0, 0.0, -5.0], [0.0, 0.0, -5.0]],
+                    },
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("参考系依赖存在循环", result["warnings"][0])
+
+    def test_look_at_orientation_stops_changing_after_its_time_range(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_sphere_entity("target")], [])
+        result = toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0},
+            tracks=[
+                {
+                    "track_id": "camera_translate",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [-10.0, -10.0, 2.0]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [10.0, -10.0, 2.0]},
+                        },
+                    ],
+                },
+                {
+                    "track_id": "camera_look_then_hold",
+                    "type": "look_at",
+                    "time_range_seconds": [0.0, 3.0],
+                    "target_id": "target",
+                    "interpolation": "smooth",
+                },
+            ],
+            remove_track_ids=[],
+        )
+        self.assertEqual(result["status"], "ok", result)
+
+        final_look = _camera_state_at(toolkit.store.get(), 71 / 24, toolkit.profile)
+        later = _camera_state_at(toolkit.store.get(), 5.0, toolkit.profile)
+
+        self.assertIsNotNone(final_look)
+        self.assertIsNotNone(later)
+        for expected, actual in zip(
+            final_look[0].rotation_quaternion_wxyz,
+            later[0].rotation_quaternion_wxyz,
+            strict=True,
+        ):
+            self.assertAlmostEqual(expected, actual, places=8)
+
+    def test_validated_explicit_hard_constraint_cannot_be_loosened(self) -> None:
+        toolkit = _solved_toolkit()
+        toolkit.validate_candidate()
+        original = toolkit.store.get().constraints["ship_clear_of_man"]
+        loosened = original.model_dump(mode="json")
+        loosened["parameters"]["minimum_meters"] = 0.0
+
+        result = toolkit.apply_constraint_patch([loosened], [])
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("不得改写已有 explicit hard constraint", result["warnings"][0])
+
+    def test_mapping_key_and_embedded_id_mismatch_is_a_hard_invariant(self) -> None:
+        toolkit = _toolkit()
+        entity = _sphere_entity("actual")
+
+        toolkit.store.apply(
+            lambda state: (
+                state.entities.__setitem__(
+                    "alias",
+                    EntitySpec.model_validate(entity),
+                )
+                or ([{"operation": "test", "path": "entities.alias"}], [])
+            )
+        )
+        validation = toolkit.validate_candidate(checks=["references"])
+
+        self.assertFalse(validation["data"]["hard_pass"])
+        self.assertIn(
+            "CANDIDATE_INVARIANT_INVALID",
+            {item["code"] for item in validation["violations"]},
+        )
+
+    def test_non_finite_path_coordinate_is_rejected_by_schema(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_sphere_entity("marker")], [])
+
+        result = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "invalid_path",
+                    "target_entity_id": "marker",
+                    "type": "path_follow",
+                    "time_range_seconds": [0.0, 6.0],
+                    "path": {
+                        "control_points": [[0.0, 0.0, 0.0], [float("nan"), 1.0, 0.0]],
+                    },
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+
+    def test_solver_does_not_relabel_local_transform_as_world_space(self) -> None:
+        toolkit = _toolkit()
+        parent = _sphere_entity("parent")
+        child = _sphere_entity("child", parent_id="parent")
+        child["solved_transform"].update(
+            {
+                "translation_m": [2.0, 0.0, 0.0],
+                "space": "local",
+            }
+        )
+        toolkit.apply_entity_patch([parent, child], [])
+
+        result = toolkit.solve_candidate(scope="layout")
+        solved = toolkit.store.get().entities["child"].solved_transform
+
+        self.assertIn(result["status"], {"ok", "no_change"})
+        self.assertEqual(solved.space, "local")
+        self.assertEqual(solved.translation_m, (2.0, 0.0, 0.0))
+
+    def test_camera_main_alias_resolves_custom_active_camera(self) -> None:
+        toolkit = _toolkit()
+        camera_result = toolkit.apply_camera_patch(
+            camera_id="camera_preview",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0},
+            tracks=[],
+            remove_track_ids=[],
+        )
+        constraint_result = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "custom_camera_focal",
+                    "type": "focal_length_range",
+                    "strength": "soft",
+                    "subjects": [],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "camera_id": "camera_main",
+                        "minimum_mm": 30.0,
+                        "maximum_mm": 40.0,
+                    },
+                    "source_status": "inferred",
+                    "source_ref": "content.camera.focal_length",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(camera_result["status"], "ok", camera_result)
+        self.assertEqual(constraint_result["status"], "ok", constraint_result)
+        toolkit.solve_candidate(scope="camera")
+        validation = toolkit.validate_candidate(checks=["camera"])
+        self.assertTrue(validation["data"]["hard_pass"], validation)
+        self.assertEqual(validation["data"]["soft_score"], 1.0)
+
+    def test_unknown_camera_id_is_not_silently_evaluated_on_active_camera(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_camera_patch(
+            camera_id="camera_preview",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0},
+            tracks=[],
+            remove_track_ids=[],
+        )
+
+        result = toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "missing_camera_focal",
+                    "type": "focal_length_range",
+                    "strength": "soft",
+                    "subjects": [],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "camera_id": "camera_that_does_not_exist",
+                        "minimum_mm": 30.0,
+                        "maximum_mm": 40.0,
+                    },
+                    "source_status": "inferred",
+                    "source_ref": "content.camera.focal_length",
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("不存在的实体", result["warnings"][0])
+
+    def test_track_entirely_after_last_output_frame_is_rejected(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_sphere_entity("marker")], [])
+
+        result = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "unrendered_motion",
+                    "target_entity_id": "marker",
+                    "type": "transform",
+                    "time_range_seconds": [5.99, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 5.99,
+                            "value": {"translation_m": [1.0, 0.0, 0.0]},
+                        }
+                    ],
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("不包含任何可渲染帧", result["warnings"][0])
+
+    def test_keyframe_after_last_output_frame_is_rejected(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_sphere_entity("marker")], [])
+
+        result = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "unrendered_keyframe",
+                    "target_entity_id": "marker",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [0.0, 0.0, 0.0]},
+                        },
+                        {
+                            "time_seconds": 5.999,
+                            "value": {"translation_m": [1.0, 0.0, 0.0]},
+                        },
+                    ],
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("关键帧晚于最后可渲染帧", result["warnings"][0])
+
 
 def _solved_toolkit() -> ScenePlanningToolkit:
     toolkit = _toolkit()
@@ -2443,7 +3014,7 @@ def _solved_toolkit() -> ScenePlanningToolkit:
                         "interpolation": "smooth",
                     },
                     {
-                        "time_seconds": 5.999,
+                        "time_seconds": 143 / 24,
                         "value": {"translation_m": [0.0, -7.0, 2.0]},
                         "interpolation": "smooth",
                     },
@@ -2632,7 +3203,12 @@ def _man_entity() -> dict:
         "entity_id": "man_01",
         "label": "男人代理",
         "role": "primary_subject",
-        "proxy": {"type": "capsule", "radius_m": 0.3, "segment_length_m": 1.2, "axis": "+Z"},
+        "proxy": {
+            "type": "capsule",
+            "radius_m": 0.3,
+            "segment_length_m": 1.2,
+            "axis": "+Z",
+        },
         "parent_id": None,
         "tags": ["person"],
         "locked_fields": [],

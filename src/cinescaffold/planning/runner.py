@@ -33,7 +33,10 @@ from cinescaffold.planning.domain import (
     PlanningProfile,
     UnsupportedResult,
 )
-from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
+from cinescaffold.planning.duration import (
+    attach_duration_resolution,
+    freeze_brief_duration,
+)
 from cinescaffold.planning.models import (
     build_deterministic_scene_skeleton,
     create_planning_model,
@@ -63,7 +66,6 @@ from cinescaffold.planning.trace import (
 )
 from cinescaffold.resources.paths import RuntimeResourcePaths
 
-
 DEFAULT_MAX_REQUESTS = 48
 DEFAULT_MAX_TOOL_CALLS = 80
 DEFAULT_MAX_CONTEXT_TOKENS = 128_000
@@ -91,9 +93,9 @@ class InterpreterRunConfig(BaseModel):
     max_seconds: float = Field(default=DEFAULT_MAX_SECONDS, gt=0)
     max_commit_attempts: int = Field(default=DEFAULT_MAX_COMMIT_ATTEMPTS, ge=1)
     thinking_mode: Literal["enabled", "disabled"] | None = None
-    reasoning_effort: Literal[
-        "none", "low", "medium", "high", "xhigh", "max"
-    ] | None = None
+    reasoning_effort: (
+        Literal["none", "low", "medium", "high", "xhigh", "max"] | None
+    ) = None
     model_max_tokens: int | None = Field(default=None, ge=1)
     full_power_diagnostic: bool = False
     trace_config: TraceConfig = Field(default_factory=TraceConfig)
@@ -102,7 +104,7 @@ class InterpreterRunConfig(BaseModel):
     initial_cost: Decimal = Field(default=Decimal(0), ge=0)
 
     @model_validator(mode="after")
-    def require_prices_for_cost_limit(self) -> "InterpreterRunConfig":
+    def require_prices_for_cost_limit(self) -> InterpreterRunConfig:
         if (
             self.max_cost is not None
             and not self.full_power_diagnostic
@@ -215,14 +217,19 @@ class InterpreterRunner:
                     "timeline",
                     "uncertainties",
                 ],
-                explicit_requirement_count=len(projection.objective_brief.explicit_requirements),
+                explicit_requirement_count=len(
+                    projection.objective_brief.explicit_requirements
+                ),
                 ignored_subjective_fields=[
-                    item.model_dump(mode="json") for item in projection.ignored_subjective_fields
+                    item.model_dump(mode="json")
+                    for item in projection.ignored_subjective_fields
                 ],
             )
             profile = PlanningProfile()
             if self.config.resume_from is not None:
-                resumed_raw = json.loads(self.config.resume_from.read_text(encoding="utf-8"))
+                resumed_raw = json.loads(
+                    self.config.resume_from.read_text(encoding="utf-8")
+                )
                 resolution = resumed_raw["candidate"]["timeline"]["duration_resolution"]
                 projection = projection.model_copy(
                     update={
@@ -251,7 +258,10 @@ class InterpreterRunner:
                     "duration_frozen_from_brief",
                     resolution=resolution.model_dump(mode="json"),
                 )
-            _write_json(run_dir / "objective_planning_brief.json", projection.model_dump(mode="json"))
+            _write_json(
+                run_dir / "objective_planning_brief.json",
+                projection.model_dump(mode="json"),
+            )
             api_key = _provider_api_key(self.config.provider, self.config.api_key)
             raw_model = create_planning_model(
                 self.config.provider,
@@ -267,7 +277,9 @@ class InterpreterRunner:
                 trace,
                 record_content=self.config.full_power_diagnostic,
                 cost_rates=self.config.cost_rates,
-                max_cost=(None if self.config.full_power_diagnostic else self.config.max_cost),
+                max_cost=(
+                    None if self.config.full_power_diagnostic else self.config.max_cost
+                ),
                 initial_cost=self.config.initial_cost,
             )
             if self.config.full_power_diagnostic:
@@ -294,7 +306,9 @@ class InterpreterRunner:
                 projection.objective_brief,
                 profile,
                 initial_candidate=(
-                    resumed_checkpoint.candidate if resumed_checkpoint is not None else None
+                    resumed_checkpoint.candidate
+                    if resumed_checkpoint is not None
+                    else None
                 ),
             )
             if resumed_checkpoint is not None:
@@ -385,7 +399,9 @@ class InterpreterRunner:
                             toolkit,
                             stage="design_search",
                             failure_class="no_progress",
-                            attempts_remaining=_attempts_remaining(self.config, attempt),
+                            attempts_remaining=_attempts_remaining(
+                                self.config, attempt
+                            ),
                             design_failure=error.failure,
                         )
                         trace.record(
@@ -408,7 +424,9 @@ class InterpreterRunner:
                             toolkit,
                             stage="agent_response",
                             failure_class="invalid_or_truncated_model_response",
-                            attempts_remaining=_attempts_remaining(self.config, attempt),
+                            attempts_remaining=_attempts_remaining(
+                                self.config, attempt
+                            ),
                         )
                         trace.record(
                             "planning_recovery_requested",
@@ -462,7 +480,11 @@ class InterpreterRunner:
 
                     recovery_context = _recovery_context(
                         toolkit,
-                        stage=("commit_gate" if status == "commit_rejected" else "agent_terminal"),
+                        stage=(
+                            "commit_gate"
+                            if status == "commit_rejected"
+                            else "agent_terminal"
+                        ),
                         failure_class=status,
                         attempts_remaining=_attempts_remaining(self.config, attempt),
                         violations=(
@@ -564,7 +586,52 @@ class InterpreterRunner:
         except Exception as error:
             status = "failed"
             error_payload = {"type": type(error).__name__, "message": str(error)}
-            trace.record("run_failed", status=status, error=error_payload)
+            if (
+                not self.config.full_power_diagnostic
+                and toolkit is not None
+                and projection is not None
+                and profile is not None
+            ):
+                trace.record(
+                    "planning_recovery_requested",
+                    stage="pipeline_exception",
+                    error=error_payload,
+                )
+                try:
+                    toolkit, commit_result, recovery_context = (
+                        _commit_simplified_delivery_with_checkpoint(
+                            toolkit,
+                            projection,
+                            profile,
+                            run_dir=run_dir,
+                            run_id=run_id,
+                            trace_path=trace_path,
+                            trace=trace,
+                            failure_class=f"pipeline_exception:{type(error).__name__}",
+                            previous_context={
+                                "stage": "pipeline_exception",
+                                "failure_class": "failed",
+                                "error": error_payload,
+                            },
+                        )
+                    )
+                except Exception as fallback_error:
+                    trace.record(
+                        "run_failed",
+                        status=status,
+                        error=error_payload,
+                        simplified_delivery_error={
+                            "type": type(fallback_error).__name__,
+                            "message": str(fallback_error),
+                        },
+                    )
+                else:
+                    status = "success"
+                    terminal_type = "simplified_delivery"
+                    delivery_tier = "simplified"
+                    error_payload = None
+            else:
+                trace.record("run_failed", status=status, error=error_payload)
 
         artifacts = _persist_run_artifacts(
             run_dir,
@@ -579,7 +646,9 @@ class InterpreterRunner:
         final_revision = (
             toolkit.store.committed_revision
             if toolkit and toolkit.store.committed_revision is not None
-            else toolkit.store.current_revision if toolkit else 0
+            else toolkit.store.current_revision
+            if toolkit
+            else 0
         )
         summary = InterpreterRunResult(
             run_id=run_id,
@@ -681,6 +750,9 @@ def _route_context_index(objective: ObjectivePlanningBrief) -> dict[str, Any]:
             "subject_id": item.get("subject_id"),
             "reference_id": item.get("reference_id"),
             "type": item.get("type"),
+            "strength": item.get("strength"),
+            "event_id": item.get("timeline_event_id"),
+            "temporal_mode": item.get("temporal_mode", "throughout"),
             "source_status": item.get("source_status"),
         }
         for item in objective.scene_design.get("relationships", [])
@@ -913,7 +985,26 @@ def _commit_simplified_delivery(
                 raise RuntimeError(
                     f"deterministic fallback produced no safe design baseline: {options['warnings']}"
                 )
-            selected = baselines[0]
+            # A repair baseline is only useful to product fallback when it can
+            # actually pass the simplified-delivery gate.  Ranking solely by
+            # full-fidelity error count can choose an unshippable baseline over
+            # one whose only defects are presentation quality.
+            deliverable_baselines = []
+            for item in baselines:
+                if item.get("simplified_delivery_eligible") is True:
+                    deliverable_baselines.append(item)
+            if not deliverable_baselines:
+                raise RuntimeError(
+                    "deterministic fallback produced no narrative-complete design baseline"
+                )
+            selected = min(
+                deliverable_baselines,
+                key=lambda item: (
+                    item["predicted"]["hard_violation_count"],
+                    -float(item["predicted"]["soft_score"]),
+                    item["baseline_id"],
+                ),
+            )
             applied = toolkit.begin_design_repair(
                 selected["base_revision"],
                 selected["baseline_id"],
@@ -1073,7 +1164,9 @@ def _provider_api_key(provider: str, configured: str | None = None) -> str | Non
 
 def _planning_model_settings(config: InterpreterRunConfig) -> dict[str, Any]:
     settings: dict[str, Any] = {}
-    reasoning_effort = "max" if config.full_power_diagnostic else config.reasoning_effort
+    reasoning_effort = (
+        "max" if config.full_power_diagnostic else config.reasoning_effort
+    )
     thinking_mode = "enabled" if config.full_power_diagnostic else config.thinking_mode
     model_max_tokens = None if config.full_power_diagnostic else config.model_max_tokens
     if reasoning_effort is not None:
