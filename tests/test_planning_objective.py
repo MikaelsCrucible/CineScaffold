@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from cinescaffold.planning.objective import project_objective_brief
+from cinescaffold.planning.objective import (
+    ObjectivePlanningBrief,
+    has_subject_spatial_motion,
+    project_objective_brief,
+)
 from cinescaffold.semantic_rules import apply_translation_rules, load_translation_rules
 from tests.helpers import valid_model_output
 from tests.helpers import ROOT
@@ -84,9 +88,13 @@ class ObjectiveProjectionTest(unittest.TestCase):
         )
         ignored = {item.path: item.reason for item in result.ignored_subjective_fields}
         self.assertIn("content.scene_design.environmental_motion", ignored)
-        self.assertIn("最终视频生成层", ignored["content.scene_design.environmental_motion"])
+        self.assertIn(
+            "最终视频生成层", ignored["content.scene_design.environmental_motion"]
+        )
 
-    def test_v02_passes_quantitative_objectives_but_strips_feeling_and_lighting(self) -> None:
+    def test_v02_passes_quantitative_objectives_but_strips_feeling_and_lighting(
+        self,
+    ) -> None:
         brief = _valid_brief()
         brief["content"]["mood"]["emotional_tones"] = [
             {
@@ -97,7 +105,10 @@ class ObjectiveProjectionTest(unittest.TestCase):
         ]
         normalized, parameters = apply_translation_rules(
             brief["content"],
-            load_translation_rules(ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"),
+            load_translation_rules(
+                ROOT
+                / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
+            ),
         )
         brief["schema_version"] = "0.2"
         brief["content"] = normalized
@@ -135,7 +146,42 @@ class ObjectiveProjectionTest(unittest.TestCase):
         self.assertEqual(objective.scene_dynamics["mode"], "static")
         self.assertIn("主体运动与状态转换", objective.scene_dynamics["reason"])
 
-    def test_projection_repairs_legacy_camera_parameters_that_conflict_with_explicit_motion(self) -> None:
+    def test_loading_legacy_objective_recovers_subject_only_dynamics(self) -> None:
+        projected = project_objective_brief(_valid_brief()).objective_brief
+        payload = projected.model_dump(mode="json")
+        payload.pop("scene_dynamics")
+        payload["subject_motion"] = [
+            {
+                "subject_id": "legacy_actor",
+                "motion_semantics": {
+                    "motion_mode": "stationary",
+                    "postconditions": {
+                        "contained_by_id": None,
+                        "external_visibility": "unchanged",
+                    },
+                },
+                "trajectory": {"value": "静止"},
+            }
+        ]
+
+        restored = ObjectivePlanningBrief.model_validate(payload)
+
+        self.assertEqual(restored.scene_dynamics["mode"], "static")
+        self.assertFalse(has_subject_spatial_motion(restored))
+
+        payload["subject_motion"][0].pop("motion_semantics")
+        payload["subject_motion"][0]["trajectory"] = {
+            "value": "直线",
+            "source_status": "inferred",
+            "source_text": None,
+        }
+        moving = ObjectivePlanningBrief.model_validate(payload)
+        self.assertEqual(moving.scene_dynamics["mode"], "dynamic")
+        self.assertTrue(has_subject_spatial_motion(moving))
+
+    def test_projection_repairs_legacy_camera_parameters_that_conflict_with_explicit_motion(
+        self,
+    ) -> None:
         brief = _valid_brief()
         brief["content"]["camera"]["movement"]["type"] = {
             "value": "缓慢推近",
@@ -145,7 +191,8 @@ class ObjectiveProjectionTest(unittest.TestCase):
         normalized, parameters = apply_translation_rules(
             brief["content"],
             load_translation_rules(
-                ROOT / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
+                ROOT
+                / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
             ),
         )
         parameters["camera"].update(
@@ -160,7 +207,9 @@ class ObjectiveProjectionTest(unittest.TestCase):
         brief["translation_parameters"] = parameters
         brief["provenance"]["translation_rules_sha256"] = "1" * 64
 
-        camera = project_objective_brief(brief).objective_brief.translation_parameters["camera"]
+        camera = project_objective_brief(brief).objective_brief.translation_parameters[
+            "camera"
+        ]
 
         self.assertEqual(camera["movement"], "push_in")
         self.assertLess(camera["end_distance_m"], camera["start_distance_m"])

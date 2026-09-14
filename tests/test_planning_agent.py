@@ -22,6 +22,8 @@ from pydantic_ai.tools import ToolDefinition
 from cinescaffold.planning.agent import (
     ConstraintPatchInput,
     DesignSearchStalled,
+    EntityPatchInput,
+    EscalatedEntityPatchInput,
     NON_TOOL_TEXT_MARKER,
     PathPatchInput,
     PlanningDeps,
@@ -57,7 +59,9 @@ from tests.test_planning_toolkit import (
 
 
 class PlanningProtocolTest(unittest.TestCase):
-    def test_agent_patch_schemas_are_compact_but_domain_validation_stays_strict(self) -> None:
+    def test_agent_patch_schemas_are_compact_but_domain_validation_stays_strict(
+        self,
+    ) -> None:
         compact_chars = len(json.dumps(TrackPatchInput.model_json_schema()))
         domain_chars = len(json.dumps(TrackSpec.model_json_schema()))
         constraint_chars = len(json.dumps(ConstraintPatchInput.model_json_schema()))
@@ -66,11 +70,22 @@ class PlanningProtocolTest(unittest.TestCase):
         # 坐标契约增加少量说明后仍需显著小于完整领域联合。
         self.assertLess(compact_chars, domain_chars * 0.7)
         self.assertLess(constraint_chars, domain_constraint_chars * 0.4)
-        constraint_types = ConstraintPatchInput.model_json_schema()["properties"]["type"]["enum"]
+        constraint_types = ConstraintPatchInput.model_json_schema()["properties"][
+            "type"
+        ]["enum"]
         self.assertIn("projected_size", constraint_types)
         self.assertNotIn("event_order", constraint_types)
+        self.assertNotIn(
+            "solved_transform", EntityPatchInput.model_json_schema()["properties"]
+        )
+        self.assertIn(
+            "solved_transform",
+            EscalatedEntityPatchInput.model_json_schema()["properties"],
+        )
 
-    def test_path_tool_schema_exposes_coordinate_and_direction_conventions(self) -> None:
+    def test_path_tool_schema_exposes_coordinate_and_direction_conventions(
+        self,
+    ) -> None:
         properties = PathPatchInput.model_json_schema()["properties"]
 
         self.assertIn("+Z", properties["plane_normal"]["description"])
@@ -117,7 +132,11 @@ class PlanningProtocolTest(unittest.TestCase):
             )
             messages.append(
                 ModelRequest(
-                    parts=[ToolReturnPart("inspect_candidate", {"revision": index}, call_id)]
+                    parts=[
+                        ToolReturnPart(
+                            "inspect_candidate", {"revision": index}, call_id
+                        )
+                    ]
                 )
             )
 
@@ -235,14 +254,18 @@ class PlanningProtocolTest(unittest.TestCase):
             second = _compact_tool_call_history(_context(deps), [response])
             events = [
                 json.loads(line)
-                for line in (Path(directory) / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+                for line in (Path(directory) / "trace.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
             ]
 
         self.assertEqual(first[0].parts[0].content, NON_TOOL_TEXT_MARKER)
         self.assertEqual(second[0].parts[0].content, NON_TOOL_TEXT_MARKER)
         self.assertLess(len(first[0].parts[0].content), 100)
         compact_events = [
-            event for event in events if event["event_type"] == "model_non_tool_text_compacted"
+            event
+            for event in events
+            if event["event_type"] == "model_non_tool_text_compacted"
         ]
         self.assertEqual(len(compact_events), 1)
         self.assertEqual(compact_events[0]["payload"]["omitted_chars"], 10_000)
@@ -256,7 +279,11 @@ class PlanningProtocolTest(unittest.TestCase):
             )
             messages.append(
                 ModelRequest(
-                    parts=[ToolReturnPart("inspect_candidate", {"revision": index}, call_id)]
+                    parts=[
+                        ToolReturnPart(
+                            "inspect_candidate", {"revision": index}, call_id
+                        )
+                    ]
                 )
             )
 
@@ -271,7 +298,9 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertIsInstance(compacted[-1], ModelRequest)
         self.assertIn("model_history_compacted", trace)
 
-    def test_tool_result_coalesces_adjacent_frame_violations_for_agent_only(self) -> None:
+    def test_tool_result_coalesces_adjacent_frame_violations_for_agent_only(
+        self,
+    ) -> None:
         sampled = [
             _sampled_ground_violation("frame_0", 0.0, 0.5),
             _sampled_ground_violation("frame_1", 1 / 24, 2.0),
@@ -295,9 +324,9 @@ class PlanningProtocolTest(unittest.TestCase):
             )
             events = [
                 json.loads(line)
-                for line in (Path(directory) / "trace.jsonl").read_text(
-                    encoding="utf-8"
-                ).splitlines()
+                for line in (Path(directory) / "trace.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
             ]
 
         agent_violations = result["violations"]
@@ -402,9 +431,7 @@ class PlanningProtocolTest(unittest.TestCase):
             self.assertIsNone(
                 asyncio.run(_prepare_design_apply_tool(context, sentinel))
             )
-            self.assertIsNone(
-                asyncio.run(_prepare_candidate_tool(context, sentinel))
-            )
+            self.assertIsNone(asyncio.run(_prepare_candidate_tool(context, sentinel)))
 
     def test_failed_design_search_reopens_symbolic_skeleton(self) -> None:
         sentinel = object()
@@ -425,9 +452,7 @@ class PlanningProtocolTest(unittest.TestCase):
                 ],
             )
 
-            prepared = asyncio.run(
-                _prepare_scene_skeleton_tool(context, sentinel)
-            )
+            prepared = asyncio.run(_prepare_scene_skeleton_tool(context, sentinel))
             resubmitted = deps.call_tool(
                 "submit_scene_skeleton",
                 {"skeleton": _desert_skeleton()},
@@ -444,7 +469,9 @@ class PlanningProtocolTest(unittest.TestCase):
             deps = _deps(
                 Path(directory),
                 _toolkit(),
-                checkpoint_writer=lambda candidate: _checkpoint(candidate.revision, checkpoints),
+                checkpoint_writer=lambda candidate: _checkpoint(
+                    candidate.revision, checkpoints
+                ),
             )
             _read_capabilities(deps)
             arguments = {"view": "summary", "revision": None}
@@ -476,13 +503,34 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertIn("CommitRequest", result["next_actions"][0])
 
+    def test_partial_hard_pass_does_not_close_candidate_tools(self) -> None:
+        toolkit = _solved_toolkit()
+        partial = toolkit.validate_candidate(checks=["references"])
+        sentinel = object()
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), toolkit)
+            _read_capabilities(deps)
+            prepared = asyncio.run(_prepare_candidate_tool(_context(deps), sentinel))
+            inspected = deps.call_tool(
+                "inspect_candidate",
+                {"view": "summary", "revision": None},
+                lambda: toolkit.inspect_candidate(view="summary"),
+            )
+
+        self.assertTrue(partial["data"]["hard_pass"])
+        self.assertFalse(partial["data"]["commit_ready"])
+        self.assertIs(prepared, sentinel)
+        self.assertEqual(inspected["status"], "ok")
+
     def test_historical_inspect_does_not_write_checkpoint(self) -> None:
         checkpoints: list[int] = []
         with tempfile.TemporaryDirectory() as directory:
             deps = _deps(
                 Path(directory),
                 _toolkit(),
-                checkpoint_writer=lambda candidate: _checkpoint(candidate.revision, checkpoints),
+                checkpoint_writer=lambda candidate: _checkpoint(
+                    candidate.revision, checkpoints
+                ),
             )
             _read_capabilities(deps)
             deps.call_tool(
@@ -511,9 +559,7 @@ class PlanningProtocolTest(unittest.TestCase):
             _read_capabilities(deps)
             context = _context(deps)
 
-            before = asyncio.run(
-                _prepare_repair_suggestion_tool(context, sentinel)
-            )
+            before = asyncio.run(_prepare_repair_suggestion_tool(context, sentinel))
             deps.call_tool(
                 "validate_candidate",
                 {"checks": ["motion"]},
@@ -526,16 +572,16 @@ class PlanningProtocolTest(unittest.TestCase):
             suggestion_after_search = asyncio.run(
                 _prepare_repair_suggestion_tool(context, sentinel)
             )
-            apply_ready = asyncio.run(
-                _prepare_repair_apply_tool(context, sentinel)
-            )
+            apply_ready = asyncio.run(_prepare_repair_apply_tool(context, sentinel))
 
         self.assertIsNone(before)
         self.assertIs(suggestion_ready, sentinel)
         self.assertIsNone(suggestion_after_search)
         self.assertIs(apply_ready, sentinel)
 
-    def test_manual_mutation_reopens_after_deterministic_repair_is_exhausted(self) -> None:
+    def test_manual_mutation_reopens_after_deterministic_repair_is_exhausted(
+        self,
+    ) -> None:
         toolkit = _projected_motion_toolkit(
             end_position=(0.0, 0.0, 0.9),
             camera_position=(0.0, -10.0, 1.5),
@@ -549,9 +595,7 @@ class PlanningProtocolTest(unittest.TestCase):
             legacy_prepared = asyncio.run(
                 _prepare_manual_mutation_tool(context, sentinel)
             )
-            prepared = asyncio.run(
-                _prepare_escalated_candidate_tool(context, sentinel)
-            )
+            prepared = asyncio.run(_prepare_escalated_candidate_tool(context, sentinel))
             repair_tool = ToolDefinition(
                 name="apply_candidate_patch",
                 description="组合修复。",
@@ -600,9 +644,7 @@ class PlanningProtocolTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             context = _context(_deps(Path(directory), toolkit))
 
-            prepared = asyncio.run(
-                _prepare_escalated_candidate_tool(context, sentinel)
-            )
+            prepared = asyncio.run(_prepare_escalated_candidate_tool(context, sentinel))
 
         self.assertIs(prepared, sentinel)
         self.assertFalse(toolkit.has_exhausted_repair_search)

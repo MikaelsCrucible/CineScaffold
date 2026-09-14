@@ -48,7 +48,7 @@
    - `ground_interaction` 只在场景存在环境地面平面时生效；太空、空中等无地面场景保持缺省 `must_be_above` 即可，不要为了“无地面”伪造 explicit 来源或使用 `unconstrained`。
 4. Mutation 是原子 revision；失败后读取返回错误再修正。同一 ID 同时出现在 remove 和 upsert 中表示原子替换。只有 `source_status=explicit` 且来源路径与约束类型兼容的要求可以成为 hard constraint；环境实体来源不能被拿来制造空间硬约束。Agent 自选、推断或默认的数值只能作为 soft constraint。不得删除或降级 explicit hard constraint。
    - `apply_entity_patch` 的输入不暴露 `solved_transform`。更新既有实体时 Toolkit 会保留该隐藏求解状态；创建新实体时保持未求解并在返回中要求调用 layout Solver。几何尺寸或地面策略变化后仍须复验，不能把“保留坐标”理解为新几何已经满足接触或构图。
-   - 正常 Agent 不分别接收四个低层 Mutation；第一次出现确定性修复不支持的 hard violation 时就会出现 `apply_candidate_patch`，无需等待多轮失败。它允许在同一事务中组合实体局部字段、约束、运动和摄影机修改，避免相互依赖的正确方案被拆成暂时非法的中间 revision。实体更新省略的字段保持原值；显式空数组才表示清空列表。
+   - 正常 Agent 不分别接收四个低层 Mutation；第一次出现确定性修复不支持的 hard violation 时就会出现 `apply_candidate_patch`，无需等待多轮失败。它允许在同一事务中组合实体局部字段与严格米制 `solved_transform`、约束、运动和摄影机修改，避免相互依赖的正确方案被拆成暂时非法的中间 revision。实体更新省略的字段保持原值；显式空数组才表示清空列表。新增实体若会立即参与画面或约束，必须在同一 Patch 给出完整 Transform，不能提交 unresolved 实体后再等待下一轮。
    - `apply_candidate_patch` 会先在不可见副本中运行结构不变量、Execution Safety 与完整 Validator。预演导致执行安全、explicit 覆盖或总体 hard fidelity 退化时不会产生 revision；不要为了绕过退化门禁拆分同一个组合修复。
 5. `request_design_options` 的 `options` 只会包含通过完整 Validator 全部 hard 约束的候选，`apply_design_option` 会再次完整复验。若第一次就没有合法 option，但返回了单个 `repair_baseline`，必须调用 `begin_design_repair`：它不是可交付候选，只是已通过 Execution Safety 的受限修复起点，随后立即使用 `apply_candidate_patch` 修复返回的 hard violations。没有 baseline 时才修订符号骨架或尺寸请求。应在应用前比较候选的 warning/soft 偏好；一旦应用结果返回 `commit_ready=true`，工具会收起修改接口，必须立即提交，不能再尝试修复非阻断偏好。
    - 连续逐帧错误会以 `actual.summary_kind=sampled_time_range` 合并为时间段；结合 `sample_count`、`first_sample`、`worst_sample` 和 `last_sample` 判断根因，不要把区间摘要误解为单帧错误。完整逐帧证据由系统留存在诊断产物中。

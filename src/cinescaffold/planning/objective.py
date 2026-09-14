@@ -5,7 +5,7 @@ import json
 from copy import deepcopy
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from cinescaffold.relationships import (
     CANONICAL_RELATIONSHIP_TYPES,
@@ -72,6 +72,25 @@ class ObjectivePlanningBrief(_StrictModel):
     explicit_requirements: list[ObjectiveRequirement] = Field(default_factory=list)
     source_metadata: BriefSourceMetadata
 
+    @model_validator(mode="before")
+    @classmethod
+    def restore_legacy_scene_dynamics(cls, value: Any) -> Any:
+        """Derive subject-only dynamics when loading pre-field artifacts."""
+
+        if not isinstance(value, dict) or "scene_dynamics" in value:
+            return value
+        normalized = dict(value)
+        legacy_dynamic = _legacy_subject_scene_is_dynamic(
+            {"subject_motion": normalized.get("subject_motion", [])},
+            normalized.get("translation_parameters"),
+        )
+        normalized["scene_dynamics"] = {
+            "mode": "dynamic" if legacy_dynamic else "static",
+            "source_status": "default",
+            "reason": "旧版 Objective 产物按主体运动与状态转换兼容恢复",
+        }
+        return normalized
+
 
 class ObjectiveProjection(_StrictModel):
     objective_brief: ObjectivePlanningBrief
@@ -101,8 +120,8 @@ def has_subject_spatial_motion(objective: ObjectivePlanningBrief) -> bool:
     # prose or invent a target from it.
     return any(
         isinstance(motion, dict)
-        and isinstance(motion.get("trajectory"), dict)
-        and motion["trajectory"].get("value") not in {None, ""}
+        and not isinstance(motion.get("motion_semantics"), dict)
+        and _legacy_trajectory_implies_translation(motion.get("trajectory"))
         for motion in objective.subject_motion
     )
 
@@ -259,10 +278,28 @@ def _legacy_subject_scene_is_dynamic(
         return True
     return any(
         isinstance(motion, dict)
-        and isinstance(motion.get("trajectory"), dict)
-        and motion["trajectory"].get("value") not in {None, ""}
+        and not isinstance(motion.get("motion_semantics"), dict)
+        and _legacy_trajectory_implies_translation(motion.get("trajectory"))
         for motion in content.get("subject_motion", [])
     )
+
+
+def _legacy_trajectory_implies_translation(value: Any) -> bool:
+    """Interpret only the legacy trajectory slot, never free-form action prose."""
+
+    if not isinstance(value, dict):
+        return False
+    normalized = str(value.get("value") or "").strip().lower()
+    if not normalized:
+        return False
+    return normalized not in {
+        "静止",
+        "无位移",
+        "无",
+        "none",
+        "static",
+        "stationary",
+    }
 
 
 def _collect_explicit_requirements(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
@@ -253,10 +252,9 @@ def build_deterministic_scene_skeleton(
     }
     if ground_id:
         for entity_id, category in categories.items():
-            if (
-                entity_id not in declared_ground_subjects
-                and _mock_proxy_family(category) in {"human_capsule", "vehicle_box"}
-            ):
+            if entity_id not in declared_ground_subjects and _mock_proxy_family(
+                category
+            ) in {"human_capsule", "vehicle_box"}:
                 relations.append(
                     {
                         "relation_id": f"ground_{entity_id}",
@@ -292,7 +290,9 @@ def build_deterministic_scene_skeleton(
             "kind": kind,
             "subject_id": subject_id,
             "reference_id": reference_id,
-            "source_status": relationship.get("source_status", "inferred"),
+            "source_status": _planning_source_status(
+                relationship.get("source_status"),
+            ),
             "source_ref": f"content.scene_design.relationships[{index}]",
             "timeline_event_id": relationship.get("timeline_event_id"),
             "temporal_mode": relationship.get("temporal_mode", "throughout"),
@@ -324,6 +324,32 @@ def build_deterministic_scene_skeleton(
             _annotated_value(motion.get("speed")),
             motion_type,
         )
+        semantics_status = _planning_source_status(
+            semantics.get("source_status"),
+        )
+        action_status = (
+            _planning_source_status(
+                motion.get("action", {}).get("source_status"),
+            )
+            if isinstance(motion.get("action"), dict)
+            else "inferred"
+        )
+        if semantics_status == "explicit":
+            phase_source_status = semantics_status
+            phase_source_ref = f"content.subject_motion[{index}].motion_semantics"
+        elif action_status == "explicit":
+            # The typed interpretation may be inferred even though the user's
+            # action itself is explicit. Keep that user requirement attached to
+            # the phase that actually implements it.
+            phase_source_status = action_status
+            phase_source_ref = f"content.subject_motion[{index}].action"
+        else:
+            phase_source_status = semantics_status
+            phase_source_ref = (
+                f"content.subject_motion[{index}].motion_semantics"
+                if semantics
+                else f"content.subject_motion[{index}].action"
+            )
         motion_mode = semantics.get("motion_mode")
         if motion_mode == "carried":
             kind = "carried"
@@ -417,17 +443,8 @@ def build_deterministic_scene_skeleton(
                     and motion["speed"].get("source_status") != "unknown"
                     else None
                 ),
-                "source_status": semantics.get("source_status")
-                or (
-                    motion.get("action", {}).get("source_status", "inferred")
-                    if isinstance(motion.get("action"), dict)
-                    else "inferred"
-                ),
-                "source_ref": (
-                    f"content.subject_motion[{index}].motion_semantics"
-                    if semantics
-                    else f"content.subject_motion[{index}].action"
-                ),
+                "source_status": phase_source_status,
+                "source_ref": phase_source_ref,
                 "narrative_required": bool(semantics.get("narrative_required")),
             }
         )
@@ -489,8 +506,8 @@ def build_deterministic_scene_skeleton(
                     "speed_source_ref": None,
                     "visibility_state": postconditions["external_visibility"],
                     "transition_at": "at_end",
-                    "source_status": semantics.get("source_status", "inferred"),
-                    "source_ref": f"content.subject_motion[{index}].motion_semantics",
+                    "source_status": phase_source_status,
+                    "source_ref": phase_source_ref,
                     "narrative_required": bool(semantics.get("narrative_required")),
                 }
             )
@@ -550,15 +567,22 @@ def build_deterministic_scene_skeleton(
             "route_id": f"route_{subject_id}",
             "subject_id": subject_id,
             "anchors": anchors,
-            "continuity": "preserve_direction",
+            # A proximity event establishes a waypoint, not a globally straight
+            # route. Direction continuity must come from an explicit route axis
+            # or the planner's scene-level judgment; the deterministic fallback
+            # must not turn one local meeting point into a no-turn hard rule.
+            "continuity": "allow_turns",
         }
         for subject_id, anchors in sorted(route_anchors.items())
     ]
 
     focus_target = _annotated_value(objective.camera.get("focus_target_id"))
-    movement = classify_camera_movement(
-        _annotated_value(objective.camera.get("movement", {}).get("type"))
-    ) or "static"
+    movement = (
+        classify_camera_movement(
+            _annotated_value(objective.camera.get("movement", {}).get("type"))
+        )
+        or "static"
+    )
     movement_status = (
         objective.camera.get("movement", {})
         .get("type", {})
@@ -610,6 +634,19 @@ def _mock_scene_skeleton(objective: ObjectivePlanningBrief) -> dict[str, Any]:
     return build_deterministic_scene_skeleton(objective)
 
 
+def _planning_source_status(
+    value: Any,
+    *,
+    fallback: Any = "inferred",
+) -> str:
+    """Collapse boundary-only ``unknown`` into a non-hard Planning status."""
+
+    allowed = {"explicit", "inferred", "default", "agent_selected"}
+    if value in allowed:
+        return str(value)
+    return str(fallback) if fallback in allowed else "inferred"
+
+
 def _mock_proxy_family(category: str) -> str:
     lowered = category.lower()
     if _contains_category_marker(
@@ -652,7 +689,19 @@ def _mock_proxy_family(category: str) -> str:
     # above, so 月球车 and 太阳能车 still remain vehicles.
     if _contains_category_marker(
         lowered,
-        ("太阳", "地球", "月亮", "月球", "卫星", "sun", "earth", "moon", "planet", "satellite", "star"),
+        (
+            "太阳",
+            "地球",
+            "月亮",
+            "月球",
+            "卫星",
+            "sun",
+            "earth",
+            "moon",
+            "planet",
+            "satellite",
+            "star",
+        ),
     ):
         return "celestial_sphere"
     if _contains_category_marker(
@@ -703,23 +752,8 @@ def _environment_supports_ground(
 ) -> bool:
     """Do not invent a support plane for space, blank, or volumetric scenes."""
 
-    scene = (objective.translation_parameters or {}).get("scene", {})
-    asset_key = scene.get("asset_key") if isinstance(scene, dict) else None
-    if isinstance(asset_key, str):
-        if asset_key in {
-            "desert",
-            "city",
-            "interior",
-            "forest",
-            "mountain",
-            "snowfield",
-            "ruins",
-        }:
-            return True
-        if asset_key in {"space", "ocean", "blank"}:
-            return False
     lowered = environment.lower()
-    return _contains_category_marker(
+    if _contains_category_marker(
         lowered,
         (
             "荒漠",
@@ -752,7 +786,26 @@ def _environment_supports_ground(
             "field",
             "ground",
         ),
-    )
+    ):
+        # The semantic environment is the primary source. A coarse `blank`
+        # asset fallback must not erase an explicit road, room, or terrain.
+        return True
+    scene = (objective.translation_parameters or {}).get("scene", {})
+    asset_key = scene.get("asset_key") if isinstance(scene, dict) else None
+    if isinstance(asset_key, str):
+        if asset_key in {
+            "desert",
+            "city",
+            "interior",
+            "forest",
+            "mountain",
+            "snowfield",
+            "ruins",
+        }:
+            return True
+        if asset_key in {"space", "ocean", "blank"}:
+            return False
+    return False
 
 
 def _mock_scale_intent(subject: dict[str, Any]) -> str:

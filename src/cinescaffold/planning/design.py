@@ -2007,7 +2007,16 @@ def _build_motion(
                 else {}
             )
             first_motion_start = _phase_range(objective, first, duration)[0]
-            can_reposition_initial = first_motion_start <= 1e-9
+            has_prior_authored_state = any(
+                phase is not first
+                and phase.kind != "visibility"
+                and _phase_range(objective, phase, duration)[0]
+                < first_motion_start - 1e-9
+                for phase in phases
+            )
+            can_stage_initial = (
+                first_motion_start <= 1e-9 or not has_prior_authored_state
+            )
             first_end_anchor = next(
                 (
                     (index, route_anchors[(phase.phase_id, "at_end")])
@@ -2016,17 +2025,7 @@ def _build_motion(
                 ),
                 None,
             )
-            if (
-                can_reposition_initial
-                and first.direction_mode
-                in {
-                    "none",
-                    "world_forward",
-                    "world_left",
-                    "world_right",
-                }
-                and first_end_anchor is not None
-            ):
+            if can_stage_initial and first_end_anchor is not None:
                 anchor_index, anchor = first_end_anchor
                 anchor_phase = moving[anchor_index]
                 _, anchor_end = _phase_range(objective, anchor_phase, duration)
@@ -2053,9 +2052,10 @@ def _build_motion(
                     subject_id
                 ].solved_transform.model_copy(update={"translation_m": tuple(position)})
             if (
-                can_reposition_initial
-                and first.direction_mode == "toward_target"
+                first.direction_mode == "toward_target"
                 and first.target_id
+                and first_end_anchor is None
+                and can_stage_initial
             ):
                 # 让“接近”阶段拥有可见的初始距离，避免代理一开始已经贴着目标。
                 target = candidate.entities[first.target_id]
@@ -2237,6 +2237,15 @@ def _build_motion(
                 keyframes=_deduplicate_keyframes(keyframes),
                 interpolation="smooth",
                 source_ref=moving[0].source_ref,
+                source_refs=sorted(
+                    {
+                        source_ref
+                        for phase in positional_phases
+                        for source_ref in (phase.source_ref, phase.speed_source_ref)
+                        if source_ref is not None
+                    }
+                    - {moving[0].source_ref}
+                ),
             )
             tracks[track.track_id] = track
 
@@ -2260,13 +2269,27 @@ def _build_motion(
                 changed_rotation = (
                     quaternion_multiply(
                         baseline_mid.rotation_quaternion_wxyz,
-                        (math.cos(angle), math.sin(angle), 0.0, 0.0),
+                        # Use the canonical up axis for a generic local pose
+                        # change. Tilting around X/Y makes a centered grounded
+                        # proxy penetrate the floor even though no translation
+                        # was authored.
+                        (math.cos(angle), 0.0, 0.0, math.sin(angle)),
                     )
                     if "rotation" in phase.local_components
                     else baseline_mid.rotation_quaternion_wxyz
                 )
                 changed_scale = (
-                    tuple(value * 1.08 for value in baseline_mid.scale)
+                    tuple(
+                        value
+                        * (
+                            1.0
+                            if candidate.entities[subject_id].ground_interaction.mode
+                            == "must_touch"
+                            and axis == 2
+                            else 1.08
+                        )
+                        for axis, value in enumerate(baseline_mid.scale)
+                    )
                     if "scale" in phase.local_components
                     else baseline_mid.scale
                 )
@@ -2393,6 +2416,7 @@ def _build_motion(
                 ),
                 interpolation="step",
                 source_ref=source_ref,
+                source_refs=sorted({item[2] for item in transitions} - {source_ref}),
             )
             tracks[track.track_id] = track
     return tracks
@@ -2530,6 +2554,10 @@ def _build_camera(
     motion_start, motion_end = _camera_motion_range(objective, duration)
     active_motion_duration = motion_end - motion_start
     tracks: dict[str, TrackSpec] = {}
+    camera_motion_source_refs = sorted(
+        _implemented_camera_motion_source_refs(objective, skeleton)
+        - {skeleton.camera_intent.source_ref}
+    )
     if movement in {"push_in", "pull_out", "lateral"}:
         if movement == "lateral":
             travel = max(
@@ -2579,6 +2607,7 @@ def _build_camera(
             ],
             interpolation="smooth",
             source_ref=skeleton.camera_intent.source_ref,
+            source_refs=camera_motion_source_refs,
         )
         tracks[track.track_id] = track
     elif movement in {"follow", "orbit"}:
@@ -2632,33 +2661,19 @@ def _build_camera(
                 "path": path,
                 "interpolation": "smooth",
                 "source_ref": skeleton.camera_intent.source_ref,
+                "source_refs": camera_motion_source_refs,
             }
         )
     look_target_id = skeleton.camera_intent.movement_target_id
     if movement in {"follow", "orbit", "pan"} and look_target_id:
-        additional_source_refs = []
-        if (
-            movement == "pan"
-            and skeleton.camera_intent.speed_source_ref is not None
-        ):
-            # Pan 是角运动，不能用线速度 m/s 约束冒充。该 look-at
-            # 轨道同时实现“摇摄”与其节奏来源。
-            additional_source_refs.append(
-                skeleton.camera_intent.speed_source_ref
-            )
         tracks["design_camera_look_at"] = TrackSpec(
             track_id="design_camera_look_at",
             type="look_at",
             time_range_seconds=(motion_start, motion_end),
             target_id=look_target_id,
             interpolation="smooth" if movement == "pan" else "linear",
-            source_ref=(
-                skeleton.camera_intent.speed_source_ref
-                if skeleton.camera_intent.speed_intent == "match_subject"
-                and skeleton.camera_intent.speed_source_ref is not None
-                else skeleton.camera_intent.source_ref
-            ),
-            source_refs=additional_source_refs,
+            source_ref=skeleton.camera_intent.source_ref,
+            source_refs=camera_motion_source_refs,
         )
     source_refs = sorted(
         _implemented_camera_static_source_refs(objective, skeleton)
@@ -4295,6 +4310,22 @@ def _implemented_camera_static_source_refs(
         and skeleton.camera_intent.view_relation_to_motion != "unspecified"
     ):
         refs.add("content.camera.view_relation_to_motion")
+    return refs
+
+
+def _implemented_camera_motion_source_refs(
+    objective: ObjectivePlanningBrief,
+    skeleton: SceneSkeleton,
+) -> set[str]:
+    """Return camera-motion facts represented by the generated track geometry."""
+
+    refs = {skeleton.camera_intent.source_ref}
+    if skeleton.camera_intent.speed_source_ref is not None:
+        refs.add(skeleton.camera_intent.speed_source_ref)
+    for field in ("direction", "trajectory"):
+        node = objective.camera.get("movement", {}).get(field)
+        if isinstance(node, dict) and node.get("source_status") == "explicit":
+            refs.add(f"content.camera.movement.{field}")
     return refs
 
 

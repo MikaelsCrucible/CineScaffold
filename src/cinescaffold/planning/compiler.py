@@ -10,6 +10,7 @@ from cinescaffold.planning.domain import (
     CommitRequest,
     PlanningProfile,
     TransformValue,
+    ValidationReport,
 )
 from cinescaffold.planning.geometry import (
     quaternion_conjugate,
@@ -49,8 +50,8 @@ from cinescaffold.planning.toolkit import (
 )
 
 
-COMPILER_VERSION = "0.14"
-COMMIT_GATE_VERSION = "0.13"
+COMPILER_VERSION = "0.15"
+COMMIT_GATE_VERSION = "0.14"
 
 
 @dataclass(frozen=True)
@@ -75,14 +76,23 @@ class SceneIRCommitGate:
         agent_run_id: str,
         trace_ref: str,
     ) -> CommitGateResult:
-        state = self.toolkit.store.get(request.candidate_revision)
         validation_envelope = self.toolkit.validate_candidate(
             revision=request.candidate_revision,
             checks=FULL_VALIDATION_CHECKS,
         )
         report = validation_envelope["data"]
+        # Validation is stored on a copied Candidate revision. Refetch so the
+        # committed constraint-plan artifact carries the authoritative report,
+        # not whichever focused diagnostic happened to run previously.
+        state = _candidate_with_validation(
+            self.toolkit.store.get(request.candidate_revision),
+            report,
+        )
         constraint_plan = state.model_dump(mode="json")
-        if not report["hard_pass"] or report["soft_score"] < self.toolkit.profile.minimum_soft_score:
+        if (
+            not report["hard_pass"]
+            or report["soft_score"] < self.toolkit.profile.minimum_soft_score
+        ):
             return CommitGateResult(
                 status="rejected",
                 gate_mode="full_fidelity",
@@ -127,22 +137,27 @@ class SceneIRCommitGate:
     ) -> CommitGateResult:
         """Relax presentation quality while preserving every typed narrative event."""
 
-        state = self.toolkit.store.get(request.candidate_revision)
         safety_envelope = self.toolkit.validate_candidate(
             revision=request.candidate_revision,
             checks=EXECUTION_SAFETY_CHECKS,
         )
         safety_report = safety_envelope["data"]
-        full_envelope = self.toolkit.validate_candidate(
-            revision=request.candidate_revision,
-            checks=FULL_VALIDATION_CHECKS,
-        )
-        full_report = full_envelope["data"]
         narrative_envelope = self.toolkit.validate_candidate(
             revision=request.candidate_revision,
             checks=NARRATIVE_FIDELITY_CHECKS,
         )
         narrative_report = narrative_envelope["data"]
+        # Keep full validation last so the committed revision and its exported
+        # constraint plan do not retain a focused report as if it were complete.
+        full_envelope = self.toolkit.validate_candidate(
+            revision=request.candidate_revision,
+            checks=FULL_VALIDATION_CHECKS,
+        )
+        full_report = full_envelope["data"]
+        state = _candidate_with_validation(
+            self.toolkit.store.get(request.candidate_revision),
+            full_report,
+        )
         constraint_plan = state.model_dump(mode="json")
         if not safety_report["hard_pass"] or not narrative_report["hard_pass"]:
             return CommitGateResult(
@@ -182,6 +197,22 @@ class SceneIRCommitGate:
         )
 
 
+def _candidate_with_validation(
+    state: CandidateState,
+    report: dict[str, Any],
+) -> CandidateState:
+    """Attach the gate's authoritative report even when committing history."""
+
+    validation_payload = {
+        field: report[field]
+        for field in ValidationReport.model_fields
+        if field in report
+    }
+    return state.model_copy(
+        update={"validation": ValidationReport.model_validate(validation_payload)},
+    )
+
+
 def compile_scene_ir(
     toolkit: ScenePlanningToolkit,
     state,
@@ -201,7 +232,9 @@ def compile_scene_ir(
         duration_resolution=state.timeline.duration_resolution,
     )
     frames = range(timeline.frame_start, timeline.frame_end + 1)
-    world_samples: dict[str, list[TransformValue]] = {name: [] for name in state.entities}
+    world_samples: dict[str, list[TransformValue]] = {
+        name: [] for name in state.entities
+    }
     for frame in frames:
         time_seconds = _frame_time(frame, timeline)
         resolver = _WorldTransformResolver(state, time_seconds, profile)
@@ -212,11 +245,15 @@ def compile_scene_ir(
     for object_index, entity_id in enumerate(sorted(state.entities), start=1):
         entity = state.entities[entity_id]
         samples: list[EntityFrameSample] = []
-        for offset, frame in enumerate(range(timeline.frame_start, timeline.frame_end + 1)):
+        for offset, frame in enumerate(
+            range(timeline.frame_start, timeline.frame_end + 1)
+        ):
             world = world_samples[entity_id][offset]
             local = world
             if entity.parent_id:
-                local = _world_to_parent_local(world, world_samples[entity.parent_id][offset])
+                local = _world_to_parent_local(
+                    world, world_samples[entity.parent_id][offset]
+                )
             visible = _visibility_at(state, entity_id, _frame_time(frame, timeline))
             samples.append(
                 EntityFrameSample(
@@ -236,7 +273,9 @@ def compile_scene_ir(
                 role=entity.role,
                 geometry=entity.proxy,
                 parent_id=entity.parent_id,
-                local_state_track=PerFrameEntityTrack(mode="per_frame", samples=samples),
+                local_state_track=PerFrameEntityTrack(
+                    mode="per_frame", samples=samples
+                ),
                 material_id="clay_default",
                 object_index=object_index,
                 tags=entity.tags,
@@ -286,10 +325,26 @@ def compile_scene_ir(
             resolution_x=profile.resolution_x,
             resolution_y=profile.resolution_y,
             outputs=[
-                RenderOutput(output_id="clay_rgb", type="rgb_png_sequence", relative_directory="rgb"),
-                RenderOutput(output_id="depth_raw", type="depth_openexr_sequence", relative_directory="depth_raw"),
-                RenderOutput(output_id="object_index_raw", type="object_index_openexr_sequence", relative_directory="object_id_raw"),
-                RenderOutput(output_id="clay_preview", type="h264_preview", relative_path="clay_preview.mp4"),
+                RenderOutput(
+                    output_id="clay_rgb",
+                    type="rgb_png_sequence",
+                    relative_directory="rgb",
+                ),
+                RenderOutput(
+                    output_id="depth_raw",
+                    type="depth_openexr_sequence",
+                    relative_directory="depth_raw",
+                ),
+                RenderOutput(
+                    output_id="object_index_raw",
+                    type="object_index_openexr_sequence",
+                    relative_directory="object_id_raw",
+                ),
+                RenderOutput(
+                    output_id="clay_preview",
+                    type="h264_preview",
+                    relative_path="clay_preview.mp4",
+                ),
             ],
         ),
         materials=[
@@ -357,7 +412,9 @@ def _visibility_at(state, entity_id: str, time_seconds: float) -> bool:
     return bool(sample_scalar_track(track, time_seconds, 1.0))
 
 
-def _world_to_parent_local(child: TransformValue, parent: TransformValue) -> TransformValue:
+def _world_to_parent_local(
+    child: TransformValue, parent: TransformValue
+) -> TransformValue:
     parent_scale = parent.scale
     if max(parent_scale) - min(parent_scale) > 1e-8:
         raise ValueError("v0.1 不支持非均匀缩放父级的无损 TRS 分解")
@@ -367,7 +424,9 @@ def _world_to_parent_local(child: TransformValue, parent: TransformValue) -> Tra
         tuple(a - b for a, b in zip(child.translation_m, parent.translation_m)),
     )
     scale = tuple(a / b for a, b in zip(child.scale, parent.scale))
-    local_rotation = quaternion_multiply(inverse_rotation, child.rotation_quaternion_wxyz)
+    local_rotation = quaternion_multiply(
+        inverse_rotation, child.rotation_quaternion_wxyz
+    )
     return TransformValue(
         translation_m=tuple(item / parent_scale[0] for item in relative),
         rotation_quaternion_wxyz=local_rotation,
@@ -377,7 +436,11 @@ def _world_to_parent_local(child: TransformValue, parent: TransformValue) -> Tra
 
 
 def _frame_time(frame: int, timeline: IRTimeline) -> float:
-    return (frame - timeline.frame_start) * timeline.fps_denominator / timeline.fps_numerator
+    return (
+        (frame - timeline.frame_start)
+        * timeline.fps_denominator
+        / timeline.fps_numerator
+    )
 
 
 def _continuous_quaternion(value, previous):
@@ -387,7 +450,9 @@ def _continuous_quaternion(value, previous):
 
 
 def _validate_compiled_scene_ir(scene_ir: SceneIR) -> None:
-    expected_frames = list(range(scene_ir.timeline.frame_start, scene_ir.timeline.frame_end + 1))
+    expected_frames = list(
+        range(scene_ir.timeline.frame_start, scene_ir.timeline.frame_end + 1)
+    )
     for entity in scene_ir.entities:
         if entity.local_state_track.mode == "per_frame":
             actual = [item.frame for item in entity.local_state_track.samples]
@@ -483,15 +548,18 @@ def _assert_transform_equivalent(
     tolerance: float,
     label: str,
 ) -> None:
-    if max(
-        abs(left - right)
-        for left, right in zip(expected.translation_m, actual.translation_m)
-    ) > tolerance:
+    if (
+        max(
+            abs(left - right)
+            for left, right in zip(expected.translation_m, actual.translation_m)
+        )
+        > tolerance
+    ):
         raise ValueError(f"Scene IR 位移与 Candidate 不等价：{label}")
-    if max(
-        abs(left - right)
-        for left, right in zip(expected.scale, actual.scale)
-    ) > tolerance:
+    if (
+        max(abs(left - right) for left, right in zip(expected.scale, actual.scale))
+        > tolerance
+    ):
         raise ValueError(f"Scene IR 缩放与 Candidate 不等价：{label}")
     quaternion_alignment = abs(
         sum(

@@ -246,8 +246,7 @@ class RelationshipBoundaryTest(unittest.TestCase):
             [
                 item
                 for item in skeleton["relations"]
-                if item["kind"] == "ground_support"
-                and item["subject_id"] == "man_01"
+                if item["kind"] == "ground_support" and item["subject_id"] == "man_01"
             ],
             [
                 item
@@ -276,8 +275,7 @@ class RelationshipBoundaryTest(unittest.TestCase):
 
         skeleton = build_deterministic_scene_skeleton(objective)
         families = {
-            item["entity_id"]: item["proxy_family"]
-            for item in skeleton["entities"]
+            item["entity_id"]: item["proxy_family"] for item in skeleton["entities"]
         }
 
         self.assertEqual(families["man_01"], "human_capsule")
@@ -307,6 +305,64 @@ class RelationshipBoundaryTest(unittest.TestCase):
                 for entity in skeleton["entities"]
             )
         )
+
+    def test_deterministic_fallback_downgrades_unknown_source_status(self) -> None:
+        brief = valid_planning_brief()
+        brief["content"]["scene_design"]["relationships"][0]["source_status"] = (
+            "unknown"
+        )
+        brief["content"]["subject_motion"] = [
+            {
+                "motion_id": "motion_man_wait",
+                "subject_id": "man_01",
+                "action": {
+                    "value": "等待",
+                    "source_status": "unknown",
+                    "source_text": None,
+                },
+                "motion_semantics": {
+                    "action_kind": "hold",
+                    "motion_type": "static",
+                    "motion_mode": "stationary",
+                    "direction_mode": "none",
+                    "target_id": None,
+                    "carrier_id": None,
+                    "path_type": "stationary",
+                    "timeline_event_id": None,
+                    "narrative_required": False,
+                    "postconditions": {
+                        "contained_by_id": None,
+                        "external_visibility": "unchanged",
+                    },
+                    "source_status": "unknown",
+                    "source_text": None,
+                },
+                "direction": {
+                    "value": None,
+                    "source_status": "unknown",
+                    "source_text": None,
+                },
+                "speed": {
+                    "value": None,
+                    "source_status": "unknown",
+                    "source_text": None,
+                },
+                "trajectory": {
+                    "value": None,
+                    "source_status": "unknown",
+                    "source_text": None,
+                },
+                "start_time_seconds": 0.0,
+                "end_time_seconds": 6.0,
+                "secondary_motion": [],
+            }
+        ]
+        objective = project_objective_brief(brief).objective_brief
+
+        skeleton = build_deterministic_scene_skeleton(objective)
+
+        self.assertEqual(skeleton["relations"][0]["source_status"], "inferred")
+        self.assertEqual(skeleton["motion_phases"][0]["source_status"], "inferred")
 
 
 if __name__ == "__main__":

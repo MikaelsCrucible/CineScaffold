@@ -320,6 +320,97 @@ class PlanningDesignTest(unittest.TestCase):
         track = candidates[0].motion_tracks["design_motion_man_01"]
         rotations = [item.value.rotation_quaternion_wxyz for item in track.keyframes]
         self.assertGreater(len(set(rotations)), 1)
+        report = toolkit._validate(candidates[0], ["transforms"])
+        self.assertNotIn(
+            "ENTITY_GROUND_CONTACT_VIOLATED",
+            {item.code for item in report.violations},
+        )
+
+    def test_deterministic_motion_keeps_all_merged_phase_sources(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+        toolkit.submit_scene_skeleton(_pickup_skeleton())
+
+        toolkit.request_design_options(max_options=1)
+        candidates = [item.candidate for item in toolkit._design_options.values()]
+        candidates.extend(
+            item.candidate for item in toolkit._design_repair_baselines.values()
+        )
+
+        self.assertTrue(candidates)
+        track = candidates[0].motion_tracks["design_motion_car"]
+        self.assertEqual(track.source_ref, "content.subject_motion[1].action")
+        self.assertIn("content.subject_motion[3].action", track.source_refs)
+        self.assertIn("content.subject_motion[4].action", track.source_refs)
+
+    def test_camera_track_maps_explicit_direction_as_well_as_movement_type(
+        self,
+    ) -> None:
+        source = _desert_toolkit()
+        direction_ref = "content.camera.movement.direction"
+        objective = source.objective_brief.model_copy(
+            deep=True,
+            update={
+                "camera": source.objective_brief.camera
+                | {
+                    "movement": source.objective_brief.camera["movement"]
+                    | {
+                        "direction": {
+                            "value": "向前推近",
+                            "source_status": "explicit",
+                            "source_text": "镜头推近",
+                        }
+                    }
+                },
+                "explicit_requirements": [
+                    *source.objective_brief.explicit_requirements,
+                    ObjectiveRequirement(path=direction_ref, value="向前推近"),
+                ],
+            },
+        )
+        toolkit = ScenePlanningToolkit(objective)
+        toolkit.submit_scene_skeleton(_desert_skeleton())
+
+        toolkit.request_design_options(max_options=1)
+        candidates = [item.candidate for item in toolkit._design_options.values()]
+        candidates.extend(
+            item.candidate for item in toolkit._design_repair_baselines.values()
+        )
+
+        self.assertTrue(candidates)
+        camera_track = candidates[0].camera.tracks["design_camera_transform"]
+        self.assertEqual(camera_track.source_ref, "content.camera.movement.type")
+        self.assertIn(direction_ref, camera_track.source_refs)
+
+    def test_late_first_motion_is_staged_before_its_route_anchor(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+        toolkit.objective_brief.subject_motion[1].update(
+            start_time_seconds=1.0,
+            end_time_seconds=4.0,
+        )
+        skeleton = _pickup_skeleton()
+        toolkit.submit_scene_skeleton(skeleton)
+
+        toolkit.request_design_options(max_options=1)
+        candidates = [item.candidate for item in toolkit._design_options.values()]
+        candidates.extend(
+            item.candidate for item in toolkit._design_repair_baselines.values()
+        )
+
+        self.assertTrue(candidates)
+        state = candidates[0]
+        track = state.motion_tracks["design_motion_car"]
+        start = track.keyframes[0].value.translation_m
+        end = track.keyframes[1].value.translation_m
+        self.assertGreater(math.dist(start, end), 5.0)
+        self.assertEqual(state.entities["car"].solved_transform.translation_m, start)
+
+    def test_deterministic_route_does_not_invent_a_global_direction_lock(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+
+        skeleton = _mock_scene_skeleton(toolkit.objective_brief)
+
+        self.assertTrue(skeleton["route_intents"])
+        self.assertEqual(skeleton["route_intents"][0]["continuity"], "allow_turns")
 
     def test_failed_hard_design_exposes_only_a_repair_baseline(self) -> None:
         source = _desert_toolkit()
@@ -2028,6 +2119,12 @@ class PlanningDesignTest(unittest.TestCase):
             _environment_supports_ground(objective, "abstract space background")
         )
         self.assertTrue(_environment_supports_ground(objective, "desert ground"))
+
+        blank_fallback = objective.model_copy(
+            deep=True,
+            update={"translation_parameters": {"scene": {"asset_key": "blank"}}},
+        )
+        self.assertTrue(_environment_supports_ground(blank_fallback, "路边"))
 
 
 def _desert_skeleton() -> dict:

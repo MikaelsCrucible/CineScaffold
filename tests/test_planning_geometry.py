@@ -11,6 +11,102 @@ from cinescaffold.planning.geometry import (
 
 
 class PlanningGeometryTest(unittest.TestCase):
+    def test_track_level_smooth_interpolation_affects_default_transform_segments(
+        self,
+    ) -> None:
+        track = TrackSpec.model_validate(
+            {
+                "track_id": "global_smooth_transform",
+                "target_entity_id": "subject",
+                "type": "transform",
+                "time_range_seconds": [0.0, 10.0],
+                "interpolation": "smooth",
+                "keyframes": [
+                    {
+                        "time_seconds": 0.0,
+                        "value": {"translation_m": [0.0, 0.0, 0.0]},
+                    },
+                    {
+                        "time_seconds": 9.0,
+                        "value": {"translation_m": [9.0, 0.0, 0.0]},
+                    },
+                ],
+            }
+        )
+
+        sampled = sample_transform_track(track, 2.25, TransformValue())
+
+        self.assertAlmostEqual(sampled.translation_m[0], 1.40625)
+
+    def test_track_level_step_interpolation_affects_default_scalar_segments(
+        self,
+    ) -> None:
+        track = TrackSpec.model_validate(
+            {
+                "track_id": "global_step_visibility",
+                "target_entity_id": "subject",
+                "type": "visibility",
+                "time_range_seconds": [0.0, 10.0],
+                "interpolation": "step",
+                "keyframes": [
+                    {"time_seconds": 0.0, "value": True},
+                    {"time_seconds": 9.0, "value": False},
+                ],
+            }
+        )
+
+        self.assertEqual(sample_scalar_track(track, 5.0, 0.0), 1.0)
+
+    def test_default_visibility_interpolation_does_not_switch_on_early(self) -> None:
+        track = TrackSpec.model_validate(
+            {
+                "track_id": "scheduled_visibility",
+                "target_entity_id": "subject",
+                "type": "visibility",
+                "time_range_seconds": [0.0, 10.0],
+                "keyframes": [
+                    {"time_seconds": 0.0, "value": False},
+                    {"time_seconds": 5.0, "value": True},
+                ],
+            }
+        )
+
+        self.assertEqual(sample_scalar_track(track, 4.0, 1.0), 0.0)
+        self.assertEqual(sample_scalar_track(track, 5.0, 1.0), 1.0)
+
+    def test_middle_step_keyframe_owns_its_exact_timestamp(self) -> None:
+        visibility = TrackSpec.model_validate(
+            {
+                "track_id": "three_state_visibility",
+                "target_entity_id": "subject",
+                "type": "visibility",
+                "time_range_seconds": [0.0, 10.0],
+                "keyframes": [
+                    {"time_seconds": 0.0, "value": True},
+                    {"time_seconds": 4.0, "value": False},
+                    {"time_seconds": 8.0, "value": True},
+                ],
+            }
+        )
+        transform = TrackSpec.model_validate(
+            {
+                "track_id": "three_pose_step",
+                "target_entity_id": "subject",
+                "type": "transform",
+                "time_range_seconds": [0.0, 10.0],
+                "interpolation": "step",
+                "keyframes": [
+                    {"time_seconds": 0.0, "value": {"translation_m": [0, 0, 0]}},
+                    {"time_seconds": 4.0, "value": {"translation_m": [4, 0, 0]}},
+                    {"time_seconds": 8.0, "value": {"translation_m": [8, 0, 0]}},
+                ],
+            }
+        )
+
+        self.assertEqual(sample_scalar_track(visibility, 4.0, 1.0), 0.0)
+        sampled = sample_transform_track(transform, 4.0, TransformValue())
+        self.assertEqual(sampled.translation_m, (4.0, 0.0, 0.0))
+
     def test_circle_path_is_analytic_at_quarter_turn(self) -> None:
         track = TrackSpec.model_validate(
             {
@@ -267,7 +363,10 @@ class PlanningGeometryTest(unittest.TestCase):
                 "time_range_seconds": [7.0, 12.0],
                 "keyframes": [
                     {"time_seconds": 7.0, "value": {"translation_m": [0.0, 0.0, 0.0]}},
-                    {"time_seconds": 11.9, "value": {"translation_m": [10.0, 0.0, 0.0]}},
+                    {
+                        "time_seconds": 11.9,
+                        "value": {"translation_m": [10.0, 0.0, 0.0]},
+                    },
                 ],
             }
         )
@@ -286,7 +385,10 @@ class PlanningGeometryTest(unittest.TestCase):
                 "time_range_seconds": [0.0, 12.0],
                 "keyframes": [
                     {"time_seconds": 7.0, "value": {"translation_m": [0.0, 0.0, 0.0]}},
-                    {"time_seconds": 11.9, "value": {"translation_m": [10.0, 0.0, 0.0]}},
+                    {
+                        "time_seconds": 11.9,
+                        "value": {"translation_m": [10.0, 0.0, 0.0]},
+                    },
                 ],
             }
         )

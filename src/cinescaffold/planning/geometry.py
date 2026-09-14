@@ -33,17 +33,29 @@ def sample_transform_track(
         return _transform_from_value(keyframes[0].value, fallback)
     if time_seconds >= keyframes[-1].time_seconds:
         return _transform_from_value(keyframes[-1].value, fallback)
+    for keyframe in keyframes[1:-1]:
+        if math.isclose(
+            time_seconds,
+            keyframe.time_seconds,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            # A keyframe owns its exact timestamp. Without this check, the
+            # inclusive segment search below returns the previous value for a
+            # step segment and delays state changes by one sample.
+            return _transform_from_value(keyframe.value, fallback)
 
     for left, right in zip(keyframes, keyframes[1:]):
         if left.time_seconds <= time_seconds <= right.time_seconds:
             start = _transform_from_value(left.value, fallback)
             end = _transform_from_value(right.value, fallback)
-            if left.interpolation == "step":
+            interpolation = _segment_interpolation(track, left.interpolation)
+            if interpolation == "step":
                 return start
             ratio = (time_seconds - left.time_seconds) / (
                 right.time_seconds - left.time_seconds
             )
-            if left.interpolation == "smooth":
+            if interpolation == "smooth":
                 ratio = ratio * ratio * (3.0 - 2.0 * ratio)
             return TransformValue(
                 translation_m=_lerp_vec3(start.translation_m, end.translation_m, ratio),
@@ -96,13 +108,17 @@ def _sample_path_position(path: Any, ratio: float) -> Vec3:
         return _sample_polyline(points, ratio)
 
     if path.representation == "catmull_rom":
-        evaluator = lambda value: _sample_catmull_rom(
-            list(path.control_points),
-            value,
-            closed=path.closed,
-        )
+        def evaluator(value: float) -> Vec3:
+            return _sample_catmull_rom(
+                list(path.control_points),
+                value,
+                closed=path.closed,
+            )
+
     else:
-        evaluator = lambda value: _sample_analytic_path(path, value)
+        def evaluator(value: float) -> Vec3:
+            return _sample_analytic_path(path, value)
+
     if path.representation == "circle":
         # 圆的参数角天然等弧长，直接求值以保持精确半径。
         return evaluator(ratio)
@@ -184,7 +200,9 @@ def _sample_parametric_arc_length(
     return _sample_arc_length(points, ratio)
 
 
-def sample_scalar_track(track: TrackSpec | None, time_seconds: float, fallback: float) -> float:
+def sample_scalar_track(
+    track: TrackSpec | None, time_seconds: float, fallback: float
+) -> float:
     if track is None or not track.keyframes:
         return fallback
     if time_seconds < track.time_range_seconds[0]:
@@ -196,17 +214,37 @@ def sample_scalar_track(track: TrackSpec | None, time_seconds: float, fallback: 
         return float(keyframes[0].value)
     if time_seconds >= keyframes[-1].time_seconds:
         return float(keyframes[-1].value)
+    for keyframe in keyframes[1:-1]:
+        if math.isclose(
+            time_seconds,
+            keyframe.time_seconds,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            return float(keyframe.value)
     for left, right in zip(keyframes, keyframes[1:]):
         if left.time_seconds <= time_seconds <= right.time_seconds:
-            if left.interpolation == "step":
+            if track.type == "visibility":
+                # Render visibility is boolean, not opacity. Treat every
+                # transition as a step even when compact Agent input leaves the
+                # generic interpolation field at its default.
+                return float(left.value)
+            interpolation = _segment_interpolation(track, left.interpolation)
+            if interpolation == "step":
                 return float(left.value)
             ratio = (time_seconds - left.time_seconds) / (
                 right.time_seconds - left.time_seconds
             )
-            if left.interpolation == "smooth":
+            if interpolation == "smooth":
                 ratio = ratio * ratio * (3.0 - 2.0 * ratio)
             return _lerp(float(left.value), float(right.value), ratio)
     return fallback
+
+
+def _segment_interpolation(track: TrackSpec, keyframe_mode: str) -> str:
+    """Use the track-wide mode when a segment retains the linear default."""
+
+    return track.interpolation if keyframe_mode == "linear" else keyframe_mode
 
 
 def look_at_camera_quaternion(position: Vec3, target: Vec3) -> Quaternion:
@@ -227,6 +265,26 @@ def look_at_camera_quaternion(position: Vec3, target: Vec3) -> Quaternion:
     return matrix_to_quaternion(matrix)
 
 
+def look_at_entity_quaternion(position: Vec3, target: Vec3) -> Quaternion:
+    """Aim an entity's canonical +Y forward axis at a world-space target."""
+
+    forward = normalize(subtract(target, position))
+    if length(forward) < 1e-8:
+        raise ValueError("Entity 位置不能与观察目标重合")
+    world_up: Vec3 = (0.0, 0.0, 1.0)
+    if abs(dot(forward, world_up)) > 0.999:
+        world_up = (0.0, 1.0, 0.0)
+    axis_x = normalize(cross(forward, world_up))
+    axis_y = forward
+    axis_z = normalize(cross(axis_x, axis_y))
+    matrix = (
+        (axis_x[0], axis_y[0], axis_z[0]),
+        (axis_x[1], axis_y[1], axis_z[1]),
+        (axis_x[2], axis_y[2], axis_z[2]),
+    )
+    return matrix_to_quaternion(matrix)
+
+
 def project_point(
     point: Vec3,
     camera_position: Vec3,
@@ -235,7 +293,9 @@ def project_point(
     sensor_width_mm: float,
     aspect_ratio: float,
 ) -> tuple[float, float, float]:
-    local = rotate_vector(quaternion_conjugate(camera_rotation), subtract(point, camera_position))
+    local = rotate_vector(
+        quaternion_conjugate(camera_rotation), subtract(point, camera_position)
+    )
     depth = -local[2]
     if depth <= 1e-8:
         return (math.nan, math.nan, depth)
@@ -359,9 +419,7 @@ def geometry_local_bounds_points(geometry: ProxyGeometry) -> list[Vec3]:
     half = geometry_half_extents(geometry)
     if geometry.type == "plane":
         return [
-            (x * half[0], y * half[1], 0.0)
-            for x in (-1.0, 1.0)
-            for y in (-1.0, 1.0)
+            (x * half[0], y * half[1], 0.0) for x in (-1.0, 1.0) for y in (-1.0, 1.0)
         ]
     return [
         (x * half[0], y * half[1], z * half[2])
@@ -378,7 +436,9 @@ def geometry_half_extents(geometry: ProxyGeometry) -> Vec3:
         return (geometry.radius_m, geometry.radius_m, geometry.radius_m)
     if geometry.type == "capsule":
         values = [geometry.radius_m, geometry.radius_m, geometry.radius_m]
-        values[{"+X": 0, "+Y": 1, "+Z": 2}[geometry.axis]] += geometry.segment_length_m / 2.0
+        values[{"+X": 0, "+Y": 1, "+Z": 2}[geometry.axis]] += (
+            geometry.segment_length_m / 2.0
+        )
         return tuple(values)  # type: ignore[return-value]
     if geometry.type in {"cylinder", "cone"}:
         radius = (
@@ -422,24 +482,15 @@ def directional_support_extent(
     local_direction = rotate_vector(quaternion_conjugate(rotation), unit)
     if geometry.type == "sphere":
         return geometry.radius_m * math.sqrt(
-            sum(
-                (local_direction[index] * scale[index]) ** 2
-                for index in range(3)
-            )
+            sum((local_direction[index] * scale[index]) ** 2 for index in range(3))
         )
     if geometry.type == "capsule":
         axis = {"+X": 0, "+Y": 1, "+Z": 2}[geometry.axis]
         radial_support = geometry.radius_m * math.sqrt(
-            sum(
-                (local_direction[index] * scale[index]) ** 2
-                for index in range(3)
-            )
+            sum((local_direction[index] * scale[index]) ** 2 for index in range(3))
         )
         segment_support = (
-            abs(local_direction[axis])
-            * scale[axis]
-            * geometry.segment_length_m
-            / 2.0
+            abs(local_direction[axis]) * scale[axis] * geometry.segment_length_m / 2.0
         )
         return radial_support + segment_support
     if geometry.type in {"cylinder", "cone"}:
@@ -451,10 +502,7 @@ def directional_support_extent(
         )
         radial_axes = [index for index in range(3) if index != axis]
         radial_support = radius * math.sqrt(
-            sum(
-                (local_direction[index] * scale[index]) ** 2
-                for index in radial_axes
-            )
+            sum((local_direction[index] * scale[index]) ** 2 for index in radial_axes)
         )
         axial_support = (
             abs(local_direction[axis]) * scale[axis] * geometry.depth_m / 2.0
@@ -527,11 +575,7 @@ def surface_clearance_target_distance(
         direction,
     )
     characteristic_extent = 2.0 * max(first_support, second_support, 1e-8)
-    return (
-        first_support
-        + second_support
-        + target_ratio * characteristic_extent
-    )
+    return first_support + second_support + target_ratio * characteristic_extent
 
 
 def surface_clearance_target_distance_m(
@@ -561,7 +605,9 @@ def surface_clearance_target_distance_m(
 
 def rotate_vector(quaternion: Quaternion, vector: Vec3) -> Vec3:
     pure: Quaternion = (0.0, *vector)
-    rotated = quaternion_multiply(quaternion_multiply(quaternion, pure), quaternion_conjugate(quaternion))
+    rotated = quaternion_multiply(
+        quaternion_multiply(quaternion, pure), quaternion_conjugate(quaternion)
+    )
     return (rotated[1], rotated[2], rotated[3])
 
 
@@ -701,7 +747,9 @@ def _sample_arc_length(points: list[Vec3], ratio: float) -> Vec3:
     elapsed = 0.0
     for index, segment in enumerate(lengths):
         if elapsed + segment >= target:
-            return _lerp_vec3(points[index], points[index + 1], (target - elapsed) / segment)
+            return _lerp_vec3(
+                points[index], points[index + 1], (target - elapsed) / segment
+            )
         elapsed += segment
     return points[-1]
 

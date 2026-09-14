@@ -32,6 +32,7 @@ from cinescaffold.planning.domain import (
     ProxyGeometry,
     StrictModel,
     TrackKeyframe,
+    TransformValue,
 )
 from cinescaffold.planning.toolkit import TOOLKIT_VERSION, ScenePlanningToolkit
 from cinescaffold.planning.trace import TraceRecorder
@@ -66,6 +67,18 @@ class EntityPatchInput(StrictModel):
     ground_interaction: GroundInteractionSpec | None = Field(
         default=None,
         description="更新时省略表示保持现有地面策略",
+    )
+
+
+class EscalatedEntityPatchInput(EntityPatchInput):
+    """Entity repair surface used only after deterministic options are exhausted."""
+
+    solved_transform: TransformValue | None = Field(
+        default=None,
+        description=(
+            "受限手工修复中的米制 Transform；新增实体若需在同一事务通过 Execution Safety，"
+            "应提供完整 translation/rotation/scale。普通设计阶段不暴露此字段"
+        ),
     )
 
 
@@ -186,7 +199,13 @@ class TrackPatchInput(StrictModel):
     keyframes: list[TrackKeyframe] = Field(default_factory=list)
     path: PathPatchInput | None = None
     target_id: str | None = None
-    interpolation: Literal["step", "linear", "smooth"] = "linear"
+    interpolation: Literal["step", "linear", "smooth"] = Field(
+        default="linear",
+        description=(
+            "Track 全局插值；关键帧段显式 step/smooth 优先，未覆盖的 linear 默认段继承此值；"
+            "visibility 是布尔通道并始终按 step 求值"
+        ),
+    )
     source_ref: str | None = None
 
     def to_domain_payload(self) -> dict[str, Any]:
@@ -209,7 +228,7 @@ class CameraPatchInput(StrictModel):
             "camera_id": self.camera_id,
             "projection": self.projection,
             "active": self.active,
-            "static": self.static.model_dump(mode="json"),
+            "static": self.static.model_dump(mode="json", exclude_unset=True),
             "tracks": [item.to_domain_payload() for item in self.tracks],
             "remove_track_ids": self.remove_track_ids,
         }
@@ -666,10 +685,7 @@ class PlanningDeps:
         if (
             result.get("status") == "rejected"
             and self.last_design_failure_signature is not None
-            and any(
-                "重复完全相同" in str(item)
-                for item in result.get("warnings", [])
-            )
+            and any("重复完全相同" in str(item) for item in result.get("warnings", []))
         ):
             # The first failed search already returned all deterministic
             # evidence. Repeating the identical request cannot discover a new
@@ -766,13 +782,7 @@ class PlanningDeps:
                     "Design Options 已生成；请选择 option，或带不同尺寸范围重新请求",
                     ["调用 apply_design_option 或调整后调用 request_design_options"],
                 )
-        validation = self.toolkit.store.get().validation
-        if (
-            name != "get_capabilities"
-            and validation is not None
-            and validation.hard_pass
-            and validation.soft_score >= self.toolkit.profile.minimum_soft_score
-        ):
+        if name != "get_capabilities" and self.toolkit.commit_ready:
             return _protocol_rejected(
                 revision,
                 "当前 revision 已满足 Commit Gate 阈值，不允许继续调用工具",
@@ -914,12 +924,7 @@ async def _prepare_candidate_tool(
     # 首次能力读取前只暴露能力工具；可提交后只允许结构化终止。
     if not (ctx.deps.capabilities_read or ctx.deps.toolkit.design_option_applied):
         return None
-    validation = ctx.deps.toolkit.store.get().validation
-    if (
-        validation is not None
-        and validation.hard_pass
-        and validation.soft_score >= ctx.deps.toolkit.profile.minimum_soft_score
-    ):
+    if ctx.deps.toolkit.commit_ready:
         return None
     return tool_definition
 
@@ -1218,7 +1223,7 @@ def create_planning_agent(
             "camera_id": camera_id,
             "projection": projection,
             "active": active,
-            "static": static.model_dump(mode="json"),
+            "static": static.model_dump(mode="json", exclude_unset=True),
             "tracks": [item.to_domain_payload() for item in tracks],
             "remove_track_ids": remove_track_ids,
         }
@@ -1232,7 +1237,7 @@ def create_planning_agent(
     async def apply_candidate_patch(
         ctx: RunContext[PlanningDeps],
         base_revision: int,
-        entity_upserts: list[EntityPatchInput] | None = None,
+        entity_upserts: list[EscalatedEntityPatchInput] | None = None,
         entity_remove_ids: list[str] | None = None,
         constraint_upserts: list[ConstraintPatchInput] | None = None,
         constraint_remove_ids: list[str] | None = None,
@@ -1240,7 +1245,7 @@ def create_planning_agent(
         motion_remove_ids: list[str] | None = None,
         camera_patch: CameraPatchInput | None = None,
     ) -> dict[str, Any]:
-        """必要时在一个预演事务中组合实体、约束、运动和摄影机修复。"""
+        """必要时在一个预演事务中组合实体、数值 Transform、约束、运动和摄影机修复。"""
 
         arguments = {
             "base_revision": base_revision,

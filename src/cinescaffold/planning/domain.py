@@ -277,7 +277,14 @@ class TrackSpec(StrictModel):
     keyframes: list[TrackKeyframe] = Field(default_factory=list)
     path: PathSpec | None = None
     target_id: str | None = None
-    interpolation: Literal["step", "linear", "smooth"] = "linear"
+    interpolation: Literal["step", "linear", "smooth"] = Field(
+        default="linear",
+        description=(
+            "Track 全局插值；transform/visibility/focal_length 中会作为仍使用 linear "
+            "默认值的关键帧段之回退，关键帧显式 step/smooth 优先；visibility 为布尔通道，"
+            "始终按 step 求值"
+        ),
+    )
     locked_components: list[str] = Field(default_factory=list)
     source_ref: str | None = None
     source_refs: list[str] = Field(

@@ -793,10 +793,7 @@ def _resume_summary(toolkit: ScenePlanningToolkit) -> dict[str, Any]:
             {
                 "hard_pass": validation.hard_pass,
                 "soft_score": validation.soft_score,
-                "commit_ready": (
-                    validation.hard_pass
-                    and validation.soft_score >= toolkit.profile.minimum_soft_score
-                ),
+                "commit_ready": toolkit.commit_ready,
                 "violation_codes": sorted(
                     {item.code for item in validation.violations}
                 ),

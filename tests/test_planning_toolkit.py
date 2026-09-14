@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import unittest
 
 from cinescaffold.planning.compiler import SceneIRCommitGate, compile_scene_ir
@@ -8,6 +9,7 @@ from cinescaffold.planning.duration import (
     attach_duration_resolution,
     freeze_brief_duration,
 )
+from cinescaffold.planning.geometry import rotate_vector
 from cinescaffold.planning.objective import (
     ObjectiveRequirement,
     project_objective_brief,
@@ -26,6 +28,432 @@ from tests.helpers import valid_model_output
 
 
 class ScenePlanningToolkitTest(unittest.TestCase):
+    def test_mutual_entity_camera_look_at_uses_positions_without_recursing(
+        self,
+    ) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_sphere_entity("actor")], [])
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0, "focus_target_id": "actor"},
+            tracks=[],
+        )
+        toolkit.solve_candidate(scope="camera")
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "actor_looks_at_camera",
+                    "target_entity_id": "actor",
+                    "type": "look_at",
+                    "time_range_seconds": [0.0, 6.0],
+                    "target_id": "camera_main",
+                }
+            ],
+            [],
+        )
+        result = toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={},
+            tracks=[
+                {
+                    "track_id": "camera_looks_at_actor",
+                    "type": "look_at",
+                    "time_range_seconds": [0.0, 6.0],
+                    "target_id": "actor",
+                }
+            ],
+            remove_track_ids=[],
+        )
+
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIsNotNone(_entity_transform_at(toolkit.store.get(), "actor", 1.0))
+        self.assertIsNotNone(
+            _camera_state_at(toolkit.store.get(), 1.0, toolkit.profile)
+        )
+
+    def test_entity_look_at_track_changes_resolved_and_compiled_orientation(
+        self,
+    ) -> None:
+        toolkit = _toolkit()
+        actor = _sphere_entity("actor")
+        target = _sphere_entity("target")
+        target["solved_transform"]["translation_m"] = [5.0, 0.0, 0.0]
+        toolkit.apply_entity_patch([actor, target], [])
+        result = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "actor_looks_at_target",
+                    "target_entity_id": "actor",
+                    "type": "look_at",
+                    "time_range_seconds": [0.0, 6.0],
+                    "target_id": "target",
+                }
+            ],
+            [],
+        )
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0, "focus_target_id": "actor"},
+            tracks=[],
+        )
+        toolkit.solve_candidate(scope="camera")
+
+        self.assertEqual(result["status"], "ok", result)
+        resolved = _entity_transform_at(toolkit.store.get(), "actor", 1.0)
+        forward = rotate_vector(
+            resolved.rotation_quaternion_wxyz,
+            (0.0, 1.0, 0.0),
+        )
+        self.assertAlmostEqual(forward[0], 1.0, places=6)
+        self.assertAlmostEqual(forward[1], 0.0, places=6)
+
+        scene_ir = compile_scene_ir(
+            toolkit,
+            toolkit.store.get(),
+            agent_run_id="entity_look_at_test",
+            trace_ref="test_trace.jsonl",
+        )
+        compiled_actor = next(
+            item for item in scene_ir.entities if item.entity_id == "actor"
+        )
+        compiled_forward = rotate_vector(
+            compiled_actor.local_state_track.samples[24].value.rotation_quaternion_wxyz,
+            (0.0, 1.0, 0.0),
+        )
+        self.assertAlmostEqual(compiled_forward[0], 1.0, places=6)
+
+    def test_camera_authored_rotation_is_not_overridden_by_static_focus_hint(
+        self,
+    ) -> None:
+        toolkit = _toolkit()
+        target = _sphere_entity("target")
+        target["solved_transform"]["translation_m"] = [0.0, 10.0, 0.0]
+        toolkit.apply_entity_patch([target], [])
+        authored_rotation = [0.70710678, 0.0, 0.0, 0.70710678]
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0, "focus_target_id": "target"},
+            tracks=[
+                {
+                    "track_id": "authored_camera_rotation",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {
+                                "translation_m": [0.0, -10.0, 2.0],
+                                "rotation_quaternion_wxyz": authored_rotation,
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
+
+        resolved = _camera_state_at(toolkit.store.get(), 1.0, toolkit.profile)
+
+        assert resolved is not None
+        for actual, expected in zip(
+            resolved[0].rotation_quaternion_wxyz,
+            authored_rotation,
+            strict=True,
+        ):
+            self.assertAlmostEqual(actual, expected, places=6)
+
+    def test_static_focus_hint_does_not_create_implicit_tracking_rotation(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_sphere_entity("target")], [])
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0, "focus_target_id": "target"},
+            tracks=[
+                {
+                    "track_id": "translation_only_camera",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [0.0, -10.0, 2.0]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [10.0, 0.0, 2.0]},
+                        },
+                    ],
+                }
+            ],
+        )
+        toolkit.solve_candidate(scope="camera")
+
+        start = _camera_state_at(toolkit.store.get(), 0.0, toolkit.profile)
+        end = _camera_state_at(toolkit.store.get(), 143 / 24, toolkit.profile)
+
+        assert start is not None and end is not None
+        for first, last in zip(
+            start[0].rotation_quaternion_wxyz,
+            end[0].rotation_quaternion_wxyz,
+            strict=True,
+        ):
+            self.assertAlmostEqual(first, last, places=6)
+
+    def test_partial_camera_static_patch_preserves_existing_provenance(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={
+                "focal_length_mm": 35.0,
+                "focus_target_id": "man_01",
+                "source_refs": ["content.camera.focus_target_id"],
+            },
+            tracks=[],
+        )
+
+        result = toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 50.0},
+            tracks=[],
+        )
+
+        self.assertEqual(result["status"], "ok", result)
+        static = toolkit.store.get().camera.static
+        self.assertEqual(static.focal_length_mm, 50.0)
+        self.assertEqual(static.focus_target_id, "man_01")
+        self.assertEqual(
+            static.source_refs,
+            ["content.camera.focus_target_id"],
+        )
+
+    def test_projection_validation_reports_every_unprojectable_entity(self) -> None:
+        toolkit = _toolkit()
+        first = _sphere_entity("first")
+        second = _sphere_entity("second")
+        first["solved_transform"]["translation_m"] = [-2.0, 0.0, 3.0]
+        second["solved_transform"]["translation_m"] = [2.0, 0.0, 3.0]
+        toolkit.apply_entity_patch([first, second], [])
+        toolkit.apply_camera_patch(
+            camera_id="shot_camera",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0, "focus_target_id": None},
+            tracks=[
+                {
+                    "track_id": "camera_pose",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {
+                                "translation_m": [0.0, 0.0, 0.0],
+                                "rotation_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
+
+        validation = toolkit.validate_candidate(checks=["projection"])
+
+        affected = {
+            entity_id
+            for violation in validation["violations"]
+            if violation["code"] == "ENTITY_NOT_PROJECTABLE"
+            for entity_id in violation["entity_ids"]
+        }
+        self.assertEqual(affected, {"first", "second"})
+        self.assertFalse(validation["data"]["hard_pass"], validation["violations"])
+        never_projectable = {
+            entity_id
+            for violation in validation["violations"]
+            if violation["code"] == "ENTITY_NEVER_PROJECTABLE"
+            for entity_id in violation["entity_ids"]
+        }
+        self.assertEqual(never_projectable, {"first", "second"})
+        self.assertTrue(
+            all(
+                item["severity"] == "warning"
+                for item in validation["violations"]
+                if item["code"] == "ENTITY_NOT_PROJECTABLE"
+            )
+        )
+        self.assertTrue(
+            all(
+                item["time_range_seconds"][0] == item["time_range_seconds"][1]
+                for item in validation["violations"]
+                if item["code"] == "ENTITY_NOT_PROJECTABLE"
+            )
+        )
+
+    def test_candidate_track_repair_preserves_unexposed_secondary_provenance(
+        self,
+    ) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_entity_patch([_man_entity()], [])
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "man_motion",
+                    "target_entity_id": "man_01",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [0.0, 0.0, 0.9]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [0.0, 5.0, 0.9]},
+                        },
+                    ],
+                    "source_ref": "content.subject_motion[0].action",
+                    "source_refs": [
+                        "content.subject_motion[0].motion_semantics",
+                    ],
+                }
+            ],
+            [],
+        )
+        revision = toolkit.store.current_revision
+
+        result = toolkit.apply_candidate_patch(
+            base_revision=revision,
+            motion_upserts=[
+                {
+                    "track_id": "man_motion",
+                    "target_entity_id": "man_01",
+                    "type": "transform",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 0.0,
+                            "value": {"translation_m": [0.0, 0.0, 0.9]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [0.0, 7.0, 0.9]},
+                        },
+                    ],
+                    "source_ref": "content.subject_motion[0].action",
+                }
+            ],
+        )
+
+        self.assertEqual(result["status"], "ok", result)
+        repaired = toolkit.store.get().motion_tracks["man_motion"]
+        self.assertEqual(
+            repaired.source_refs,
+            ["content.subject_motion[0].motion_semantics"],
+        )
+
+    def test_hidden_proxy_is_not_falsely_rejected_for_ground_intersection(self) -> None:
+        toolkit = _toolkit()
+        hidden = _sphere_entity("hidden")
+        hidden["solved_transform"]["translation_m"] = [0.0, 0.0, -10.0]
+        toolkit.apply_entity_patch([_ground_entity(), hidden], [])
+        toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "hidden_visibility",
+                    "target_entity_id": "hidden",
+                    "type": "visibility",
+                    "time_range_seconds": [0.0, 6.0],
+                    "keyframes": [
+                        {"time_seconds": 0.0, "value": False},
+                    ],
+                }
+            ],
+            [],
+        )
+
+        validation = toolkit.validate_candidate(checks=["transforms"])
+
+        self.assertFalse(
+            any(
+                "GROUND" in item["code"] or "INTERSECTS" in item["code"]
+                for item in validation["violations"]
+                if "hidden" in item["entity_ids"]
+            ),
+            validation["violations"],
+        )
+
+    def test_validated_candidate_can_add_a_fully_solved_reference_entity(self) -> None:
+        toolkit = _solved_toolkit()
+        baseline = toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
+        self.assertTrue(baseline["data"]["hard_pass"], baseline["violations"])
+        reference = _sphere_entity("route_reference")
+        reference["solved_transform"]["translation_m"] = [8.0, 3.0, 1.0]
+
+        result = toolkit.apply_candidate_patch(
+            base_revision=toolkit.store.current_revision,
+            entity_upserts=[reference],
+        )
+
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIn("route_reference", toolkit.store.get().entities)
+        self.assertTrue(result["data"]["preview_validated"])
+
+    def test_camera_alias_filters_camera_and_violation_views(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_camera_patch(
+            camera_id="shot_camera",
+            projection="perspective",
+            active=True,
+            static={"focal_length_mm": 35.0},
+            tracks=[],
+        )
+        toolkit.solve_candidate(scope="camera")
+        toolkit.validate_candidate(checks=FULL_VALIDATION_CHECKS)
+
+        camera = toolkit.inspect_candidate(
+            view="camera",
+            camera_ids=["camera_main"],
+        )
+        violations = toolkit.inspect_candidate(
+            view="violations",
+            camera_ids=["camera_main"],
+        )
+
+        self.assertEqual(camera["status"], "ok", camera)
+        self.assertIsNotNone(camera["data"])
+        self.assertEqual(violations["status"], "ok", violations)
+
+    def test_inactive_camera_is_not_silently_used_as_active(self) -> None:
+        toolkit = _toolkit()
+        toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=False,
+            static={"focal_length_mm": 35.0},
+            tracks=[],
+        )
+
+        validation = toolkit.validate_candidate(checks=["camera"])
+
+        self.assertIn(
+            "CAMERA_INACTIVE",
+            {item["code"] for item in validation["violations"]},
+        )
+        self.assertIsNone(_camera_state_at(toolkit.store.get(), 0.0, toolkit.profile))
+
     def test_capabilities_expose_frozen_half_open_timeline(self) -> None:
         result = _toolkit().get_capabilities(["limits"])
 
@@ -1425,6 +1853,10 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertTrue(validation["data"]["hard_pass"], validation["violations"])
         self.assertEqual(committed.status, "success")
         self.assertIsNotNone(committed.scene_ir_hash)
+        self.assertEqual(
+            set(committed.constraint_plan["validation"]["checks"]),
+            set(FULL_VALIDATION_CHECKS),
+        )
         scene_ir = committed.scene_ir
         self.assertEqual(len(scene_ir.entities), 2)
         self.assertEqual(
@@ -1443,6 +1875,34 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertFalse(scene_ir.lighting.cast_shadows)
         self.assertEqual(scene_ir.lighting.lights, [])
         self.assertEqual(scene_ir.entities[0].ground_interaction.mode, "must_be_above")
+
+    def test_commit_historical_revision_exports_the_gate_validation(self) -> None:
+        toolkit = _solved_toolkit()
+        historical_revision = toolkit.store.current_revision
+        toolkit.validate_candidate(
+            revision=historical_revision,
+            checks=["camera"],
+        )
+        toolkit.apply_entity_patch(
+            [_man_entity() | {"label": "newer uncommitted label"}],
+            [],
+        )
+
+        committed = SceneIRCommitGate(toolkit).commit(
+            CommitRequest(
+                type="commit_request",
+                candidate_revision=historical_revision,
+                summary="commit a valid historical revision",
+            ),
+            agent_run_id="historical_revision_test",
+            trace_ref="trace.jsonl",
+        )
+
+        self.assertEqual(committed.status, "success", committed.violations)
+        self.assertEqual(
+            set(committed.constraint_plan["validation"]["checks"]),
+            set(FULL_VALIDATION_CHECKS),
+        )
 
     def test_unmapped_explicit_requirement_blocks_commit(self) -> None:
         toolkit = _toolkit()
@@ -1504,6 +1964,10 @@ class ScenePlanningToolkitTest(unittest.TestCase):
 
         self.assertEqual(simplified.status, "success", simplified.violations)
         self.assertEqual(simplified.gate_mode, "narrative_fidelity")
+        self.assertEqual(
+            set(simplified.constraint_plan["validation"]["checks"]),
+            set(FULL_VALIDATION_CHECKS),
+        )
         self.assertEqual(
             simplified.scene_ir.acceptance.required_validators,
             NARRATIVE_FIDELITY_CHECKS,
@@ -1875,7 +2339,13 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                             "value": {"translation_m": [-60.0, 2.0, 6.0]},
                         },
                     ],
-                }
+                },
+                {
+                    "track_id": "camera_aims_at_man",
+                    "type": "look_at",
+                    "time_range_seconds": [0.0, 6.0],
+                    "target_id": "man_01",
+                },
             ],
         )
 
@@ -2273,6 +2743,22 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertIn("EXPLICIT_CAMERA_FOCUS_UNMET", codes)
         self.assertIn("EXPLICIT_CAMERA_VIEW_RELATION_UNMET", codes)
 
+        repaired_metadata = toolkit.apply_camera_patch(
+            camera_id="camera_main",
+            projection="perspective",
+            active=True,
+            static={
+                "focus_target_id": "man_01",
+                "source_refs": ["content.camera.focus_target_id"],
+            },
+            tracks=[],
+        )
+        self.assertEqual(repaired_metadata["status"], "ok", repaired_metadata)
+        second_validation = toolkit.validate_candidate(checks=["hard_semantics"])
+        second_codes = {item["code"] for item in second_validation["violations"]}
+        self.assertNotIn("EXPLICIT_CAMERA_FOCUS_UNMET", second_codes)
+        self.assertIn("EXPLICIT_CAMERA_FOCUS_NOT_VISIBLE", second_codes)
+
     def test_explicit_static_camera_does_not_authorize_collinear_view(self) -> None:
         toolkit = _projected_motion_toolkit(
             end_position=(0.0, 0.0, 0.9),
@@ -2652,7 +3138,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertIn("参考系依赖存在循环", result["warnings"][0])
 
-    def test_camera_focus_cycle_is_rejected_without_recursive_overflow(self) -> None:
+    def test_static_focus_hint_allows_camera_relative_subject(self) -> None:
         toolkit = _toolkit()
         toolkit.apply_entity_patch([_sphere_entity("marker")], [])
         camera = toolkit.apply_camera_patch(
@@ -2693,8 +3179,53 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             [],
         )
 
-        self.assertEqual(result["status"], "rejected")
-        self.assertIn("参考系依赖存在循环", result["warnings"][0])
+        self.assertEqual(result["status"], "ok", result)
+        marker = _entity_transform_at(toolkit.store.get(), "marker", 0.0)
+        self.assertEqual(marker.translation_m, (0.0, -10.0, -3.0))
+
+    def test_distance_solver_preserves_ground_height_and_true_3d_range(self) -> None:
+        toolkit = _toolkit()
+        first = _sphere_entity("first")
+        second = _sphere_entity("second")
+        first["solved_transform"]["translation_m"] = [0.0, 0.0, 1.0]
+        second["solved_transform"]["translation_m"] = [0.0, 1.0, 3.0]
+        second["ground_interaction"] = {
+            "mode": "must_touch",
+            "ground_entity_id": "desert_ground",
+            "source_status": "inferred",
+        }
+        toolkit.apply_entity_patch([_ground_entity(), first, second], [])
+        toolkit.apply_constraint_patch(
+            [
+                {
+                    "constraint_id": "true_distance",
+                    "type": "distance_range",
+                    "strength": "soft",
+                    "subjects": ["first", "second"],
+                    "time_range_seconds": [0.0, 6.0],
+                    "parameters": {
+                        "entity_ids": ["first", "second"],
+                        "minimum_meters": 4.0,
+                        "maximum_meters": 6.0,
+                    },
+                    "source_status": "agent_selected",
+                    "source_ref": "agent.distance",
+                }
+            ],
+            [],
+        )
+
+        result = toolkit.solve_candidate(
+            scope="layout",
+            constraint_ids=["true_distance"],
+        )
+        state = toolkit.store.get()
+        first_position = state.entities["first"].solved_transform.translation_m
+        second_position = state.entities["second"].solved_transform.translation_m
+
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(second_position[2], 3.0)
+        self.assertAlmostEqual(math.dist(first_position, second_position), 5.0)
 
     def test_look_at_orientation_stops_changing_after_its_time_range(self) -> None:
         toolkit = _toolkit()

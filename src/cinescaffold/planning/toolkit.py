@@ -45,6 +45,7 @@ from cinescaffold.planning.geometry import (
     geometry_local_bounds_points,
     length,
     look_at_camera_quaternion,
+    look_at_entity_quaternion,
     normalize,
     project_geometry_bounds,
     project_point,
@@ -66,7 +67,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 from cinescaffold.relationships import classify_relationship
 
-TOOLKIT_VERSION = "0.39"
+TOOLKIT_VERSION = "0.40"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -167,6 +168,7 @@ PER_FRAME_CONSTRAINTS = {
     "projected_size",
     "projected_scale_ratio",
     "keep_in_frame",
+    "negative_space",
     "look_at",
     "camera_distance",
     "focal_length_range",
@@ -219,7 +221,10 @@ class _DesignRepairBaseline:
 
 def _commit_ready(report: ValidationReport | None, profile: PlanningProfile) -> bool:
     return bool(
-        report and report.hard_pass and report.soft_score >= profile.minimum_soft_score
+        report
+        and set(report.checks) == set(FULL_VALIDATION_CHECKS)
+        and report.hard_pass
+        and report.soft_score >= profile.minimum_soft_score
     )
 
 
@@ -381,6 +386,12 @@ class ScenePlanningToolkit:
                 for item in validation.violations
             )
         )
+
+    @property
+    def commit_ready(self) -> bool:
+        """Only a complete validator report may close the Agent tool surface."""
+
+        return _commit_ready(self.store.get().validation, self.profile)
 
     @property
     def has_current_repair_suggestions(self) -> bool:
@@ -678,6 +689,16 @@ class ScenePlanningToolkit:
                     "只有 explicit 画幅比例可主动驱动机位重排；inferred/default 范围只参与评分"
                 ),
                 "look_at_precedence": "生效的 look_at Track 覆盖摄影机 Transform Track 的旋转",
+                "entity_look_at_forward_axis": (
+                    "实体 look_at 以本地 +Y 为前向轴；摄影机仍以本地 -Z 为前向轴"
+                ),
+                "camera_initial_focus": (
+                    "focus_target_id 只用于求解初始取景，不在逐帧求值中覆盖旋转；"
+                    "持续跟踪必须使用 look_at Track"
+                ),
+                "visibility_interpolation": (
+                    "visibility 是布尔渲染状态，所有关键时间点都按 step 求值，不表示透明度渐变"
+                ),
                 "path_follow_precedence": (
                     "生效的 path_follow 生成位置并覆盖同实体静态求解位置；"
                     "target_relative 由 Resolver 逐帧递归合成"
@@ -1400,7 +1421,7 @@ class ScenePlanningToolkit:
             }
         elif view == "camera":
             if state.camera is None or (
-                camera_ids and state.camera.camera_id not in camera_ids
+                camera_ids and not _camera_filter_matches(state, camera_ids)
             ):
                 data = None
             else:
@@ -1694,7 +1715,16 @@ class ScenePlanningToolkit:
     ) -> dict[str, Any]:
         remove_ids = remove_ids or []
         try:
-            parsed = [TrackSpec.model_validate(item) for item in upserts]
+            current_tracks = self.store.get().motion_tracks
+            parsed = [
+                TrackSpec.model_validate(
+                    _preserve_track_provenance(
+                        item,
+                        current_tracks.get(item.get("track_id")),
+                    )
+                )
+                for item in upserts
+            ]
             _validate_unique_ids(
                 [item.track_id for item in parsed],
                 "Motion Track upserts",
@@ -1768,8 +1798,20 @@ class ScenePlanningToolkit:
                     status="unsupported",
                     capability_gaps=[f"camera_projection:{projection}"],
                 )
-            parsed_static = CameraStatic.model_validate(static)
-            parsed_tracks = [TrackSpec.model_validate(item) for item in tracks]
+            current_camera = self.store.get().camera
+            parsed_static = CameraStatic.model_validate(
+                _merge_camera_static(static, current_camera)
+            )
+            existing_tracks = current_camera.tracks if current_camera else {}
+            parsed_tracks = [
+                TrackSpec.model_validate(
+                    _preserve_track_provenance(
+                        item,
+                        existing_tracks.get(item.get("track_id")),
+                    )
+                )
+                for item in tracks
+            ]
             _validate_unique_ids(
                 [item.track_id for item in parsed_tracks],
                 "Camera Track upserts",
@@ -1895,7 +1937,15 @@ class ScenePlanningToolkit:
                 [item.constraint_id for item in parsed_constraints],
                 "Constraint upserts",
             )
-            parsed_tracks = [TrackSpec.model_validate(item) for item in motion_upserts]
+            parsed_tracks = [
+                TrackSpec.model_validate(
+                    _preserve_track_provenance(
+                        item,
+                        current.motion_tracks.get(item.get("track_id")),
+                    )
+                )
+                for item in motion_upserts
+            ]
             _validate_unique_ids(
                 [item.track_id for item in parsed_tracks],
                 "Motion Track upserts",
@@ -1950,10 +2000,19 @@ class ScenePlanningToolkit:
                 if camera_patch.get("projection") != "perspective":
                     raise ValueError("当前只支持 perspective Camera Patch")
                 parsed_camera_static = CameraStatic.model_validate(
-                    camera_patch.get("static")
+                    _merge_camera_static(
+                        camera_patch.get("static"),
+                        current.camera,
+                    )
                 )
+                existing_camera_tracks = current.camera.tracks if current.camera else {}
                 parsed_camera_tracks = [
-                    TrackSpec.model_validate(item)
+                    TrackSpec.model_validate(
+                        _preserve_track_provenance(
+                            item,
+                            existing_camera_tracks.get(item.get("track_id")),
+                        )
+                    )
                     for item in camera_patch.get("tracks", [])
                 ]
                 _validate_unique_ids(
@@ -3734,8 +3793,7 @@ def _validate_renderable_keyframes(track: TrackSpec, timeline: TimelineSpec) -> 
     frame_step = timeline.fps_denominator / timeline.fps_numerator
     last_frame_time = (timeline.frame_count - 1) * frame_step
     if any(
-        keyframe.time_seconds > last_frame_time + 1e-9
-        for keyframe in track.keyframes
+        keyframe.time_seconds > last_frame_time + 1e-9 for keyframe in track.keyframes
     ):
         raise ValueError(f"Track 关键帧晚于最后可渲染帧：{track.track_id}")
 
@@ -3743,10 +3801,15 @@ def _validate_renderable_keyframes(track: TrackSpec, timeline: TimelineSpec) -> 
 def _is_active_camera_reference(state: CandidateState, value: Any) -> bool:
     """Treat camera_main as a stable alias for the one active camera."""
 
-    return state.camera is not None and value in {
-        "camera_main",
-        state.camera.camera_id,
-    }
+    return (
+        state.camera is not None
+        and state.camera.active
+        and value
+        in {
+            "camera_main",
+            state.camera.camera_id,
+        }
+    )
 
 
 def _complete_transform(value: TransformValue) -> TransformValue:
@@ -3874,14 +3937,37 @@ def _apply_layout_constraint(
             params.get("maximum_meters", max(minimum, profile.default_depth_gap_m))
         )
         distance = (minimum + maximum) / 2.0
+        delta = subtract(second.translation_m, first.translation_m)
+        preserve_vertical = (
+            state.entities[ids[1]].ground_interaction.mode == "must_touch"
+            and state.entities[ids[1]].ground_interaction.ground_entity_id is not None
+        )
+        if preserve_vertical:
+            vertical_distance = abs(delta[2])
+            if vertical_distance > maximum + profile.numeric_tolerance:
+                return False
+            distance = max(distance, vertical_distance)
+            horizontal_distance = math.sqrt(
+                max(0.0, distance * distance - vertical_distance * vertical_distance)
+            )
+            horizontal_direction = normalize((delta[0], delta[1], 0.0))
+            if length(horizontal_direction) < profile.numeric_tolerance:
+                horizontal_direction = _camera_ground_forward(state, profile)
+            translation = (
+                first.translation_m[0] + horizontal_direction[0] * horizontal_distance,
+                first.translation_m[1] + horizontal_direction[1] * horizontal_distance,
+                second.translation_m[2],
+            )
+        else:
+            direction = normalize(delta)
+            if length(direction) < profile.numeric_tolerance:
+                direction = _camera_ground_forward(state, profile)
+            translation = add(
+                first.translation_m,
+                tuple(component * distance for component in direction),
+            )
         state.entities[ids[1]].solved_transform = second.model_copy(
-            update={
-                "translation_m": (
-                    first.translation_m[0],
-                    first.translation_m[1] + distance,
-                    second.translation_m[2],
-                )
-            }
+            update={"translation_m": translation}
         )
         return True
     if constraint.type == "surface_clearance_range":
@@ -5530,6 +5616,11 @@ def _ground_penetration_violations(
         for entity in state.entities.values():
             if entity.entity_id in ground_ids:
                 continue
+            if not _entity_visibility_at(state, entity.entity_id, time_seconds):
+                # Hidden delivery proxies do not contribute pixels or physical
+                # simulation. Their parked transform must not create a visual
+                # ground failure after an enter/disappear transition.
+                continue
             interaction = entity.ground_interaction
             if interaction.mode == "unconstrained":
                 continue
@@ -5668,6 +5759,8 @@ def _camera_violations(
 ) -> list[Violation]:
     if state.camera is None:
         return [_violation("CAMERA_MISSING", "缺少活动透视摄影机")]
+    if not state.camera.active:
+        return [_violation("CAMERA_INACTIVE", "唯一摄影机未设为 active")]
     transform = state.camera.solved_transform
     violations: list[Violation] = []
     if transform.translation_m is None or transform.rotation_quaternion_wxyz is None:
@@ -6027,6 +6120,46 @@ def _explicit_camera_parameter_violations(
                     adjustable_variables=["camera focus target"],
                 )
             )
+        elif isinstance(expected_focus, str) and expected_focus in state.entities:
+            resolver = _WorldTransformResolver(state, 0.0, profile)
+            initial_camera = resolver.camera()
+            visible = _entity_visibility_at(state, expected_focus, 0.0)
+            inside_fraction = 0.0
+            bounds = None
+            if initial_camera is not None and visible:
+                camera_transform, focal_length = initial_camera
+                bounds = _projection_bounds(
+                    state,
+                    expected_focus,
+                    {expected_focus: resolver.entity(expected_focus)},
+                    camera_transform,
+                    focal_length,
+                    profile,
+                )
+                if bounds[4] > 0.0:
+                    inside_fraction = _bounds_inside_fraction(bounds)
+            if not visible or inside_fraction + profile.numeric_tolerance < 0.01:
+                violations.append(
+                    _violation(
+                        "EXPLICIT_CAMERA_FOCUS_NOT_VISIBLE",
+                        "明确的初始取景目标在首帧不可见；仅填写 focus_target_id 不能代替实际取景",
+                        entity_ids=[expected_focus],
+                        expected={
+                            "focus_target_id": expected_focus,
+                            "minimum_inside_fraction": 0.01,
+                            "at_seconds": 0.0,
+                        },
+                        actual={
+                            "render_visible": visible,
+                            "inside_fraction": inside_fraction,
+                            "projected_bounds": bounds,
+                        },
+                        adjustable_variables=[
+                            "camera transform",
+                            "camera focal length",
+                        ],
+                    )
+                )
 
     relation_ref = "content.camera.view_relation_to_motion"
     if relation_ref in required:
@@ -6104,16 +6237,24 @@ def _camera_motion_view_relation(
         best: tuple[float, float, tuple[float, float, float]] | None = None
         best_length = 0.0
         for start_time, end_time in zip(times, times[1:], strict=False):
-            start_position = _WorldTransformResolver(
-                state,
-                start_time,
-                profile,
-            ).entity(entity_id).translation_m
-            end_position = _WorldTransformResolver(
-                state,
-                end_time,
-                profile,
-            ).entity(entity_id).translation_m
+            start_position = (
+                _WorldTransformResolver(
+                    state,
+                    start_time,
+                    profile,
+                )
+                .entity(entity_id)
+                .translation_m
+            )
+            end_position = (
+                _WorldTransformResolver(
+                    state,
+                    end_time,
+                    profile,
+                )
+                .entity(entity_id)
+                .translation_m
+            )
             delta = subtract(end_position, start_position)
             distance = math.hypot(delta[0], delta[1])
             if distance > best_length:
@@ -6485,6 +6626,35 @@ def _track_source_refs(track: TrackSpec) -> set[str]:
     return refs
 
 
+def _preserve_track_provenance(
+    payload: dict[str, Any],
+    existing: TrackSpec | None,
+) -> dict[str, Any]:
+    """Keep provenance fields omitted by the compact Agent patch schema."""
+
+    normalized = dict(payload)
+    if existing is None:
+        return normalized
+    if "source_ref" not in normalized:
+        normalized["source_ref"] = existing.source_ref
+    if "source_refs" not in normalized:
+        normalized["source_refs"] = list(existing.source_refs)
+    return normalized
+
+
+def _merge_camera_static(
+    payload: Any,
+    existing: CameraCandidate | None,
+) -> dict[str, Any]:
+    """Apply camera-static merge semantics without erasing hidden provenance."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("Camera static 必须是对象")
+    normalized = existing.static.model_dump(mode="json") if existing else {}
+    normalized.update(payload)
+    return normalized
+
+
 def _known_entity_ids(value: Any, known_ids: set[str]) -> set[str]:
     if isinstance(value, str):
         return {value} if value in known_ids else set()
@@ -6772,6 +6942,8 @@ def _projection_violations(
     if state.camera is None:
         return []
     violations: list[Violation] = []
+    eligible_samples = {entity_id: 0 for entity_id in state.entities}
+    projectable_samples = {entity_id: 0 for entity_id in state.entities}
     for time_seconds in _timeline_frame_times(state.timeline):
         resolver = _WorldTransformResolver(state, time_seconds, profile)
         camera = resolver.camera()
@@ -6786,6 +6958,7 @@ def _projection_violations(
                 continue
             if not _entity_visibility_at(state, entity_id, time_seconds):
                 continue
+            eligible_samples[entity_id] += 1
             bounds = _projection_bounds(
                 state,
                 entity_id,
@@ -6800,14 +6973,34 @@ def _projection_violations(
                         "ENTITY_NOT_PROJECTABLE",
                         f"Entity 在摄影机后方或跨越摄影机平面：{entity_id}",
                         entity_ids=[entity_id],
-                        time_range_seconds=(
-                            time_seconds,
-                            min(time_seconds + 1e-6, state.timeline.duration_seconds),
-                        ),
+                        # Sampled diagnostics use a zero-length point range so
+                        # the Agent payload coalescer can turn adjacent frame
+                        # failures into one bounded temporal segment.
+                        time_range_seconds=(time_seconds, time_seconds),
                         actual={"projected_bounds": bounds},
-                    )
+                    ).model_copy(update={"severity": "warning"})
                 )
-                break
+            else:
+                projectable_samples[entity_id] += 1
+    for entity_id, sample_count in eligible_samples.items():
+        if sample_count > 0 and projectable_samples[entity_id] == 0:
+            violations.append(
+                _violation(
+                    "ENTITY_NEVER_PROJECTABLE",
+                    f"可见 Entity 在整个叙事窗口内从未进入摄影机前方：{entity_id}",
+                    entity_ids=[entity_id],
+                    time_range_seconds=(0.0, state.timeline.duration_seconds),
+                    expected={"minimum_projectable_samples": 1},
+                    actual={
+                        "eligible_samples": sample_count,
+                        "projectable_samples": 0,
+                    },
+                    adjustable_variables=[
+                        f"entities.{entity_id}.solved_transform",
+                        "camera transform",
+                    ],
+                )
+            )
     return violations
 
 
@@ -7441,9 +7634,8 @@ def _constraint_violation(
             return None
         if constraint.type == "speed_range":
             target_id = params.get("target_id")
-            if (
-                target_id not in state.entities
-                and not _is_active_camera_reference(state, target_id)
+            if target_id not in state.entities and not _is_active_camera_reference(
+                state, target_id
             ):
                 return _constraint_error(
                     constraint, "CONSTRAINT_REFERENCE_MISSING", None
@@ -7618,6 +7810,10 @@ class _WorldTransformResolver:
                 (track for track in tracks if track.type == "path_follow"),
                 None,
             )
+            look_track = next(
+                (track for track in tracks if track.type == "look_at"),
+                None,
+            )
             raw = sample_transform_track(
                 transform_track,
                 self.time_seconds,
@@ -7626,13 +7822,63 @@ class _WorldTransformResolver:
             if path_track is not None:
                 raw = sample_path_track(path_track, self.time_seconds, raw)
             world = self._to_world(raw, entity_id=entity_id)
+            look_sample_time = (
+                _look_at_sample_time(
+                    look_track,
+                    self.time_seconds,
+                    self.state.timeline.duration_seconds,
+                    self.state.timeline.fps_denominator
+                    / self.state.timeline.fps_numerator,
+                )
+                if look_track is not None
+                else None
+            )
+            if look_sample_time is not None and look_track is not None:
+                target = self._look_at_target_position(
+                    look_track.target_id,
+                    look_sample_time,
+                )
+                observer = world
+                if look_sample_time < self.time_seconds:
+                    # The look phase owns orientation only through its last
+                    # renderable frame. Later translation must not keep aiming.
+                    observer = _WorldTransformResolver(
+                        self.state,
+                        look_sample_time,
+                        self.profile,
+                    )._raw_entity_transform(entity_id)
+                desired = look_at_entity_quaternion(
+                    observer.translation_m,
+                    target,
+                )
+                rotation = desired
+                if look_track.interpolation == "smooth":
+                    start, end = look_track.time_range_seconds
+                    sampled_end = min(end, self.state.timeline.duration_seconds) - (
+                        self.state.timeline.fps_denominator
+                        / self.state.timeline.fps_numerator
+                    )
+                    ratio = min(
+                        1.0,
+                        max(
+                            0.0,
+                            (look_sample_time - start) / max(sampled_end - start, 1e-9),
+                        ),
+                    )
+                    ratio = ratio * ratio * (3.0 - 2.0 * ratio)
+                    rotation = _nlerp_camera_quaternion(
+                        world.rotation_quaternion_wxyz,
+                        desired,
+                        ratio,
+                    )
+                world = world.model_copy(update={"rotation_quaternion_wxyz": rotation})
             self._entities[entity_id] = world
             return world
         finally:
             self._leave(token)
 
     def camera(self) -> tuple[TransformValue, float] | None:
-        if self.state.camera is None:
+        if self.state.camera is None or not self.state.camera.active:
             return None
         if self._camera is not None:
             return self._camera
@@ -7656,17 +7902,6 @@ class _WorldTransformResolver:
                 if look_track is not None
                 else None
             )
-            initial_focus_id = self.state.camera.static.focus_target_id
-            if initial_focus_id in self.state.entities:
-                target = self._entity_at_time(initial_focus_id, 0.0).translation_m
-                transform = transform.model_copy(
-                    update={
-                        "rotation_quaternion_wxyz": look_at_camera_quaternion(
-                            transform.translation_m,
-                            target,
-                        )
-                    }
-                )
             if (
                 look_sample_time is not None
                 and look_track is not None
@@ -7736,6 +7971,67 @@ class _WorldTransformResolver:
             time_seconds,
             self.profile,
         ).entity(entity_id)
+
+    def _look_at_target_position(
+        self,
+        target_id: str | None,
+        time_seconds: float,
+    ) -> tuple[float, float, float]:
+        if target_id is None:
+            raise ValueError("look_at Track 缺少 target_id")
+        if _is_active_camera_reference(self.state, target_id):
+            camera_transform = (
+                self._raw_camera_transform()
+                if abs(time_seconds - self.time_seconds) <= 1e-12
+                else _WorldTransformResolver(
+                    self.state,
+                    time_seconds,
+                    self.profile,
+                )._raw_camera_transform()
+            )
+            return camera_transform.translation_m
+        target = (
+            self._raw_entity_transform(target_id)
+            if abs(time_seconds - self.time_seconds) <= 1e-12
+            else _WorldTransformResolver(
+                self.state,
+                time_seconds,
+                self.profile,
+            )._raw_entity_transform(target_id)
+        )
+        # A look-at constraint needs the target's position, not its solved
+        # orientation. Resolving the target's own look-at here makes two
+        # mutually facing entities (or an entity and camera) recurse forever.
+        return target.translation_m
+
+    def _raw_entity_transform(
+        self,
+        entity_id: str,
+    ) -> TransformValue:
+        """Evaluate one entity without its look-at orientation override."""
+
+        entity = self.state.entities[entity_id]
+        tracks = [
+            track
+            for track in self.state.motion_tracks.values()
+            if track.target_entity_id == entity_id
+        ]
+        transform_track = next(
+            (track for track in tracks if track.type == "transform"),
+            None,
+        )
+        path_track = next(
+            (track for track in tracks if track.type == "path_follow"),
+            None,
+        )
+        raw = sample_transform_track(
+            transform_track,
+            self.time_seconds,
+            entity.solved_transform,
+        )
+        if path_track is not None:
+            raw = sample_path_track(path_track, self.time_seconds, raw)
+        return self._to_world(raw, entity_id=entity_id)
 
     def _raw_camera_transform(self) -> TransformValue:
         """Evaluate camera transform/path without focus or look-at overrides."""
@@ -8053,6 +8349,8 @@ def _validate_inspect_filters(
     if unknown_entities:
         raise ValueError("inspect 引用了未知 Entity：" + ", ".join(unknown_entities))
     known_cameras = {state.camera.camera_id} if state.camera else set()
+    if state.camera is not None:
+        known_cameras.add("camera_main")
     unknown_cameras = sorted(set(camera_ids) - known_cameras)
     if unknown_cameras:
         raise ValueError("inspect 引用了未知 Camera：" + ", ".join(unknown_cameras))
@@ -8079,7 +8377,12 @@ def _validate_inspect_filters(
         "entities": {"entity_ids"},
         "camera": {"camera_ids", "time_range_seconds"},
         "constraints": {"constraint_ids", "time_range_seconds"},
-        "violations": {"entity_ids", "constraint_ids", "time_range_seconds"},
+        "violations": {
+            "entity_ids",
+            "camera_ids",
+            "constraint_ids",
+            "time_range_seconds",
+        },
         "timeline": set(),
         "diff": set(),
         "full_ir": {
@@ -8118,6 +8421,62 @@ def _time_ranges_overlap(
     return left[0] < right[1] and right[0] < left[1]
 
 
+def _camera_filter_matches(state: CandidateState, camera_ids: list[str]) -> bool:
+    return bool(
+        state.camera
+        and set(camera_ids).intersection({"camera_main", state.camera.camera_id})
+    )
+
+
+def _violation_references_camera(
+    state: CandidateState,
+    violation: dict[str, Any],
+) -> bool:
+    if state.camera is None:
+        return False
+    aliases = {"camera_main", state.camera.camera_id}
+    if aliases.intersection(violation.get("entity_ids", [])):
+        return True
+    constraint_id = violation.get("constraint_id")
+    constraint = state.constraints.get(constraint_id) if constraint_id else None
+    if constraint is not None:
+        if constraint.type in CAMERA_DEPENDENT_CONSTRAINTS | {
+            "camera_motion_direction",
+        }:
+            return True
+        if aliases.intersection(_all_string_values(_parameters(constraint))):
+            return True
+    code = str(violation.get("code", ""))
+    if any(
+        marker in code
+        for marker in (
+            "CAMERA",
+            "FOCAL",
+            "PROJECT",
+            "FRAME",
+            "SCREEN",
+            "NEGATIVE_SPACE",
+            "VISIBILITY_FRACTION",
+            "VIEW_SUBJECT",
+        )
+    ):
+        return True
+    return any(
+        "camera" in str(variable).lower()
+        for variable in violation.get("adjustable_variables", [])
+    )
+
+
+def _all_string_values(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, dict):
+        return set().union(*(_all_string_values(item) for item in value.values()))
+    if isinstance(value, (list, tuple)):
+        return set().union(*(_all_string_values(item) for item in value))
+    return set()
+
+
 def _filtered_validation_payload(
     state: CandidateState,
     *,
@@ -8137,7 +8496,7 @@ def _filtered_validation_payload(
             continue
         if constraint_ids and violation.get("constraint_id") not in constraint_ids:
             continue
-        if camera_ids and state.camera is None:
+        if camera_ids and not _violation_references_camera(state, violation):
             continue
         violation_time = violation.get("time_range_seconds")
         if (
@@ -8191,7 +8550,7 @@ def _filtered_candidate_payload(
         )
     }
     if state.camera is None or (
-        camera_ids and state.camera.camera_id not in camera_ids
+        camera_ids and not _camera_filter_matches(state, camera_ids)
     ):
         payload["camera"] = None
     elif payload["camera"] is not None and time_range_seconds is not None:
@@ -8241,13 +8600,67 @@ def _constraint_error(constraint: ConstraintSpec, code: str, actual: Any) -> Vio
         time_range_seconds=constraint.time_range_seconds,
         expected=_parameters(constraint),
         actual=actual,
-        adjustable_variables=[
-            "entity transforms",
-            "camera transform",
-            "camera focal length",
-        ],
+        adjustable_variables=_constraint_adjustable_variables(constraint),
         message=f"约束 {constraint.constraint_id} 未满足：{code}",
     )
+
+
+def _constraint_adjustable_variables(constraint: ConstraintSpec) -> list[str]:
+    """Return repair domains the evaluator can actually observe for this type."""
+
+    params = _parameters(constraint)
+    # Candidate invariants keep subjects equal to the parameter IDs that name
+    # actual entities. Camera aliases, including a custom active camera ID,
+    # therefore never masquerade as an entity repair path here.
+    entity_ids = list(dict.fromkeys(constraint.subjects))
+    entity_variables = [
+        f"entities.{entity_id}.solved_transform"
+        for entity_id in dict.fromkeys(entity_ids)
+    ]
+    if constraint.type == "focal_length_range":
+        return ["camera.static.focal_length_mm", "camera.tracks.focal_length"]
+    if constraint.type == "camera_motion_direction":
+        return ["camera.tracks.transform", "camera.tracks.path_follow"]
+    if constraint.type == "motion_direction":
+        target_id = params.get("target_id")
+        return [f"motion_tracks.{target_id}"]
+    if constraint.type == "speed_range":
+        target_id = params.get("target_id")
+        return (
+            ["camera.tracks.transform", "camera.tracks.path_follow"]
+            if target_id not in constraint.subjects
+            else [f"motion_tracks.{target_id}"]
+        )
+    if constraint.type == "hold":
+        target_id = params.get("target_id")
+        return [f"motion_tracks.{target_id}", *entity_variables]
+    if constraint.type == "visibility_fraction":
+        target_id = params.get("entity_id")
+        return [
+            f"motion_tracks.{target_id}.visibility",
+            *entity_variables,
+            "camera transform",
+            "camera focal length",
+        ]
+    if constraint.type == "look_at":
+        observer_id = params.get("observer_id")
+        observer_variable = (
+            f"motion_tracks.{observer_id}.look_at"
+            if observer_id in constraint.subjects
+            else "camera.tracks.look_at"
+        )
+        return [observer_variable, *entity_variables]
+    if constraint.type == "position_at_time":
+        return (
+            entity_variables
+            if params.get("target_id") in constraint.subjects
+            else ["camera transform"]
+        )
+    if constraint.type == "camera_distance":
+        return ["camera transform", *entity_variables]
+    if constraint.type in CAMERA_DEPENDENT_CONSTRAINTS:
+        return [*entity_variables, "camera transform", "camera focal length"]
+    return entity_variables or ["entity transforms"]
 
 
 def _violation(code: str, message: str, **kwargs) -> Violation:
