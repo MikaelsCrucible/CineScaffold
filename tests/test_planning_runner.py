@@ -36,6 +36,7 @@ from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.runner import (
     InterpreterRunConfig,
     InterpreterRunner,
+    _agent_error_payload,
     _diagnose_repeated_tool_failure,
     _effective_limits,
     _planning_model_settings,
@@ -61,6 +62,14 @@ from tests.helpers import ROOT, valid_planning_brief
 
 
 class InterpreterRunnerTest(unittest.TestCase):
+    def test_model_http_error_has_stable_provider_failure_code(self) -> None:
+        payload = _agent_error_payload(
+            ModelHTTPError(503, "deepseek-flash", {"error": "busy"})
+        )
+
+        self.assertEqual(payload["http_status"], "503")
+        self.assertEqual(payload["failure_code"], "provider_overloaded")
+
     def test_repeated_failure_probe_distinguishes_agent_from_framework(self) -> None:
         objective = project_objective_brief(valid_planning_brief()).objective_brief
         resolution = freeze_brief_duration(

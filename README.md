@@ -413,7 +413,7 @@ Runtime Validation 通过后，固定 Executor 还会在视频渲染前最佳努
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-Provider HTTP 边界使用无网络模拟回归覆盖认证拒绝（`401`）、限流（`429`）、余额不足（`402`）与超时；HTTP 拒绝保留类型化状态码且底层不会自动重试。模型响应前的明确请求拒绝会结算零费用，超时继续保留账单不确定性；金额越线另由 Workflow 测试确认 Semantic 已产生的费用先记录，随后在 Planning 前停止。
+Provider HTTP 边界使用无网络模拟回归覆盖认证拒绝（`401`）、限流（`429`）、余额不足（`402`）、服务繁忙（`503`）、网络失败与超时；HTTP 拒绝保留类型化状态码且底层不会自动重试。HTTP 响应按固定总墙钟截止时间增量读取，DeepSeek 非流式空行保活可以继续传输，但不能刷新或延长 `semantic_timeout`。Pipeline Summary 额外携带稳定、无 Secret 的 `failure_code`，供宿主区分过载、限流、认证、余额、网络与超时；原始 Provider 正文仍只保留在内部诊断产物。模型响应前的明确请求拒绝会结算零费用，超时与 5xx 继续保留账单不确定性；金额越线另由 Workflow 测试确认 Semantic 已产生的费用先记录，随后在 Planning 前停止。
 
 JSON Schema 与 Prompt 位于 [`src/cinescaffold/resources/`](src/cinescaffold/resources/)，核心实现位于 [`src/cinescaffold/`](src/cinescaffold/)。这些资源是源码运行与 wheel 安装共用的唯一权威副本。
 

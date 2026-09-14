@@ -34,6 +34,7 @@
 
 ### Fixed
 
+- Core 0.8.28 对 Provider HTTP 响应执行真正的总墙钟截止时间；DeepSeek 非流式空行保活仍可被解析，但不能刷新 `semantic_timeout`。HTTP、网络与超时异常新增稳定、无 Secret 的 Provider failure code，503 明确归类为 `provider_overloaded`，Planning 的 PydanticAI HTTP 异常使用同一状态码映射。底层仍不自动重试，避免在 usage 未知时制造重复费用。
 - Core 0.8.24 修复闭合目标相对路径被通用方向清理误伤的问题：`circular/elliptical + relative_to_target + target_id` 自身就是完整几何证据，不再要求重复的自然语言 `direction` 标注。若 motion 唯一缺失目标、但同一事件存在唯一规范公转关系，Semantic 会确定性补齐；多候选和冲突目标继续失败关闭。模糊线性“驶来/离开”的伪目标清理规则不变。
 - Core 0.8.23 / Toolkit v0.41 修复 Semantic 合法输出无法映射到 Planning Schema、`motion_id` 可借无关来源绕过类型校验、多个轨道证据按主体键互相覆盖、仅短暂重叠的相对路径冒充完整动作，以及闭合轨道冒充刚性携带绑定。Semantic、确定性构建器与 Skeleton Validator 现在共用同一闭合运动映射；相对运动和携带按完整区间并集检查，携带额外要求相对 Transform 恒定。
 - Core 0.8.22 / Toolkit v0.40 修复“Agent 已正确表达但执行/判断层丢失”的跨层缺陷：实体 `look_at` 现在真实进入逐帧求值和 Scene IR；初始 `focus_target_id` 不再覆盖摄影机旋转时间线或制造隐式跟踪；布尔 visibility 不再因通用线性插值提前切换；Track 全局插值不再是无效字段。组合 Patch 在确定性工具穷尽后可为新实体提交完整受限 Transform，并保留紧凑 Schema 不可见的次级来源映射，避免正确修复被 unresolved/provenance 门禁反向拒绝。

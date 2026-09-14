@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from cinescaffold.errors import ProviderHTTPError
+from cinescaffold.errors import ProviderError, ProviderHTTPError
 from cinescaffold.execution.runner import ExecutionConfig, ExecutionRunner
 from cinescaffold.planning.runner import InterpreterRunConfig, InterpreterRunner
 from cinescaffold.planning.trace import (
@@ -85,6 +85,7 @@ class WorkflowRunner:
             "stages": {},
             "artifacts": {},
             "error": None,
+            "failure_code": None,
         }
         self._emit("pipeline_started", started_from=source.kind, output_dir=str(output_dir))
         stage = "semantic" if source.kind in {"text", "textual_six"} else "input"
@@ -126,6 +127,9 @@ class WorkflowRunner:
                         "cost_limit_exceeded" if cost_limited else "planning_failed"
                     )
                     summary["error"] = _planning_error(planning_result.error)
+                    summary["failure_code"] = _planning_failure_code(
+                        planning_result.error
+                    )
                     return self._finish(summary, summary_path, started)
                 scene_ir_name = planning_result.artifacts.get("scene_ir")
                 if not scene_ir_name:
@@ -179,9 +183,21 @@ class WorkflowRunner:
                 currency=error.currency,
             )
             return self._finish(summary, summary_path, started)
+        except ProviderError as error:
+            summary["status"] = f"{stage}_failed"
+            summary["error"] = str(error)
+            summary["failure_code"] = error.failure_code
+            self._emit(
+                "pipeline_failed",
+                stage=stage,
+                error=str(error),
+                failure_code=error.failure_code,
+            )
+            return self._finish(summary, summary_path, started)
         except Exception as error:
             summary["status"] = f"{stage}_failed"
             summary["error"] = str(error)
+            summary["failure_code"] = "pipeline_failed"
             self._emit("pipeline_failed", stage=stage, error=str(error))
             return self._finish(summary, summary_path, started)
 
@@ -404,6 +420,12 @@ def _planning_error(error: dict[str, str] | None) -> str:
     if not error:
         return "场景规划未成功提交 Scene IR"
     return error.get("message", str(error))
+
+
+def _planning_failure_code(error: dict[str, str] | None) -> str:
+    if not error:
+        return "planning_failed"
+    return error.get("failure_code", "planning_failed")
 
 
 def _stage_cost(stage: Any) -> Decimal:

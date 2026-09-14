@@ -7,7 +7,12 @@ from unittest.mock import patch
 from typing import Any
 from urllib.error import HTTPError
 
-from cinescaffold.errors import ProviderError, ProviderHTTPError
+from cinescaffold.errors import (
+    ProviderError,
+    ProviderHTTPError,
+    ProviderNetworkError,
+    ProviderTimeoutError,
+)
 from cinescaffold.providers.deepseek import DeepSeekProvider
 from cinescaffold.providers.http import post_json
 from cinescaffold.providers.openai import OpenAIProvider
@@ -165,11 +170,12 @@ class ProviderTest(unittest.TestCase):
 
     def test_http_provider_rejections_are_reported_without_retrying(self) -> None:
         cases = (
-            (401, "invalid authentication"),
-            (429, "rate limit exceeded"),
-            (402, "insufficient balance"),
+            (401, "invalid authentication", "provider_authentication_failed"),
+            (429, "rate limit exceeded", "provider_rate_limited"),
+            (402, "insufficient balance", "provider_balance_exhausted"),
+            (503, "server overloaded", "provider_overloaded"),
         )
-        for status_code, detail in cases:
+        for status_code, detail, failure_code in cases:
             with self.subTest(status_code=status_code):
                 error = HTTPError(
                     "https://provider.invalid/v1/test",
@@ -196,14 +202,18 @@ class ProviderTest(unittest.TestCase):
                 mocked_urlopen.assert_called_once()
                 self.assertIsInstance(raised.exception, ProviderHTTPError)
                 self.assertEqual(raised.exception.status_code, status_code)
-                self.assertTrue(raised.exception.confirmed_not_billed)
+                self.assertEqual(raised.exception.failure_code, failure_code)
+                self.assertEqual(
+                    raised.exception.confirmed_not_billed,
+                    status_code != 503,
+                )
 
     def test_http_provider_timeout_is_normalized(self) -> None:
         with patch(
             "cinescaffold.providers.http.urlopen",
             side_effect=TimeoutError("simulated timeout"),
         ) as mocked_urlopen:
-            with self.assertRaisesRegex(ProviderError, "API 请求超时"):
+            with self.assertRaisesRegex(ProviderTimeoutError, "墙钟超时"):
                 post_json(
                     "https://provider.invalid/v1/test",
                     {"Authorization": "Bearer test-secret"},
@@ -212,6 +222,77 @@ class ProviderTest(unittest.TestCase):
                 )
 
         mocked_urlopen.assert_called_once()
+
+    def test_http_keep_alive_bytes_do_not_extend_wall_clock_timeout(self) -> None:
+        response = _ChunkedResponse([b"\n", b"\n", b"\n"])
+        with (
+            patch("cinescaffold.providers.http.urlopen", return_value=response),
+            patch(
+                "cinescaffold.providers.http.time.monotonic",
+                side_effect=(0.0, 0.2, 0.8, 1.01),
+            ),
+        ):
+            with self.assertRaisesRegex(ProviderTimeoutError, "墙钟超时"):
+                post_json(
+                    "https://provider.invalid/v1/test",
+                    {"Authorization": "Bearer test-secret"},
+                    {"model": "test-model"},
+                    1.0,
+                )
+
+        self.assertEqual(response.read_count, 2)
+
+    def test_http_incremental_reader_accepts_keep_alive_before_json(self) -> None:
+        response = _ChunkedResponse([b"\n", b'{"ok":', b"true}", b""])
+        with (
+            patch("cinescaffold.providers.http.urlopen", return_value=response),
+            patch(
+                "cinescaffold.providers.http.time.monotonic",
+                side_effect=(0.0, 0.1, 0.2, 0.3, 0.4),
+            ),
+        ):
+            result = post_json(
+                "https://provider.invalid/v1/test",
+                {"Authorization": "Bearer test-secret"},
+                {"model": "test-model"},
+                1.0,
+            )
+
+        self.assertEqual(result, {"ok": True})
+
+    def test_http_network_error_is_typed(self) -> None:
+        from urllib.error import URLError
+
+        with patch(
+            "cinescaffold.providers.http.urlopen",
+            side_effect=URLError("unreachable"),
+        ):
+            with self.assertRaisesRegex(ProviderNetworkError, "网络错误"):
+                post_json(
+                    "https://provider.invalid/v1/test",
+                    {},
+                    {"model": "test-model"},
+                    1.0,
+                )
+
+
+class _ChunkedResponse:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = iter(chunks)
+        self.read_count = 0
+
+    def __enter__(self) -> "_ChunkedResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read1(self, _size: int) -> bytes:
+        self.read_count += 1
+        return next(self._chunks)
+
+    def read(self, _size: int = -1) -> bytes:
+        raise AssertionError("incremental read1 must be used")
 
 
 if __name__ == "__main__":

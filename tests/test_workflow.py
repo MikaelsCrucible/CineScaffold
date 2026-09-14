@@ -69,6 +69,29 @@ class _ExecutionRunner:
         )
 
 
+class _FailedPlanningRunner:
+    def __init__(self, config, *, progress_callback=None) -> None:
+        self.config = config
+
+    async def run(self, _brief):
+        return InterpreterRunResult(
+            run_id="workflow-failed-test",
+            status="failed",
+            provider="deepseek",
+            model="deepseek-flash",
+            terminal_type=None,
+            scene_ir_hash=None,
+            final_revision=0,
+            usage={"tokens": {"requests": 1, "tool_calls": 0}},
+            artifacts={},
+            error={
+                "type": "ModelHTTPError",
+                "message": "provider response stays internal",
+                "failure_code": "provider_overloaded",
+            },
+        )
+
+
 class _UsageProvider:
     name = "usage-test"
     model = "usage-test-model"
@@ -93,8 +116,11 @@ class _RejectedProvider:
     name = "rejection-test"
     model = "rejection-test-model"
 
+    def __init__(self, status_code: int = 402) -> None:
+        self.status_code = status_code
+
     def generate(self, _system_prompt, _user_prompt, _schema):
-        raise ProviderHTTPError(402, "insufficient balance")
+        raise ProviderHTTPError(self.status_code, "provider rejection")
 
 
 class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
@@ -139,6 +165,7 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(summary["status"], "success")
             self.assertEqual(summary["delivery_tier"], "standard")
+            self.assertIsNone(summary["failure_code"])
             self.assertTrue((root / "run/cinematic_brief.json").is_file())
             self.assertTrue((root / "run/textual_six_dimensions.txt").is_file())
             self.assertTrue(Path(summary["artifacts"]["video"]).is_file())
@@ -196,6 +223,7 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(summary["status"], "semantic_failed")
             self.assertIn("缺少 Provider", summary["error"])
+            self.assertEqual(summary["failure_code"], "pipeline_failed")
             self.assertTrue((root / "run/pipeline_summary.json").is_file())
 
     async def test_semantic_cost_is_emitted_and_stops_before_planning(self) -> None:
@@ -231,6 +259,18 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("provider_cost_incurred", events)
         self.assertIn("provider_cost_limit_exceeded", events)
         self.assertNotIn("pipeline_planning_started", events)
+
+    async def test_planning_provider_failure_code_reaches_pipeline_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = await WorkflowRunner(
+                self._config(root, semantic=True),
+                planning_runner_type=_FailedPlanningRunner,
+                execution_runner_type=_ExecutionRunner,
+            ).run(PipelineSource(kind="text", text="测试"))
+
+        self.assertEqual(summary["status"], "planning_failed")
+        self.assertEqual(summary["failure_code"], "provider_overloaded")
 
     async def test_semantic_cost_is_emitted_before_invalid_response_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -294,11 +334,46 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
             ).run(PipelineSource(kind="text", text="测试"))
 
         self.assertEqual(summary["status"], "semantic_failed")
+        self.assertEqual(summary["failure_code"], "provider_balance_exhausted")
         settlements = [payload for name, payload in events if name == "provider_cost_incurred"]
         self.assertEqual(len(settlements), 1)
         self.assertEqual(settlements[0]["amount"], "0.00000000")
         self.assertEqual(settlements[0]["billing_resolution"], "confirmed_not_billed")
         self.assertEqual(settlements[0]["http_status"], 402)
+
+    async def test_semantic_overload_exposes_safe_failure_code_without_zero_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self._config(root, semantic=True)
+            rates = CostRates(
+                currency="CNY",
+                input_per_million=Decimal("1"),
+                output_per_million=Decimal("1"),
+                source="test",
+            )
+            config = PipelineRunConfig(
+                **{
+                    **config.__dict__,
+                    "semantic_provider": _RejectedProvider(503),
+                    "semantic_cost_rates": rates,
+                    "planning": config.planning.model_copy(update={"cost_rates": rates}),
+                    "max_provider_cost": Decimal("2"),
+                    "provider_cost_currency": "CNY",
+                }
+            )
+            events: list[tuple[str, dict[str, object]]] = []
+            summary = await WorkflowRunner(
+                config,
+                progress_callback=lambda name, payload: events.append((name, payload)),
+                planning_runner_type=_PlanningRunner,
+                execution_runner_type=_ExecutionRunner,
+            ).run(PipelineSource(kind="text", text="测试"))
+
+        self.assertEqual(summary["status"], "semantic_failed")
+        self.assertEqual(summary["failure_code"], "provider_overloaded")
+        self.assertFalse(any(name == "provider_cost_incurred" for name, _ in events))
+        failure = next(payload for name, payload in events if name == "pipeline_failed")
+        self.assertEqual(failure["failure_code"], "provider_overloaded")
 
 
 if __name__ == "__main__":

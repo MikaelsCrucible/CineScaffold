@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic_ai.exceptions import AgentRunError, UsageLimitExceeded
+from pydantic_ai.exceptions import AgentRunError, ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from cinescaffold.errors import provider_http_failure_code
 from cinescaffold.planning.agent import (
     DesignSearchStalled,
     PlanningDeps,
@@ -421,10 +422,7 @@ class InterpreterRunner:
                         status = "failed"
                         break
                     except AgentRunError as error:
-                        error_payload = {
-                            "type": type(error).__name__,
-                            "message": str(error),
-                        }
+                        error_payload = _agent_error_payload(error)
                         recovery_context = _recovery_context(
                             toolkit,
                             stage="agent_response",
@@ -590,7 +588,7 @@ class InterpreterRunner:
             trace.record("run_failed", status=status, error=error_payload)
         except Exception as error:
             status = "failed"
-            error_payload = {"type": type(error).__name__, "message": str(error)}
+            error_payload = _agent_error_payload(error)
             if (
                 not self.config.full_power_diagnostic
                 and toolkit is not None
@@ -683,6 +681,14 @@ class InterpreterRunner:
             artifacts=summary.artifacts,
         )
         return summary
+
+
+def _agent_error_payload(error: Exception) -> dict[str, str]:
+    payload = {"type": type(error).__name__, "message": str(error)}
+    if isinstance(error, ModelHTTPError):
+        payload["http_status"] = str(error.status_code)
+        payload["failure_code"] = provider_http_failure_code(error.status_code)
+    return payload
 
 
 def _initial_agent_prompt(
