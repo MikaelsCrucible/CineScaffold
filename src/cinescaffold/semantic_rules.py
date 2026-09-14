@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from cinescaffold.camera_semantics import classify_camera_movement
+from cinescaffold.motion_semantics import planning_motion_shape
 from cinescaffold.relationships import (
     classify_relationship,
     normalize_scene_relationships,
@@ -1217,6 +1218,12 @@ def _validated_motion_semantics(
         direction_mode != "relative_to_target" or target_id is None
     ):
         raise ValueError(f"subject_motion[{index}] 的相对闭合路径缺少有效几何目标")
+    try:
+        planning_motion_shape(semantics)
+    except ValueError as error:
+        raise ValueError(
+            f"subject_motion[{index}] 无法映射到 Planning：{error}"
+        ) from error
 
     timeline_event_id = semantics.get("timeline_event_id")
     if timeline_event_id is not None and timeline_event_id not in event_ids:

@@ -13,6 +13,7 @@ from cinescaffold.camera_semantics import (
     classify_camera_movement,
     classify_camera_view_angle,
 )
+from cinescaffold.motion_semantics import planning_motion_shape
 from cinescaffold.planning.domain import (
     CameraCandidate,
     CameraStatic,
@@ -120,7 +121,6 @@ class SkeletonRelation(StrictModel):
         "relative_position",
         "proximity",
         "scale_dominance",
-        "orbit_around",
     ]
     subject_id: str
     reference_id: str
@@ -150,8 +150,7 @@ class SkeletonMotionPhase(StrictModel):
     subject_id: str
     kind: Literal[
         "hold",
-        "linear_move",
-        "orbit",
+        "path_move",
         "carried",
         "local_transform",
         "visibility",
@@ -166,7 +165,7 @@ class SkeletonMotionPhase(StrictModel):
         "away_from_target",
         "world_left",
         "world_right",
-        "orbit_around",
+        "relative_to_target",
     ] = Field(
         default="none",
         description=(
@@ -204,28 +203,39 @@ class SkeletonMotionPhase(StrictModel):
             raise ValueError("Motion Phase target_id 不得指向运动主体自身")
         if self.carrier_id == self.subject_id:
             raise ValueError("Motion Phase carrier_id 不得指向被携带主体自身")
-        if self.kind == "orbit" and self.target_id is None:
-            raise ValueError(f"{self.kind} 必须提供 target_id")
         if self.kind == "carried" and self.carrier_id is None:
             raise ValueError("carried 必须提供 carrier_id")
         if self.kind != "carried" and self.carrier_id is not None:
             raise ValueError(f"{self.kind} 不接受 carrier_id")
-        if self.direction_mode in {"toward_target", "away_from_target", "orbit_around"}:
+        if self.direction_mode in {
+            "toward_target",
+            "away_from_target",
+            "relative_to_target",
+        }:
             if self.target_id is None:
                 raise ValueError(f"{self.direction_mode} 必须提供 target_id")
         elif self.target_id is not None:
             raise ValueError(f"{self.direction_mode} 不接受 target_id")
-        if self.kind == "orbit" and self.direction_mode != "orbit_around":
-            raise ValueError("orbit 必须使用 orbit_around 方向语义")
-        if self.kind != "orbit" and self.direction_mode == "orbit_around":
-            raise ValueError("只有 orbit 可以使用 orbit_around")
         if (
             self.kind in {"hold", "carried", "local_transform", "visibility"}
             and self.direction_mode != "none"
         ):
             raise ValueError(f"{self.kind} 必须使用 direction_mode=none")
-        if self.kind == "orbit" and self.path_family not in {"circle", "ellipse"}:
-            raise ValueError("普通 orbit 必须使用 circle 或 ellipse")
+        if self.kind == "path_move" and self.path_family == "stationary":
+            raise ValueError("path_move 不能使用 stationary")
+        if self.path_family in {"circle", "ellipse"} and (
+            self.kind != "path_move"
+            or self.direction_mode != "relative_to_target"
+            or self.target_id is None
+        ):
+            raise ValueError(
+                "circle/ellipse 公转必须使用 path_move + relative_to_target + target_id"
+            )
+        if self.direction_mode == "relative_to_target" and self.path_family not in {
+            "circle",
+            "ellipse",
+        }:
+            raise ValueError("relative_to_target 当前只支持 circle 或 ellipse")
         if self.kind == "hold" and self.path_family != "stationary":
             raise ValueError("hold 必须使用 stationary")
         if self.kind == "hold" and self.speed_intent not in {
@@ -233,17 +243,17 @@ class SkeletonMotionPhase(StrictModel):
             "unspecified",
         }:
             raise ValueError("hold 不能同时声明非零位移速度")
-        if self.kind == "linear_move" and self.path_family not in {
+        if self.kind == "path_move" and self.path_family not in {
             "linear",
+            "circle",
+            "ellipse",
             "catmull_rom",
             "lemniscate",
             "parabolic",
         }:
-            raise ValueError(
-                "linear_move 必须使用 linear、catmull_rom、lemniscate 或 parabolic"
-            )
-        if self.kind == "linear_move" and self.speed_intent == "stationary":
-            raise ValueError("linear_move 不能使用 stationary 速度")
+            raise ValueError("path_move 必须使用已实现的路径族")
+        if self.kind == "path_move" and self.speed_intent == "stationary":
+            raise ValueError("path_move 不能使用 stationary 速度")
         if (
             self.kind in {"carried", "local_transform", "visibility"}
             and self.path_family != "stationary"
@@ -480,12 +490,14 @@ class SceneSkeleton(StrictModel):
         for phase in self.motion_phases:
             phases_by_subject.setdefault(phase.subject_id, []).append(phase)
         for subject_id, phases in phases_by_subject.items():
-            orbit_count = sum(phase.kind == "orbit" for phase in phases)
+            orbit_count = sum(_is_orbit_phase(phase) for phase in phases)
             carried_count = sum(phase.kind == "carried" for phase in phases)
             if orbit_count > 1:
                 raise ValueError(f"同一主体暂不支持多个 orbit 阶段：{subject_id}")
             if orbit_count and any(
-                phase.kind in {"linear_move", "carried"} for phase in phases
+                (phase.kind == "path_move" and not _is_orbit_phase(phase))
+                or phase.kind == "carried"
+                for phase in phases
             ):
                 raise ValueError(
                     f"同一主体不能在符号骨架中混用 orbit 与其他世界运动：{subject_id}"
@@ -498,7 +510,7 @@ class SceneSkeleton(StrictModel):
             == self.camera_intent.movement_target_id
             and not any(
                 phase.subject_id == self.camera_intent.movement_target_id
-                and phase.kind in {"linear_move", "orbit", "carried"}
+                and phase.kind in {"path_move", "carried"}
                 for phase in self.motion_phases
             )
         ):
@@ -533,9 +545,13 @@ class SceneSkeleton(StrictModel):
                     raise ValueError(
                         f"Route Anchor 引用了未知 Motion Phase：{anchor.anchor_id}"
                     )
-                if phase.subject_id != route.subject_id or phase.kind != "linear_move":
+                if (
+                    phase.subject_id != route.subject_id
+                    or phase.kind != "path_move"
+                    or _is_orbit_phase(phase)
+                ):
                     raise ValueError(
-                        f"Route Anchor 只能绑定同一主体的 linear_move：{anchor.anchor_id}"
+                        f"Route Anchor 只能绑定同一主体的非公转 path_move：{anchor.anchor_id}"
                     )
                 relation = relations_by_id.get(anchor.relation_id)
                 if relation is None:
@@ -745,9 +761,10 @@ def validate_scene_skeleton(
         if value.camera_intent.view_relation_to_motion != expected_view:
             raise ValueError("Scene Skeleton 摄影机观察关系与 Brief 明确要求不一致")
         if expected_view != "unspecified" and not any(
-            phase.kind == "linear_move" for phase in value.motion_phases
+            phase.kind == "path_move" and not _is_orbit_phase(phase)
+            for phase in value.motion_phases
         ):
-            raise ValueError("摄影机相对运动视角需要至少一个 linear_move 阶段")
+            raise ValueError("摄影机相对运动视角需要至少一个非公转 path_move 阶段")
     focus_node = camera.get("focus_target_id")
     if isinstance(focus_node, dict) and focus_node.get("source_status") == "explicit":
         if value.camera_intent.focus_target_id != focus_node.get("value"):
@@ -760,19 +777,22 @@ def _phase_matches_motion_semantics(
 ) -> bool:
     """Require a narrative motion ID to be represented by a compatible phase."""
 
-    motion_mode = semantics.get("motion_mode")
-    path_type = semantics.get("path_type")
-    if motion_mode == "stationary":
-        return phase.kind == "hold"
-    if motion_mode == "local_interaction":
-        return phase.kind == "local_transform"
-    if motion_mode == "carried":
-        return phase.kind == "carried"
-    if motion_mode == "self_propelled":
-        if path_type in {"circular", "elliptical"}:
-            return phase.kind == "orbit"
-        return phase.kind == "linear_move"
-    return phase.kind != "hold"
+    try:
+        expected = planning_motion_shape(semantics)
+    except ValueError:
+        return False
+    return phase.kind == expected.kind if expected is not None else phase.kind != "hold"
+
+
+def _is_orbit_phase(phase: SkeletonMotionPhase) -> bool:
+    """An orbit is derived from path geometry and reference frame, not a second enum."""
+
+    return (
+        phase.kind == "path_move"
+        and phase.direction_mode == "relative_to_target"
+        and phase.target_id is not None
+        and phase.path_family in {"circle", "ellipse"}
+    )
 
 
 def _validate_phase_overlap_support(
@@ -781,7 +801,7 @@ def _validate_phase_overlap_support(
 ) -> None:
     """Reject same-subject transform combinations the deterministic IR cannot mean."""
 
-    transform_kinds = {"hold", "local_transform", "linear_move", "orbit", "carried"}
+    transform_kinds = {"hold", "local_transform", "path_move", "carried"}
     by_subject: dict[str, list[SkeletonMotionPhase]] = {}
     for phase in phases:
         if phase.kind in transform_kinds:
@@ -832,7 +852,6 @@ def _validate_typed_source_bindings(
     expected_relation_kinds = {
         "far": "camera_depth_order",
         "proximity": "proximity",
-        "orbit": "orbit_around",
         "relative_position": "relative_position",
         "scale_dominance": "scale_dominance",
         "ground_support": "ground_support",
@@ -882,16 +901,47 @@ def _validate_typed_source_bindings(
             )
 
     motion_prefix = "content.subject_motion["
+    motion_indexes_by_id = {
+        str(motion.get("motion_id")): index
+        for index, motion in enumerate(objective.subject_motion)
+        if isinstance(motion, dict) and motion.get("motion_id") is not None
+    }
+    explicit_refs = {item.path for item in objective.explicit_requirements}
     for phase in skeleton.motion_phases:
-        if not phase.source_ref.startswith(motion_prefix):
+        source_index: int | None = None
+        if phase.source_ref.startswith(motion_prefix):
+            try:
+                source_index = int(
+                    phase.source_ref[len(motion_prefix) :].split("]", 1)[0]
+                )
+                source_motion = objective.subject_motion[source_index]
+            except (IndexError, TypeError, ValueError, AttributeError) as error:
+                raise ValueError(
+                    f"Motion Phase source_ref 无法解析：{phase.phase_id}"
+                ) from error
+        else:
+            source_motion = None
+
+        motion_index = (
+            motion_indexes_by_id.get(phase.motion_id)
+            if phase.motion_id is not None
+            else source_index
+        )
+        if motion_index is None:
             continue
-        try:
-            index = int(phase.source_ref[len(motion_prefix) :].split("]", 1)[0])
-            motion = objective.subject_motion[index]
-        except (IndexError, TypeError, ValueError, AttributeError) as error:
+        motion = objective.subject_motion[motion_index]
+        if source_index is not None and source_index != motion_index:
             raise ValueError(
-                f"Motion Phase source_ref 无法解析：{phase.phase_id}"
-            ) from error
+                f"Motion Phase 的 motion_id 与 source_ref 指向不同动作：{phase.phase_id}"
+            )
+        if phase.motion_id is not None and source_index is None:
+            raise ValueError(
+                f"Motion Phase 必须把 motion_id 绑定到对应 subject_motion 来源：{phase.phase_id}"
+            )
+        if source_motion is not None and source_motion is not motion:
+            raise ValueError(
+                f"Motion Phase 的 source_ref 与 motion_id 不一致：{phase.phase_id}"
+            )
         if not isinstance(motion, dict) or motion.get("subject_id") != phase.subject_id:
             raise ValueError(
                 f"Motion Phase 与 source_ref 的主体不一致：{phase.phase_id}"
@@ -907,6 +957,20 @@ def _validate_typed_source_bindings(
         if phase.timeline_event_id != semantics.get("timeline_event_id"):
             raise ValueError(
                 f"Motion Phase 与 source_ref 的事件绑定不一致：{phase.phase_id}"
+            )
+        explicit_motion_refs = {
+            ref
+            for ref in explicit_refs
+            if ref.startswith(f"content.subject_motion[{motion_index}].")
+            and ref.rsplit(".", 1)[-1]
+            in {"action", "motion_semantics", "direction", "trajectory"}
+        }
+        if explicit_motion_refs and (
+            phase.source_status != "explicit"
+            or phase.source_ref not in explicit_motion_refs
+        ):
+            raise ValueError(
+                f"Motion Phase 不得脱离对应的明确动作来源：{phase.phase_id}"
             )
         if (
             semantics.get("source_status") == "explicit"
@@ -926,22 +990,32 @@ def _validate_typed_source_bindings(
                 raise ValueError(
                     f"Visibility Phase 与 source_ref 的后置状态不一致：{phase.phase_id}"
                 )
+            continue
         elif not _phase_matches_motion_semantics(phase, semantics):
             raise ValueError(
                 f"Motion Phase 与 source_ref 的运动模式不一致：{phase.phase_id}"
             )
-        elif semantics.get("motion_mode") == "carried" and (
-            phase.carrier_id != semantics.get("carrier_id")
+        expected_shape = planning_motion_shape(semantics)
+        if expected_shape is None:
+            continue
+        if expected_shape.kind == "carried" and (
+            phase.carrier_id != expected_shape.carrier_id
         ):
             raise ValueError(
                 f"Carried Phase 与 source_ref 的载体不一致：{phase.phase_id}"
             )
-        elif semantics.get("direction_mode") not in {None, "none"} and (
-            phase.direction_mode != semantics.get("direction_mode")
-            or phase.target_id != semantics.get("target_id")
+        if semantics.get("direction_mode") not in {None, "none"} and (
+            phase.direction_mode != expected_shape.direction_mode
+            or phase.target_id != expected_shape.target_id
         ):
             raise ValueError(
                 f"Motion Phase 与 source_ref 的方向/目标不一致：{phase.phase_id}"
+            )
+        if semantics.get("path_type") not in {None, "unspecified"} and (
+            phase.path_family != expected_shape.path_family
+        ):
+            raise ValueError(
+                f"Motion Phase 与 source_ref 的路径族不一致：{phase.phase_id}"
             )
 
 
@@ -994,11 +1068,11 @@ def task_capability_slice(
     }:
         speed_intents.add(skeleton.camera_intent.speed_intent)
     has_subject_translation = any(
-        phase.kind in {"linear_move", "orbit", "carried"}
-        for phase in skeleton.motion_phases
+        phase.kind in {"path_move", "carried"} for phase in skeleton.motion_phases
     )
     has_linear_subject_motion = any(
-        phase.kind == "linear_move" for phase in skeleton.motion_phases
+        phase.kind == "path_move" and not _is_orbit_phase(phase)
+        for phase in skeleton.motion_phases
     )
     return {
         "coordinate_system": {
@@ -1130,8 +1204,7 @@ def build_design_candidate(
     _add_speed_constraints(objective, skeleton, candidate, profile)
     _add_composition_constraints(objective, skeleton, candidate)
     has_subject_translation = any(
-        phase.kind in {"linear_move", "orbit", "carried"}
-        for phase in skeleton.motion_phases
+        phase.kind in {"path_move", "carried"} for phase in skeleton.motion_phases
     )
     if objective.scene_dynamics.get("mode") == "static" or not has_subject_translation:
         _fit_static_camera_to_composition(objective, candidate, skeleton, profile)
@@ -1385,7 +1458,7 @@ def _primary_linear_motion_direction_xy(
     ordered_subjects = [
         phase.subject_id
         for phase in skeleton.motion_phases
-        if phase.kind == "linear_move"
+        if phase.kind == "path_move" and not _is_orbit_phase(phase)
     ]
     focus_id = skeleton.camera_intent.focus_target_id
     if focus_id in ordered_subjects:
@@ -1527,15 +1600,10 @@ def _orbit_radius_map(
 ) -> dict[tuple[str, str], float]:
     """为整棵嵌套轨道预留包络，避免内层天体穿过外层中心天体。"""
     pairs = {
-        (relation.subject_id, relation.reference_id)
-        for relation in skeleton.relations
-        if relation.kind == "orbit_around"
-    }
-    pairs.update(
         (phase.subject_id, phase.target_id)
         for phase in skeleton.motion_phases
-        if phase.kind == "orbit" and phase.target_id is not None
-    )
+        if _is_orbit_phase(phase) and phase.target_id is not None
+    }
     parent_by_child: dict[str, str] = {}
     children: dict[str, list[str]] = {}
     for child_id, parent_id in sorted(pairs):
@@ -1692,19 +1760,6 @@ def _build_relation_constraints(
                     },
                 }
             ]
-        elif relation.kind == "orbit_around":
-            radius = orbit_radii[(relation.subject_id, relation.reference_id)]
-            payloads = [
-                common
-                | {
-                    "type": "distance_range",
-                    "parameters": {
-                        "entity_ids": [relation.subject_id, relation.reference_id],
-                        "minimum_meters": radius * 0.95,
-                        "maximum_meters": radius * 1.05,
-                    },
-                }
-            ]
         else:
             continue
         for payload in payloads:
@@ -1743,7 +1798,7 @@ def _build_relation_constraints(
                     },
                 }
             ]
-        elif phase.kind == "linear_move" and phase.direction_mode in {
+        elif phase.kind == "path_move" and phase.direction_mode in {
             "world_forward",
             "world_left",
             "world_right",
@@ -1765,7 +1820,7 @@ def _build_relation_constraints(
                 }
             ]
         elif (
-            phase.kind == "linear_move"
+            phase.kind == "path_move"
             and phase.target_id is not None
             and phase.direction_mode in {"toward_target", "away_from_target"}
         ):
@@ -1896,7 +1951,7 @@ def _build_motion(
     tracks: dict[str, TrackSpec] = {}
     duration = candidate.timeline.duration_seconds
     orbit_subjects = {
-        phase.subject_id for phase in skeleton.motion_phases if phase.kind == "orbit"
+        phase.subject_id for phase in skeleton.motion_phases if _is_orbit_phase(phase)
     }
     grouped: dict[str, list[SkeletonMotionPhase]] = {}
     for phase in skeleton.motion_phases:
@@ -1913,7 +1968,7 @@ def _build_motion(
             phases,
             duration,
         )
-        orbit = next((item for item in phases if item.kind == "orbit"), None)
+        orbit = next((item for item in phases if _is_orbit_phase(item)), None)
         if orbit is not None and orbit.target_id is not None:
             depth = 2 if orbit.target_id in orbit_subjects else 1
             radius = orbit_radii[(subject_id, orbit.target_id)]
@@ -1973,7 +2028,11 @@ def _build_motion(
             )
             tracks[track.track_id] = track
 
-        moving = [item for item in phases if item.kind == "linear_move"]
+        moving = [
+            item
+            for item in phases
+            if item.kind == "path_move" and not _is_orbit_phase(item)
+        ]
         if moving:
             moving = sorted(
                 moving,
@@ -2086,7 +2145,10 @@ def _build_motion(
             keyframes: list[TrackKeyframe] = []
             previous_direction = route_direction
             positional_phases = [
-                item for item in phases if item.kind in {"hold", "linear_move"}
+                item
+                for item in phases
+                if item.kind == "hold"
+                or (item.kind == "path_move" and not _is_orbit_phase(item))
             ]
             for phase in sorted(
                 positional_phases,
@@ -2450,7 +2512,7 @@ def _motion_group_build_order(
             (
                 _phase_range(objective, phase, duration)[0]
                 for phase in grouped[subject_id]
-                if phase.kind == "linear_move"
+                if phase.kind == "path_move" and not _is_orbit_phase(phase)
             ),
             default=math.inf,
         ),
@@ -2459,7 +2521,8 @@ def _motion_group_build_order(
         subject_id: {
             phase.target_id
             for phase in phases
-            if phase.kind == "linear_move"
+            if phase.kind == "path_move"
+            and not _is_orbit_phase(phase)
             and phase.direction_mode in {"toward_target", "away_from_target"}
             and phase.target_id in grouped
             and phase.target_id != subject_id
@@ -2526,7 +2589,7 @@ def _build_camera(
         if explicit_height is not None
         else float(1.5 if configured_height is None else configured_height)
     )
-    has_orbit = any(item.kind == "orbit" for item in skeleton.motion_phases)
+    has_orbit = any(_is_orbit_phase(item) for item in skeleton.motion_phases)
     focus_point, focus_height = _camera_focus(candidate, skeleton)
     explicit_pitch = _explicit_camera_pitch_degrees(objective)
     if explicit_pitch is not None:
@@ -2542,7 +2605,8 @@ def _build_camera(
         view,
         motion_direction_xy=motion_direction_xy,
         subject_motion_readability_applicable=any(
-            item.kind == "linear_move" for item in skeleton.motion_phases
+            item.kind == "path_move" and not _is_orbit_phase(item)
+            for item in skeleton.motion_phases
         ),
         minimum_motion_obliqueness_degrees=(
             profile.minimum_view_subject_motion_obliqueness_degrees
@@ -2957,7 +3021,8 @@ def _add_speed_constraints(
             # transform/visibility track instead of a contradictory speed gate.
             continue
         generic_explicit_motion = (
-            phase.kind == "linear_move"
+            phase.kind == "path_move"
+            and not _is_orbit_phase(phase)
             and phase.speed_intent == "unspecified"
             and phase.source_status == "explicit"
         )
@@ -3368,8 +3433,7 @@ def _design_assumptions(
     size_requests: dict[str, EntitySizeRequest],
 ) -> tuple[str, ...]:
     has_subject_translation = any(
-        item.kind in {"linear_move", "orbit", "carried"}
-        for item in skeleton.motion_phases
+        item.kind in {"path_move", "carried"} for item in skeleton.motion_phases
     )
     assumptions = [
         f"数值策略采用 {strategy}",
@@ -3382,7 +3446,7 @@ def _design_assumptions(
     ]
     if not objective.translation_parameters:
         assumptions.append("旧版 Brief 缺少量化快照，使用冻结 Research Profile")
-    if any(item.kind == "orbit" for item in skeleton.motion_phases):
+    if any(_is_orbit_phase(item) for item in skeleton.motion_phases):
         assumptions.append("未指定嵌套周期时，子轨道使用不同 cycle_count 避免同相锁定")
     assumptions.extend(
         f"实体 {entity_id} 使用 Agent 请求的受验证尺寸范围：{request.rationale}"
@@ -3866,7 +3930,8 @@ def _reject_unrepresentable_reference_frame_switch(
         later_world_phases = [
             item.phase_id
             for item in phases
-            if item.kind == "linear_move"
+            if item.kind == "path_move"
+            and not _is_orbit_phase(item)
             and _phase_range(objective, item, duration)[1] > carried_start
         ]
         if later_world_phases:

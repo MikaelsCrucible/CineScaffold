@@ -20,6 +20,7 @@ from pydantic_ai.usage import RequestUsage
 
 from cinescaffold.camera_semantics import classify_camera_movement
 from cinescaffold.errors import ConfigurationError
+from cinescaffold.motion_semantics import planning_motion_shape
 from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.relationships import classify_relationship
 
@@ -277,10 +278,14 @@ def build_deterministic_scene_skeleton(
             # Unknown provider vocabulary must never silently become proximity.
             # Carriage is represented by a typed Motion Phase, not a no-op relation.
             continue
+        if meaning.kind == "orbit":
+            # Orbit topology is carried once by the motion phase. Legacy Briefs
+            # still use this relation to infer the target for that phase.
+            orbit_targets[str(subject_id)] = str(reference_id)
+            continue
         kind = {
             "far": "camera_depth_order",
             "proximity": "proximity",
-            "orbit": "orbit_around",
             "relative_position": "relative_position",
             "scale_dominance": "scale_dominance",
             "ground_support": "ground_support",
@@ -300,8 +305,6 @@ def build_deterministic_scene_skeleton(
         if meaning.direction is not None:
             relation_payload["direction"] = meaning.direction
         relations.append(relation_payload)
-        if kind == "orbit_around":
-            orbit_targets[str(subject_id)] = str(reference_id)
 
     phases: list[dict[str, Any]] = []
     phase_ranges: dict[str, tuple[float, float]] = {}
@@ -351,30 +354,19 @@ def build_deterministic_scene_skeleton(
                 else f"content.subject_motion[{index}].action"
             )
         motion_mode = semantics.get("motion_mode")
-        if motion_mode == "carried":
-            kind = "carried"
-            path_family = "stationary"
-            direction_mode = "none"
-            target_id = None
-            carrier_id = semantics.get("carrier_id")
-        elif motion_mode == "local_interaction":
-            kind = "local_transform"
-            path_family = "stationary"
-            direction_mode = "none"
-            target_id = None
-            carrier_id = semantics.get("carrier_id")
-        elif motion_mode == "stationary":
-            kind = "hold"
-            path_family = "stationary"
-            direction_mode = "none"
-            target_id = None
-            carrier_id = semantics.get("carrier_id")
+        typed_shape = planning_motion_shape(semantics)
+        if typed_shape is not None:
+            kind = typed_shape.kind
+            path_family = typed_shape.path_family
+            direction_mode = typed_shape.direction_mode
+            target_id = typed_shape.target_id
+            carrier_id = typed_shape.carrier_id
         elif path_type in {"circular", "elliptical", "orbit_around"} or (
             motion_mode is None and subject_id in orbit_targets
         ):
-            kind = "orbit"
+            kind = "path_move"
             path_family = "ellipse" if path_type == "elliptical" else "circle"
-            direction_mode = "orbit_around"
+            direction_mode = "relative_to_target"
             target_id = semantics.get("target_id") or orbit_targets.get(subject_id)
             carrier_id = semantics.get("carrier_id")
         elif motion_mode is None and (
@@ -402,7 +394,7 @@ def build_deterministic_scene_skeleton(
             target_id = None
             carrier_id = None
         else:
-            kind = "linear_move"
+            kind = "path_move"
             path_family = (
                 "parabolic"
                 if path_type == "parabolic"
@@ -533,7 +525,7 @@ def build_deterministic_scene_skeleton(
         exact_candidates = [
             (phase_ranges[phase["phase_id"]][1], phase)
             for phase in phases
-            if phase.get("kind") == "linear_move"
+            if phase.get("kind") == "path_move"
             and phase.get("subject_id") in participants
             and phase.get("timeline_event_id") == event_id
             and phase["phase_id"] in phase_ranges
@@ -541,7 +533,7 @@ def build_deterministic_scene_skeleton(
         candidates = exact_candidates or [
             (phase_ranges[phase["phase_id"]][1], phase)
             for phase in phases
-            if phase.get("kind") == "linear_move"
+            if phase.get("kind") == "path_move"
             and phase.get("subject_id") in participants
             and phase["phase_id"] in phase_ranges
             and abs(phase_ranges[phase["phase_id"]][1] - anchor_time) <= 1e-6

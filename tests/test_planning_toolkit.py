@@ -787,6 +787,17 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             {"MOTION_POSTCONDITION_VISIBILITY_UNMET", "CARRIED_SUBJECT_UNBOUND"},
         )
 
+        non_carrier_orbit = _orbit_track(
+            "not_a_carrier_binding", "man_01", "ship_01", 3.0
+        )
+        non_carrier_orbit["source_ref"] = "agent.not_a_carrier_binding"
+        toolkit.apply_motion_patch([non_carrier_orbit], [])
+        orbit_is_not_carriage = toolkit.validate_candidate(checks=["motion"])
+        self.assertIn(
+            "CARRIED_SUBJECT_UNBOUND",
+            {item["code"] for item in orbit_is_not_carriage["violations"]},
+        )
+
         toolkit.apply_motion_patch(
             [
                 {
@@ -800,7 +811,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     "source_ref": "content.subject_motion[0].motion_semantics",
                 }
             ],
-            [],
+            ["not_a_carrier_binding"],
         )
 
         resolved = toolkit.validate_candidate(checks=["motion"])
@@ -815,6 +826,48 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 for item in resolved["violations"]
             )
         )
+
+    def test_typed_relative_path_must_cover_the_whole_motion_interval(self) -> None:
+        toolkit = _toolkit()
+        toolkit.objective_brief = toolkit.objective_brief.model_copy(
+            update={
+                "schema_version": "0.6",
+                "subject_motion": [
+                    {
+                        "motion_id": "man_circle",
+                        "subject_id": "man_01",
+                        "motion_semantics": {
+                            "motion_mode": "self_propelled",
+                            "direction_mode": "relative_to_target",
+                            "target_id": "ship_01",
+                            "carrier_id": None,
+                            "path_type": "circular",
+                            "timeline_event_id": None,
+                            "narrative_required": True,
+                        },
+                        "start_time_seconds": 0.0,
+                        "end_time_seconds": 6.0,
+                    }
+                ],
+                "translation_parameters": None,
+            }
+        )
+        toolkit.apply_entity_patch([_man_entity(), _ship_entity()], [])
+        partial = _orbit_track("partial_circle", "man_01", "ship_01", 3.0)
+        partial["time_range_seconds"] = [0.0, 3.0]
+        partial["source_ref"] = "content.subject_motion[0].motion_semantics"
+        toolkit.apply_motion_patch([partial], [])
+
+        validation = toolkit.validate_candidate(checks=["motion"])
+        codes = {item["code"] for item in validation["violations"]}
+
+        self.assertIn("MOTION_DIRECTION_SEMANTICS_UNMET", codes)
+        path_violation = next(
+            item
+            for item in validation["violations"]
+            if item["code"] == "MOTION_PATH_FAMILY_UNMET"
+        )
+        self.assertFalse(path_violation["actual"]["full_interval_covered"])
 
     def test_hold_rejects_empty_component_list(self) -> None:
         toolkit = _toolkit()

@@ -959,6 +959,40 @@ class SemanticRulesTest(unittest.TestCase):
                 "一个人先等待，然后离开",
             )
 
+    def test_relative_target_linear_path_is_rejected_before_planning(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": "man_01",
+                "category": self._annotated("男人", "男人"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+            {
+                "id": "ship_01",
+                "category": self._annotated("飞船", "飞船"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            },
+        ]
+        motion = self._motion(
+            "man_01",
+            "相对飞船运动",
+            action_kind="locomotion",
+            motion_type="moving",
+            motion_mode="self_propelled",
+            direction_mode="relative_to_target",
+            target_id="ship_01",
+            path_type="linear",
+        )
+        motion["direction"] = self._annotated("相对飞船", "相对飞船运动")
+        content["subject_motion"] = [motion]
+
+        with self.assertRaisesRegex(ValueError, "relative_to_target"):
+            apply_translation_rules(content, self.rules)
+
     @staticmethod
     def _annotated(value: str, source_text: str) -> dict:
         return {"value": value, "source_status": "explicit", "source_text": source_text}

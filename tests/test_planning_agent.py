@@ -196,7 +196,7 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertEqual(payload[0]["reasoning_content"], "reasoning-sentinel")
         self.assertEqual(payload[0]["tool_calls"][0]["id"], "call_1")
 
-    def test_repeated_design_failure_starts_a_fresh_recovery_round(self) -> None:
+    def test_repeated_design_failure_stops_paid_retry_for_diagnosis(self) -> None:
         failure = {
             "status": "no_change",
             "data": {
@@ -220,7 +220,7 @@ class PlanningProtocolTest(unittest.TestCase):
         )
         self.assertIsNone(deps.pending_design_stall)
 
-    def test_identical_rejected_design_retry_starts_recovery_round(self) -> None:
+    def test_identical_rejected_design_retry_stops_for_diagnosis(self) -> None:
         failure = {
             "status": "no_change",
             "data": {
@@ -231,7 +231,7 @@ class PlanningProtocolTest(unittest.TestCase):
         }
         duplicate = {
             "status": "rejected",
-            "data": {},
+            "data": failure["data"],
             "warnings": ["不得重复完全相同的 Design Options 请求"],
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -241,6 +241,20 @@ class PlanningProtocolTest(unittest.TestCase):
 
             with self.assertRaises(DesignSearchStalled):
                 _compact_tool_call_history(_context(deps), [])
+
+    def test_repeated_skeleton_contract_error_uses_the_same_generic_stall(self) -> None:
+        toolkit = _toolkit()
+        failure = toolkit.submit_scene_skeleton({"entities": []})
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), toolkit)
+            deps._observe_failed_tool_call("submit_scene_skeleton", failure, 0, 0)
+            deps._observe_failed_tool_call("submit_scene_skeleton", failure, 0, 0)
+
+            with self.assertRaises(DesignSearchStalled) as raised:
+                _compact_tool_call_history(_context(deps), [])
+
+        self.assertEqual(raised.exception.failure["tool_name"], "submit_scene_skeleton")
+        self.assertEqual(raised.exception.failure["repeat_count"], 2)
 
     def test_tool_history_compacts_pure_text_response_once(self) -> None:
         response = ModelResponse(

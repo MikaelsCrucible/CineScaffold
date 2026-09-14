@@ -34,6 +34,7 @@ from cinescaffold.planning.domain import (
     TrackKeyframe,
     TransformValue,
 )
+from cinescaffold.planning.store import canonical_hash
 from cinescaffold.planning.toolkit import TOOLKIT_VERSION, ScenePlanningToolkit
 from cinescaffold.planning.trace import TraceRecorder
 
@@ -581,8 +582,8 @@ class PlanningDeps:
     inspected_calls: set[str] = field(default_factory=set)
     compacted_non_tool_responses: set[str] = field(default_factory=set)
     preserve_complete_thinking_history: bool = False
-    last_design_failure_signature: str | None = None
-    design_failure_repeat_count: int = 0
+    last_failure_signature: str | None = None
+    failure_repeat_count: int = 0
     pending_design_stall: dict[str, Any] | None = None
 
     def call_tool(
@@ -603,6 +604,12 @@ class PlanningDeps:
         )
         rejection = self._protocol_rejection(name, arguments, revision_before)
         if rejection is not None:
+            self._observe_failed_tool_call(
+                name,
+                rejection,
+                revision_before,
+                revision_before,
+            )
             self.trace.record(
                 "tool_call_completed",
                 tool_name=name,
@@ -642,8 +649,12 @@ class PlanningDeps:
             self.capabilities_read = True
         if name == "inspect_candidate" and result.get("status") == "ok":
             self.inspected_calls.add(self._inspect_key(arguments, revision_before))
-        if name == "request_design_options":
-            self._observe_design_search(result)
+        self._observe_failed_tool_call(
+            name,
+            result,
+            revision_before,
+            current_revision_after,
+        )
         if (
             self.checkpoint_writer is not None
             and current_revision_after != revision_before
@@ -672,49 +683,49 @@ class PlanningDeps:
         return agent_result
 
     def _observe_design_search(self, result: dict[str, Any]) -> None:
+        """Compatibility wrapper for callers predating generic failure stalls."""
+
+        revision = self.toolkit.store.current_revision
+        self._observe_failed_tool_call(
+            "request_design_options", result, revision, revision
+        )
+
+    def _observe_failed_tool_call(
+        self,
+        tool_name: str,
+        result: dict[str, Any],
+        revision_before: int,
+        revision_after: int,
+    ) -> None:
+        """Stop paying for an identical deterministic rejection at one revision."""
+
         data = result.get("data")
-        if (
-            result.get("status") == "ok"
-            and isinstance(data, dict)
-            and data.get("options")
-        ):
-            self.last_design_failure_signature = None
-            self.design_failure_repeat_count = 0
+        if result.get("status") == "ok" or revision_after != revision_before:
+            self.last_failure_signature = None
+            self.failure_repeat_count = 0
             self.pending_design_stall = None
             return
-        if (
-            result.get("status") == "rejected"
-            and self.last_design_failure_signature is not None
-            and any("重复完全相同" in str(item) for item in result.get("warnings", []))
-        ):
-            # The first failed search already returned all deterministic
-            # evidence. Repeating the identical request cannot discover a new
-            # candidate, so move to a fresh RepairPacket instead of paying for
-            # an unbounded tool loop.
-            self.design_failure_repeat_count += 1
-            self.pending_design_stall = {
-                "failure_signature": self.last_design_failure_signature,
-                "failure_codes": [],
-                "failure_reasons": list(result.get("warnings", [])),
-                "repeat_count": self.design_failure_repeat_count,
-            }
+        if result.get("status") not in {"rejected", "no_change"}:
             return
-        if result.get("status") != "no_change" or not isinstance(data, dict):
+        if not isinstance(data, dict):
             return
         signature = data.get("failure_signature")
         if not isinstance(signature, str) or not signature:
             return
-        if signature == self.last_design_failure_signature:
-            self.design_failure_repeat_count += 1
+        scoped_signature = f"{tool_name}:{revision_before}:{signature}"
+        if scoped_signature == self.last_failure_signature:
+            self.failure_repeat_count += 1
         else:
-            self.last_design_failure_signature = signature
-            self.design_failure_repeat_count = 1
-        if self.design_failure_repeat_count >= 2:
+            self.last_failure_signature = scoped_signature
+            self.failure_repeat_count = 1
+        if self.failure_repeat_count >= 2:
             self.pending_design_stall = {
+                "tool_name": tool_name,
+                "revision": revision_before,
                 "failure_signature": signature,
                 "failure_codes": data.get("failure_codes", []),
                 "failure_reasons": data.get("failure_reasons", []),
-                "repeat_count": self.design_failure_repeat_count,
+                "repeat_count": self.failure_repeat_count,
             }
 
     def consume_design_stall(self) -> dict[str, Any] | None:
@@ -815,7 +826,7 @@ class DesignSearchStalled(AgentRunError):
     def __init__(self, failure: dict[str, Any]) -> None:
         self.failure = deepcopy(failure)
         super().__init__(
-            "相同的 Design 硬失败已连续出现，切换到新的 RepairPacket 恢复轮次"
+            "同一 revision 的同类确定性工具失败已连续出现，停止付费重试并执行框架诊断"
         )
 
 
@@ -828,7 +839,11 @@ def _protocol_rejected(
         "revision_before": revision,
         "revision_after": revision,
         "changes": [],
-        "data": {},
+        "data": {
+            "failure_signature": canonical_hash([message]),
+            "failure_codes": ["PROTOCOL_REJECTED"],
+            "failure_reasons": [message],
+        },
         "violations": [],
         "warnings": [message],
         "capability_gaps": [],
@@ -866,7 +881,7 @@ async def _prepare_scene_skeleton_tool(
             (prepared.description or "")
             + f" 当前 scene_dynamics={toolkit.scene_dynamics_mode}，"
             + (
-                "Objective 含主体空间运动；应按各主体时间线提交相应 linear_move/orbit/carried。"
+                "Objective 含主体空间运动；应按各主体时间线提交相应 path_move/carried。"
                 if toolkit.objective_has_subject_spatial_motion
                 else "Objective 不含主体空间运动；不得因摄影机运动添加主体位移阶段。"
             )

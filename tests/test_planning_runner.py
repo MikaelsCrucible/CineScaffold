@@ -5,10 +5,10 @@ import json
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
@@ -26,20 +26,28 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.usage import RequestUsage
 
+from cinescaffold.planning.domain import PlanningProfile
+from cinescaffold.planning.duration import (
+    attach_duration_resolution,
+    freeze_brief_duration,
+)
 from cinescaffold.planning.models import create_planning_model
-from cinescaffold.planning.duration import attach_duration_resolution, freeze_brief_duration
 from cinescaffold.planning.objective import project_objective_brief
 from cinescaffold.planning.runner import (
     InterpreterRunConfig,
     InterpreterRunner,
+    _diagnose_repeated_tool_failure,
     _effective_limits,
     _planning_model_settings,
     _recovery_context,
-    _route_context_index,
     _requires_complete_thinking_history,
+    _route_context_index,
     _usage_limit_type,
 )
-from cinescaffold.planning.toolkit import NARRATIVE_FIDELITY_CHECKS, ScenePlanningToolkit
+from cinescaffold.planning.toolkit import (
+    NARRATIVE_FIDELITY_CHECKS,
+    ScenePlanningToolkit,
+)
 from cinescaffold.planning.trace import (
     CostRates,
     ProviderCostLimitExceeded,
@@ -53,6 +61,33 @@ from tests.helpers import ROOT, valid_planning_brief
 
 
 class InterpreterRunnerTest(unittest.TestCase):
+    def test_repeated_failure_probe_distinguishes_agent_from_framework(self) -> None:
+        objective = project_objective_brief(valid_planning_brief()).objective_brief
+        resolution = freeze_brief_duration(
+            objective.timeline,
+            fps_numerator=24,
+            fps_denominator=1,
+        )
+        objective = attach_duration_resolution(objective, resolution)
+
+        healthy = _diagnose_repeated_tool_failure(
+            objective,
+            PlanningProfile(),
+            {"tool_name": "submit_scene_skeleton", "repeat_count": 2},
+        )
+        with patch(
+            "cinescaffold.planning.runner.build_deterministic_scene_skeleton",
+            return_value={"entities": []},
+        ):
+            framework = _diagnose_repeated_tool_failure(
+                objective,
+                PlanningProfile(),
+                {"tool_name": "submit_scene_skeleton", "repeat_count": 2},
+            )
+
+        self.assertEqual(healthy["classification"], "agent_no_progress")
+        self.assertEqual(framework["classification"], "framework_contract_conflict")
+
     def test_design_stall_recovery_packet_keeps_compact_failure_evidence(self) -> None:
         objective = project_objective_brief(valid_planning_brief()).objective_brief
         resolution = freeze_brief_duration(
@@ -606,7 +641,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "tool_call_completed" for item in trace))
         self.assertTrue(any(item["event_type"] == "commit_gate_completed" for item in trace))
         run_started = next(item for item in trace if item["event_type"] == "run_started")
-        self.assertEqual(run_started["payload"]["toolkit_version"], "0.40")
+        self.assertEqual(run_started["payload"]["toolkit_version"], "0.41")
         self.assertNotIn("孤独", "\n".join(trace_lines))
         # 普通运行保持精简日志：不记录对话内容，response 只记类型与规模。
         request_started = next(

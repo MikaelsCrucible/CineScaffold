@@ -14,6 +14,7 @@ from cinescaffold.camera_semantics import (
     classify_camera_movement,
     classify_camera_view_angle,
 )
+from cinescaffold.motion_semantics import planning_motion_shape
 from cinescaffold.planning.design import (
     DesignOption,
     EntitySizeRequest,
@@ -67,7 +68,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 from cinescaffold.relationships import classify_relationship
 
-TOOLKIT_VERSION = "0.40"
+TOOLKIT_VERSION = "0.41"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -360,7 +361,7 @@ class ScenePlanningToolkit:
         return bool(
             self._scene_skeleton
             and any(
-                item.kind in {"linear_move", "orbit", "carried"}
+                item.kind in {"path_move", "carried"}
                 for item in self._scene_skeleton.motion_phases
             )
         )
@@ -674,7 +675,7 @@ class ScenePlanningToolkit:
                     "只描述主体状态；摄影机推拉、横移、环绕或变焦不把静态主体场景变成 dynamic"
                 ),
                 "motion_readability_scope": (
-                    "仅适用于 linear_move/orbit/carried 主体空间运动；摄影机自身运动不计入"
+                    "仅适用于 path_move/carried 主体空间运动；摄影机自身运动不计入"
                 ),
                 "relative_position_front_behind": "规范世界 -Y/+Y；不表示摄影机深度",
                 "camera_depth_order": "使用 depth_order；深度沿摄影机 -Z 前向取正值",
@@ -4162,8 +4163,9 @@ def _nested_orbit_readability_violations(
 ) -> list[Violation]:
     """拒绝会把嵌套公转看成刚性编队的同相轨迹。"""
     orbit_pairs = _objective_orbit_pairs(objective_brief)
-    path_tracks = {
-        (track.target_entity_id, track.path.target_id): track
+    path_tracks: dict[tuple[str, str], list[TrackSpec]] = {}
+    for track in (
+        track
         for track in state.motion_tracks.values()
         if track.type == "path_follow"
         and track.path is not None
@@ -4171,61 +4173,71 @@ def _nested_orbit_readability_violations(
         and track.path.space == "target_relative"
         and track.target_entity_id
         and track.path.target_id
-    }
+    ):
+        path_tracks.setdefault(
+            (track.target_entity_id, track.path.target_id),
+            [],
+        ).append(track)
     violations: list[Violation] = []
     for child_id, parent_id in sorted(orbit_pairs):
-        child_track = path_tracks.get((child_id, parent_id))
-        if child_track is None:
+        child_tracks = path_tracks.get((child_id, parent_id), [])
+        if not child_tracks:
             continue
         for orbiting_id, grandparent_id in sorted(orbit_pairs):
             if orbiting_id != parent_id:
                 continue
-            parent_track = path_tracks.get((parent_id, grandparent_id))
-            if parent_track is None:
+            parent_tracks = path_tracks.get((parent_id, grandparent_id), [])
+            if not parent_tracks:
                 continue
-            if _nested_orbits_are_phase_locked(
-                state,
-                child_id,
-                parent_id,
-                grandparent_id,
-                child_track,
-                parent_track,
-                profile,
-            ):
-                start = max(
-                    child_track.time_range_seconds[0],
-                    parent_track.time_range_seconds[0],
-                )
-                end = min(
-                    child_track.time_range_seconds[1],
-                    parent_track.time_range_seconds[1],
-                )
-                violations.append(
-                    _violation(
-                        "NESTED_ORBIT_PHASE_LOCKED",
-                        (
-                            f"嵌套公转在画面控制上退化为同相编队：{child_id} -> "
-                            f"{parent_id} -> {grandparent_id}；请调整子轨道 cycle_count 或节奏"
-                        ),
-                        entity_ids=[child_id, parent_id, grandparent_id],
-                        time_range_seconds=(start, end),
-                        expected={
-                            "relative_phase": "随时间显著变化",
-                            "purpose": "让控制白模中的嵌套运动可辨识",
-                        },
-                        actual={
-                            "child_track_id": child_track.track_id,
-                            "parent_track_id": parent_track.track_id,
-                            "child_cycle_count": child_track.path.cycle_count,
-                            "parent_cycle_count": parent_track.path.cycle_count,
-                            "relative_phase": "近似恒定",
-                        },
-                        adjustable_variables=[
-                            f"motion_tracks.{child_track.track_id}.path.cycle_count",
-                            f"motion_tracks.{child_track.track_id}.path.control_points",
-                        ],
-                    ).model_copy(update={"severity": "warning"})
-                )
+            for child_track in child_tracks:
+                for parent_track in parent_tracks:
+                    if not _time_ranges_overlap(
+                        child_track.time_range_seconds,
+                        parent_track.time_range_seconds,
+                    ) or not _nested_orbits_are_phase_locked(
+                        state,
+                        child_id,
+                        parent_id,
+                        grandparent_id,
+                        child_track,
+                        parent_track,
+                        profile,
+                    ):
+                        continue
+                    start = max(
+                        child_track.time_range_seconds[0],
+                        parent_track.time_range_seconds[0],
+                    )
+                    end = min(
+                        child_track.time_range_seconds[1],
+                        parent_track.time_range_seconds[1],
+                    )
+                    violations.append(
+                        _violation(
+                            "NESTED_ORBIT_PHASE_LOCKED",
+                            (
+                                f"嵌套公转在画面控制上退化为同相编队：{child_id} -> "
+                                f"{parent_id} -> {grandparent_id}；请调整子轨道 cycle_count 或节奏"
+                            ),
+                            entity_ids=[child_id, parent_id, grandparent_id],
+                            time_range_seconds=(start, end),
+                            expected={
+                                "relative_phase": "随时间显著变化",
+                                "purpose": "让控制白模中的嵌套运动可辨识",
+                            },
+                            actual={
+                                "child_track_id": child_track.track_id,
+                                "parent_track_id": parent_track.track_id,
+                                "child_cycle_count": child_track.path.cycle_count,
+                                "parent_cycle_count": parent_track.path.cycle_count,
+                                "relative_phase": "近似恒定",
+                            },
+                            adjustable_variables=[
+                                f"motion_tracks.{child_track.track_id}.path.cycle_count",
+                                f"motion_tracks.{child_track.track_id}.path.control_points",
+                            ],
+                        ).model_copy(update={"severity": "warning"})
+                    )
     return violations
 
 
@@ -4680,7 +4692,13 @@ def _typed_direction_violations(
         if (
             isinstance(target_id, str)
             and target_id in state.entities
-            and _has_carrier_binding(state, subject_id, target_id, start, end)
+            and _has_target_relative_binding(
+                state,
+                subject_id,
+                target_id,
+                start,
+                end,
+            )
         ):
             return []
         actual = {"target_id": target_id, "target_relative_binding": False}
@@ -4792,13 +4810,19 @@ def _typed_path_violations(
         and track.time_range_seconds[1] > start
     ]
     actual_representations = {track.path.representation for track in matching_tracks}
-    representation_matches = bool(actual_representations & expected_representations)
+    representation_tracks = [
+        track
+        for track in matching_tracks
+        if track.path.representation in expected_representations
+    ]
+    representation_matches = bool(representation_tracks)
+    interval_covered = _tracks_cover_interval(representation_tracks, start, end)
     geometry_matches = (
-        any(_catmull_rom_has_inflection(track) for track in matching_tracks)
+        any(_catmull_rom_has_inflection(track) for track in representation_tracks)
         if path_type == "s_curve"
         else representation_matches
     )
-    if representation_matches and geometry_matches:
+    if representation_matches and geometry_matches and interval_covered:
         return []
     return [
         _violation(
@@ -4810,6 +4834,7 @@ def _typed_path_violations(
             actual={
                 "representations": sorted(actual_representations),
                 "geometry_matches": geometry_matches,
+                "full_interval_covered": interval_covered,
             },
             adjustable_variables=[f"motion_tracks.{subject_id}"],
         )
@@ -4847,29 +4872,111 @@ def _has_carrier_binding(
     start: float,
     end: float,
 ) -> bool:
+    """Require a rigid, full-interval attachment to the declared carrier."""
+
     entity = state.entities[subject_id]
     if entity.parent_id == carrier_id:
         return True
+    bindings: list[TrackSpec] = []
     for track in state.motion_tracks.values():
         if track.target_entity_id != subject_id:
-            continue
-        track_start, track_end = track.time_range_seconds
-        if track_end <= start or track_start >= end:
             continue
         if (
             track.path is not None
             and track.path.space == "target_relative"
             and track.path.target_id == carrier_id
+            and _path_has_constant_relative_transform(track)
         ):
-            return True
+            bindings.append(track)
+            continue
         if any(
             isinstance(keyframe.value, TransformValue)
             and keyframe.value.space == "target_relative"
             and keyframe.value.target_id == carrier_id
             for keyframe in track.keyframes
-        ):
+        ) and _track_has_constant_relative_transform(track):
+            bindings.append(track)
+    return _tracks_cover_interval(bindings, start, end)
+
+
+def _has_target_relative_binding(
+    state: CandidateState,
+    subject_id: str,
+    target_id: str,
+    start: float,
+    end: float,
+) -> bool:
+    """Check a target-relative frame without implying rigid carriage."""
+
+    entity = state.entities[subject_id]
+    if entity.parent_id == target_id:
+        return True
+    bindings = [
+        track
+        for track in state.motion_tracks.values()
+        if track.target_entity_id == subject_id
+        and (
+            (
+                track.path is not None
+                and track.path.space == "target_relative"
+                and track.path.target_id == target_id
+            )
+            or any(
+                isinstance(keyframe.value, TransformValue)
+                and keyframe.value.space == "target_relative"
+                and keyframe.value.target_id == target_id
+                for keyframe in track.keyframes
+            )
+        )
+    ]
+    return _tracks_cover_interval(bindings, start, end)
+
+
+def _tracks_cover_interval(
+    tracks: list[TrackSpec],
+    start: float,
+    end: float,
+    *,
+    tolerance: float = 1e-6,
+) -> bool:
+    """Accept adjacent tracks, but reject gaps hidden by mere overlap."""
+
+    cursor = start
+    for track_start, track_end in sorted(
+        (track.time_range_seconds for track in tracks),
+        key=lambda item: (item[0], item[1]),
+    ):
+        if track_end <= cursor + tolerance:
+            continue
+        if track_start > cursor + tolerance:
+            return False
+        cursor = max(cursor, track_end)
+        if cursor >= end - tolerance:
             return True
-    return False
+    return cursor >= end - tolerance
+
+
+def _path_has_constant_relative_transform(track: TrackSpec) -> bool:
+    path = track.path
+    if path is None or path.closed:
+        return False
+    points = getattr(path, "control_points", None)
+    return bool(points) and all(
+        all(abs(left - right) <= 1e-6 for left, right in zip(points[0], point))
+        for point in points[1:]
+    )
+
+
+def _track_has_constant_relative_transform(track: TrackSpec) -> bool:
+    values = [
+        keyframe.value
+        for keyframe in track.keyframes
+        if isinstance(keyframe.value, TransformValue)
+    ]
+    if not values:
+        return False
+    first = values[0]
+    return all(value == first for value in values[1:])
 
 
 def _projected_motion_readability_violations(
@@ -5145,8 +5252,9 @@ def _orbit_projection_readability_violations(
 
     if state.camera is None:
         return []
-    path_tracks = {
-        (track.target_entity_id, track.path.target_id): track
+    path_tracks: dict[tuple[str, str], list[TrackSpec]] = {}
+    for track in (
+        track
         for track in state.motion_tracks.values()
         if track.type == "path_follow"
         and track.path is not None
@@ -5154,89 +5262,95 @@ def _orbit_projection_readability_violations(
         and track.path.space == "target_relative"
         and track.target_entity_id
         and track.path.target_id
-    }
+    ):
+        path_tracks.setdefault(
+            (track.target_entity_id, track.path.target_id),
+            [],
+        ).append(track)
     explicit_view = _has_explicit_camera_view(objective_brief)
     violations: list[Violation] = []
     for subject_id, reference_id in sorted(_objective_orbit_pairs(objective_brief)):
-        track = path_tracks.get((subject_id, reference_id))
-        if track is None or track.path is None:
-            continue
-        start, end = track.time_range_seconds
-        frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
-        last_frame_time = state.timeline.duration_seconds - frame_step
-        sample_end = min(end - frame_step, last_frame_time)
-        sample_end = max(sample_end, start)
-        sample_times = [
-            start + (sample_end - start) * index / 16.0 for index in range(17)
-        ]
-        alignments: list[float] = []
-        for time_seconds in sample_times:
-            resolver = _WorldTransformResolver(state, time_seconds, profile)
-            camera_state = resolver.camera()
-            if camera_state is None:
+        for track in path_tracks.get((subject_id, reference_id), []):
+            if track.path is None:
                 continue
-            reference = resolver.entity(reference_id)
-            camera_transform, _ = camera_state
-            scaled_center_offset = tuple(
-                track.path.center_offset_m[index] * reference.scale[index]
-                for index in range(3)
-            )
-            orbit_center = add(
-                reference.translation_m,
-                rotate_vector(
+            start, end = track.time_range_seconds
+            frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
+            last_frame_time = state.timeline.duration_seconds - frame_step
+            sample_end = min(end - frame_step, last_frame_time)
+            sample_end = max(sample_end, start)
+            sample_times = [
+                start + (sample_end - start) * index / 16.0 for index in range(17)
+            ]
+            alignments: list[float] = []
+            for time_seconds in sample_times:
+                resolver = _WorldTransformResolver(state, time_seconds, profile)
+                camera_state = resolver.camera()
+                if camera_state is None:
+                    continue
+                reference = resolver.entity(reference_id)
+                camera_transform, _ = camera_state
+                scaled_center_offset = tuple(
+                    track.path.center_offset_m[index] * reference.scale[index]
+                    for index in range(3)
+                )
+                orbit_center = add(
+                    reference.translation_m,
+                    rotate_vector(
+                        reference.rotation_quaternion_wxyz,
+                        scaled_center_offset,
+                    ),
+                )
+                view_vector = subtract(
+                    camera_transform.translation_m,
+                    orbit_center,
+                )
+                if length(view_vector) <= profile.numeric_tolerance:
+                    continue
+                world_normal = rotate_vector(
                     reference.rotation_quaternion_wxyz,
-                    scaled_center_offset,
-                ),
-            )
-            view_vector = subtract(
-                camera_transform.translation_m,
-                orbit_center,
-            )
-            if length(view_vector) <= profile.numeric_tolerance:
+                    normalize(track.path.plane_normal),
+                )
+                alignments.append(
+                    abs(dot(normalize(world_normal), normalize(view_vector)))
+                )
+            if not alignments:
                 continue
-            world_normal = rotate_vector(
-                reference.rotation_quaternion_wxyz,
-                normalize(track.path.plane_normal),
+            median_alignment = median(alignments)
+            if median_alignment + profile.numeric_tolerance >= (
+                profile.minimum_orbit_plane_view_alignment
+            ):
+                continue
+            severity = "warning"
+            message = (
+                f"解析轨道在当前摄影机下长期接近侧视：{subject_id} -> {reference_id}；"
+                "请调整摄影机或轨道平面，使白模能够辨识闭合运动"
             )
-            alignments.append(abs(dot(normalize(world_normal), normalize(view_vector))))
-        if not alignments:
-            continue
-        median_alignment = median(alignments)
-        if median_alignment + profile.numeric_tolerance >= (
-            profile.minimum_orbit_plane_view_alignment
-        ):
-            continue
-        severity = "warning"
-        message = (
-            f"解析轨道在当前摄影机下长期接近侧视：{subject_id} -> {reference_id}；"
-            "请调整摄影机或轨道平面，使白模能够辨识闭合运动"
-        )
-        if explicit_view:
-            message += "；Brief 已明确机位，因此仅记录警告而不覆盖用户要求"
-        violation = _violation(
-            "ORBIT_PLANE_NEAR_EDGE_ON",
-            message,
-            entity_ids=[subject_id, reference_id],
-            time_range_seconds=(start, end),
-            expected={
-                "minimum_median_absolute_view_normal_dot": (
-                    profile.minimum_orbit_plane_view_alignment
-                ),
-                "purpose": "让控制白模中的闭合轨道保持可辨识",
-            },
-            actual={
-                "median_absolute_view_normal_dot": median_alignment,
-                "minimum_absolute_view_normal_dot": min(alignments),
-                "maximum_absolute_view_normal_dot": max(alignments),
-                "plane_normal": list(track.path.plane_normal),
-                "sample_count": len(alignments),
-            },
-            adjustable_variables=[
-                f"motion_tracks.{track.track_id}.path.plane_normal",
-                "camera transform",
-            ],
-        )
-        violations.append(violation.model_copy(update={"severity": severity}))
+            if explicit_view:
+                message += "；Brief 已明确机位，因此仅记录警告而不覆盖用户要求"
+            violation = _violation(
+                "ORBIT_PLANE_NEAR_EDGE_ON",
+                message,
+                entity_ids=[subject_id, reference_id],
+                time_range_seconds=(start, end),
+                expected={
+                    "minimum_median_absolute_view_normal_dot": (
+                        profile.minimum_orbit_plane_view_alignment
+                    ),
+                    "purpose": "让控制白模中的闭合轨道保持可辨识",
+                },
+                actual={
+                    "median_absolute_view_normal_dot": median_alignment,
+                    "minimum_absolute_view_normal_dot": min(alignments),
+                    "maximum_absolute_view_normal_dot": max(alignments),
+                    "plane_normal": list(track.path.plane_normal),
+                    "sample_count": len(alignments),
+                },
+                adjustable_variables=[
+                    f"motion_tracks.{track.track_id}.path.plane_normal",
+                    "camera transform",
+                ],
+            )
+            violations.append(violation.model_copy(update={"severity": severity}))
     return violations
 
 
@@ -5245,17 +5359,26 @@ def _orbit_trajectory_violations(
     objective_brief: ObjectivePlanningBrief,
 ) -> list[Violation]:
     """要求普通公转使用解析轨迹，明确的异形轨迹除外。"""
-    path_tracks = {
-        track.target_entity_id: track
+    path_tracks: dict[str, list[TrackSpec]] = {}
+    for track in (
+        track
         for track in state.motion_tracks.values()
         if track.type == "path_follow"
         and track.path is not None
         and track.target_entity_id
-    }
+    ):
+        path_tracks.setdefault(track.target_entity_id, []).append(track)
     violations: list[Violation] = []
     for subject_id, reference_id in sorted(_objective_orbit_pairs(objective_brief)):
-        track = path_tracks.get(subject_id)
-        if track is None:
+        subject_tracks = path_tracks.get(subject_id, [])
+        matching_tracks = [
+            track
+            for track in subject_tracks
+            if track.path is not None
+            and track.path.space == "target_relative"
+            and track.path.target_id == reference_id
+        ]
+        if not subject_tracks:
             violations.append(
                 _violation(
                     "ORBIT_PATH_REQUIRED",
@@ -5267,8 +5390,9 @@ def _orbit_trajectory_violations(
                 )
             )
             continue
-        path = track.path
-        if path.space != "target_relative" or path.target_id != reference_id:
+        if not matching_tracks:
+            track = subject_tracks[0]
+            path = track.path
             violations.append(
                 _violation(
                     "ORBIT_REFERENCE_FRAME_INVALID",
@@ -5279,10 +5403,14 @@ def _orbit_trajectory_violations(
                     adjustable_variables=[f"motion_tracks.{track.track_id}.path"],
                 )
             )
-        if path.representation not in {
-            "circle",
-            "ellipse",
-        } and not _has_explicit_custom_trajectory(objective_brief, subject_id):
+            continue
+        if not any(
+            track.path is not None
+            and track.path.representation in {"circle", "ellipse"}
+            for track in matching_tracks
+        ) and not _has_explicit_custom_trajectory(objective_brief, subject_id):
+            track = matching_tracks[0]
+            path = track.path
             violations.append(
                 _violation(
                     "ORBIT_TRAJECTORY_NOT_ANALYTIC",
@@ -5388,13 +5516,20 @@ def _objective_orbit_pairs(
         if not isinstance(motion, dict):
             continue
         semantics = motion.get("motion_semantics")
-        if not isinstance(semantics, dict) or not (
-            semantics.get("direction_mode") == "relative_to_target"
-            and semantics.get("path_type") in {"circular", "elliptical"}
+        if not isinstance(semantics, dict):
+            continue
+        try:
+            shape = planning_motion_shape(semantics)
+        except ValueError:
+            continue
+        if (
+            shape is None
+            or shape.direction_mode != "relative_to_target"
+            or shape.path_family not in {"circle", "ellipse"}
         ):
             continue
         subject_id = motion.get("subject_id")
-        target_id = semantics.get("target_id")
+        target_id = shape.target_id
         if isinstance(subject_id, str) and isinstance(target_id, str):
             pairs.add((subject_id, target_id))
     return pairs
@@ -6680,7 +6815,7 @@ def _equivalent_motion_source_refs(
             continue
         semantics = motion.get("motion_semantics")
         if not isinstance(semantics, dict):
-            continue
+            semantics = {}
         subject_id = motion.get("subject_id")
         target_id = semantics.get("target_id")
         refs = {
@@ -6700,12 +6835,13 @@ def _equivalent_motion_source_refs(
                     ref = f"content.timeline.events[{event_index}]"
                     if ref in explicit_refs:
                         refs.add(ref)
-        if (
+        typed_relative_path = (
             semantics.get("direction_mode") == "relative_to_target"
             and semantics.get("path_type") in {"circular", "elliptical"}
             and isinstance(subject_id, str)
             and isinstance(target_id, str)
-        ):
+        )
+        if typed_relative_path or not semantics:
             for relation_index, relationship in enumerate(relationships):
                 if not isinstance(relationship, dict):
                     continue
@@ -6714,7 +6850,10 @@ def _equivalent_motion_source_refs(
                 if (
                     is_orbit
                     and relationship.get("subject_id") == subject_id
-                    and relationship.get("reference_id") == target_id
+                    and (
+                        not typed_relative_path
+                        or relationship.get("reference_id") == target_id
+                    )
                 ):
                     ref = f"content.scene_design.relationships[{relation_index}]"
                     if ref in explicit_refs:
@@ -8756,10 +8895,16 @@ def _error_message(error: ValidationError | ValueError) -> str:
 
 
 def _rejected(revision: int, message: str) -> dict[str, Any]:
+    failure_payload = {
+        "failure_signature": canonical_hash([message]),
+        "failure_codes": sorted(set(re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", message))),
+        "failure_reasons": [message],
+    }
     return _envelope(
         revision,
         revision,
         status="rejected",
+        data=failure_payload,
         warnings=[message],
         next_actions=["修正参数后重试"],
     )

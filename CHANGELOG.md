@@ -22,12 +22,15 @@
 
 ### Changed
 
+- Core 0.8.23 / Toolkit v0.41 将所有独立主体位移统一为 `path_move`；公转只由 `relative_to_target + target_id + circle/ellipse` 表达，不再在 Planning 层重复提交 `orbit` kind、`orbit_around` direction 或 Skeleton Relation。旧版 Brief 的公转关系仍作为兼容输入确定性转换。
+- 同一工具、同一 revision 的相同确定性失败连续出现两次时停止新的付费 Agent 轮次；Runner 先以无模型的确定性路径判断 Agent 无进展还是框架自身契约冲突，再进入简化交付或诊断结果。
 - Toolkit v0.36 收紧 Semantic→Skeleton→Design→Validator 契约：动态场景必须真实包含主体状态变化，关键 `motion_id` 必须由相容阶段实现；明确画幅比例和水平/垂直画面位置成为 hard constraint；只有线性主体运动启用缺省 20° 斜视规则。
 - 摄影机 `static/push_in/pull_out/follow/orbit/lateral` 现在均有实际执行实现；明确俯仰、数值高度和常用焦段会改变真实 Camera 并接受 hard 复验。未识别的显式摄影机语义保持未映射并进入修复，而不再仅凭 `source_ref` 假通过。
 - Agent 的 Constraint Patch 枚举收窄为 Toolkit 真正支持的 19 类；屏幕运动不可读保持非阻断 warning，不再错误进入只处理 hard violation 的确定性 Repair 列表。
 
 ### Fixed
 
+- Core 0.8.23 / Toolkit v0.41 修复 Semantic 合法输出无法映射到 Planning Schema、`motion_id` 可借无关来源绕过类型校验、多个轨道证据按主体键互相覆盖、仅短暂重叠的相对路径冒充完整动作，以及闭合轨道冒充刚性携带绑定。Semantic、确定性构建器与 Skeleton Validator 现在共用同一闭合运动映射；相对运动和携带按完整区间并集检查，携带额外要求相对 Transform 恒定。
 - Core 0.8.22 / Toolkit v0.40 修复“Agent 已正确表达但执行/判断层丢失”的跨层缺陷：实体 `look_at` 现在真实进入逐帧求值和 Scene IR；初始 `focus_target_id` 不再覆盖摄影机旋转时间线或制造隐式跟踪；布尔 visibility 不再因通用线性插值提前切换；Track 全局插值不再是无效字段。组合 Patch 在确定性工具穷尽后可为新实体提交完整受限 Transform，并保留紧凑 Schema 不可见的次级来源映射，避免正确修复被 unresolved/provenance 门禁反向拒绝。
 - Full Validation 以外的局部诊断不再把 Agent 工具面误关成 `commit_ready`；Commit Gate 导出的 Constraint Plan 始终携带完整权威报告。逐帧投影错误现在按实体完整收集并可被时间段压缩，短暂画外/镜后样本降为非阻断 warning，但一个应渲染实体全片从未可投影仍为硬错误；不可见代理不再触发视觉地面相交失败。Camera inspect 别名与 violation 过滤器补全，约束错误只建议真实可影响该约束的修复领域。
 - 人工审计继续修复确定性后备中的交叉状态问题：旧 Objective 缺少 `scene_dynamics` 时按类型化主体动作恢复，不再把“静止”文字当空间位移；明确 action 不再因其类型化解释为 inferred 而丢失来源；后开始且没有前置状态的运动会正确预置到路径点之前，有前置等待/互动的主体则不会被后续动作反向改写首帧。单个会合点默认允许后续转向，真实 3D 距离求解保留贴地高度，互相 `look_at` 只读取目标位置而不会递归求完整朝向。

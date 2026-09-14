@@ -27,6 +27,7 @@ from cinescaffold.planning.models import (
     _mock_scale_intent,
     _mock_scene_skeleton,
     _mock_speed_intent,
+    build_deterministic_scene_skeleton,
 )
 from cinescaffold.planning.objective import (
     ObjectiveRequirement,
@@ -186,7 +187,7 @@ class PlanningDesignTest(unittest.TestCase):
         objective = project_objective_brief(valid_planning_brief()).objective_brief
         value = _desert_skeleton()
         value["motion_phases"][0].update(
-            kind="linear_move",
+            kind="path_move",
             direction_mode="world_forward",
             path_family="linear",
             speed_intent="slow",
@@ -241,6 +242,7 @@ class PlanningDesignTest(unittest.TestCase):
             kind="visibility",
             visibility_state="hidden",
             transition_at="at_end",
+            source_ref="content.subject_motion[0].motion_semantics",
         )
         skeleton = SceneSkeleton.model_validate(value)
 
@@ -259,7 +261,7 @@ class PlanningDesignTest(unittest.TestCase):
     def test_parabolic_path_family_is_representable(self) -> None:
         value = _desert_skeleton()
         value["motion_phases"][0].update(
-            kind="linear_move",
+            kind="path_move",
             direction_mode="world_forward",
             path_family="parabolic",
             speed_intent="medium",
@@ -600,10 +602,11 @@ class PlanningDesignTest(unittest.TestCase):
         skeleton["relations"] = skeleton["relations"][:1]
         skeleton["motion_phases"][0].update(
             motion_id="walk_01",
-            kind="linear_move",
+            kind="path_move",
             direction_mode="world_forward",
             path_family="linear",
             speed_intent="slow",
+            source_ref="content.subject_motion[0].motion_semantics",
         )
         skeleton["camera_intent"].update(
             movement="follow",
@@ -693,10 +696,11 @@ class PlanningDesignTest(unittest.TestCase):
         skeleton["relations"] = skeleton["relations"][:1]
         skeleton["motion_phases"][0].update(
             motion_id="walk_01",
-            kind="linear_move",
+            kind="path_move",
             direction_mode="world_forward",
             path_family="linear",
             speed_intent="slow",
+            source_ref="content.subject_motion[0].motion_semantics",
         )
         skeleton["camera_intent"].update(
             movement="pan",
@@ -828,7 +832,7 @@ class PlanningDesignTest(unittest.TestCase):
         value = _pickup_skeleton()
         value["route_intents"][0]["anchors"][0]["phase_id"] = "man_wait"
 
-        with self.assertRaisesRegex(ValidationError, "linear_move"):
+        with self.assertRaisesRegex(ValidationError, "path_move"):
             SceneSkeleton.model_validate(value)
 
     def test_skeleton_keeps_qualitative_proportion_without_numeric_size(self) -> None:
@@ -1466,6 +1470,44 @@ class PlanningDesignTest(unittest.TestCase):
             toolkit.profile.orbit_surface_clearance_m,
         )
 
+    def test_typed_relative_circle_is_the_only_motion_level_orbit_shape(self) -> None:
+        toolkit = _typed_solar_toolkit()
+        skeleton = build_deterministic_scene_skeleton(toolkit.objective_brief)
+        orbit_phases = [
+            phase
+            for phase in skeleton["motion_phases"]
+            if phase["path_family"] in {"circle", "ellipse"}
+        ]
+
+        self.assertEqual(len(orbit_phases), 2)
+        self.assertTrue(all(phase["kind"] == "path_move" for phase in orbit_phases))
+        self.assertTrue(
+            all(
+                phase["direction_mode"] == "relative_to_target"
+                for phase in orbit_phases
+            )
+        )
+        accepted = toolkit.submit_scene_skeleton(skeleton)
+        self.assertEqual(accepted["status"], "ok", accepted)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertEqual(options["status"], "ok", options)
+        self.assertEqual(len(options["data"]["options"]), 1)
+
+    def test_motion_id_cannot_evade_typed_validation_via_relation_source(self) -> None:
+        toolkit = _typed_solar_toolkit()
+        skeleton = build_deterministic_scene_skeleton(toolkit.objective_brief)
+        earth_phase = next(
+            phase
+            for phase in skeleton["motion_phases"]
+            if phase.get("motion_id") == "earth_orbit"
+        )
+        earth_phase["source_ref"] = "content.scene_design.relationships[0]"
+
+        rejected = toolkit.submit_scene_skeleton(skeleton)
+
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertIn("motion_id", " ".join(rejected["warnings"]))
+
     def test_legacy_orbit_center_without_trajectory_stays_stationary_end_to_end(
         self,
     ) -> None:
@@ -2064,7 +2106,7 @@ class PlanningDesignTest(unittest.TestCase):
         self.assertTrue(
             any(
                 item["subject_id"] == "man"
-                and item["kind"] == "linear_move"
+                and item["kind"] == "path_move"
                 and item["timeline_event_id"] == "boarding"
                 and item["target_id"] == "car"
                 for item in phases
@@ -2249,6 +2291,116 @@ def _example_toolkit(filename: str) -> ScenePlanningToolkit:
     return ScenePlanningToolkit(attach_duration_resolution(objective, resolution))
 
 
+def _typed_solar_toolkit() -> ScenePlanningToolkit:
+    source = _example_toolkit("solar_system_10s.json")
+    motions = []
+    specifications = (
+        ("sun_hold", "stationary", "none", None, "stationary", False, "inferred"),
+        (
+            "earth_orbit",
+            "self_propelled",
+            "relative_to_target",
+            "sun",
+            "circular",
+            True,
+            "explicit",
+        ),
+        (
+            "moon_orbit",
+            "self_propelled",
+            "relative_to_target",
+            "earth",
+            "circular",
+            True,
+            "explicit",
+        ),
+    )
+    for motion, specification in zip(
+        source.objective_brief.subject_motion, specifications, strict=True
+    ):
+        (
+            motion_id,
+            motion_mode,
+            direction_mode,
+            target_id,
+            path_type,
+            narrative_required,
+            source_status,
+        ) = specification
+        motions.append(
+            motion
+            | {
+                "motion_id": motion_id,
+                "motion_semantics": {
+                    "motion_mode": motion_mode,
+                    "direction_mode": direction_mode,
+                    "target_id": target_id,
+                    "carrier_id": None,
+                    "path_type": path_type,
+                    "timeline_event_id": None,
+                    "narrative_required": narrative_required,
+                    "source_status": source_status,
+                },
+            }
+        )
+    objective = source.objective_brief.model_copy(
+        update={
+            "schema_version": "0.6",
+            "scene_dynamics": {
+                "mode": "dynamic",
+                "source_status": "inferred",
+                "reason": "earth and moon change world position",
+            },
+            "subject_motion": motions,
+            "scene_design": source.objective_brief.scene_design
+            | {
+                "relationships": [
+                    {
+                        "type": "orbit_around",
+                        "subject_id": "earth",
+                        "reference_id": "sun",
+                        "timeline_event_id": None,
+                        "temporal_mode": "throughout",
+                        "strength": "hard",
+                        "source_status": "explicit",
+                        "source_text": "earth orbits sun",
+                    },
+                    {
+                        "type": "orbit_around",
+                        "subject_id": "moon",
+                        "reference_id": "earth",
+                        "timeline_event_id": None,
+                        "temporal_mode": "throughout",
+                        "strength": "hard",
+                        "source_status": "explicit",
+                        "source_text": "moon orbits earth",
+                    },
+                ]
+            },
+            "explicit_requirements": [
+                *source.objective_brief.explicit_requirements,
+                ObjectiveRequirement(
+                    path="content.scene_design.relationships[0]",
+                    value="earth orbits sun",
+                ),
+                ObjectiveRequirement(
+                    path="content.scene_design.relationships[1]",
+                    value="moon orbits earth",
+                ),
+                ObjectiveRequirement(
+                    path="content.subject_motion[1].motion_semantics",
+                    value="earth relative circle around sun",
+                ),
+                ObjectiveRequirement(
+                    path="content.subject_motion[2].motion_semantics",
+                    value="moon relative circle around earth",
+                ),
+            ],
+        }
+    )
+    return ScenePlanningToolkit(objective)
+
+
 def _solar_skeleton() -> dict:
     return {
         "entities": [
@@ -2260,17 +2412,14 @@ def _solar_skeleton() -> dict:
                 "moon", "moon", "satellite", "celestial_sphere", "tiny", 2
             ),
         ],
-        "relations": [
-            _symbolic_relation("earth_sun", "orbit_around", "earth", "sun", 0),
-            _symbolic_relation("moon_earth", "orbit_around", "moon", "earth", 1),
-        ],
+        "relations": [],
         "motion_phases": [
             _symbolic_phase("sun_hold", "sun", "hold", 0, status="inferred"),
             _symbolic_phase(
-                "earth_orbit", "earth", "orbit", 1, target_id="sun", path="circle"
+                "earth_orbit", "earth", "path_move", 1, target_id="sun", path="circle"
             ),
             _symbolic_phase(
-                "moon_orbit", "moon", "orbit", 2, target_id="earth", path="circle"
+                "moon_orbit", "moon", "path_move", 2, target_id="earth", path="circle"
             ),
         ],
         "camera_intent": _symbolic_camera("sun"),
@@ -2326,7 +2475,7 @@ def _pickup_skeleton() -> dict:
             _symbolic_phase(
                 "car_arrive",
                 "car",
-                "linear_move",
+                "path_move",
                 1,
                 event="wait_and_arrive",
                 target_id="man",
@@ -2336,7 +2485,7 @@ def _pickup_skeleton() -> dict:
             _symbolic_phase(
                 "man_approach_car",
                 "man",
-                "linear_move",
+                "path_move",
                 2,
                 event="boarding",
                 target_id="car",
@@ -2360,7 +2509,7 @@ def _pickup_skeleton() -> dict:
             _symbolic_phase(
                 "car_depart",
                 "car",
-                "linear_move",
+                "path_move",
                 4,
                 event="departure",
                 target_id="man",
@@ -2451,7 +2600,9 @@ def _symbolic_phase(
         "timeline_event_id": event,
         "target_id": target_id,
         "carrier_id": carrier_id,
-        "direction_mode": "orbit_around" if kind == "orbit" else direction,
+        "direction_mode": (
+            "relative_to_target" if path in {"circle", "ellipse"} else direction
+        ),
         "path_family": path,
         "source_status": status,
         "source_ref": f"content.subject_motion[{motion_index}].action",

@@ -395,24 +395,29 @@ class InterpreterRunner:
                             "type": type(error).__name__,
                             "message": str(error),
                         }
+                        diagnosis = _diagnose_repeated_tool_failure(
+                            projection.objective_brief,
+                            profile,
+                            error.failure,
+                        )
                         recovery_context = _recovery_context(
                             toolkit,
-                            stage="design_search",
-                            failure_class="no_progress",
-                            attempts_remaining=_attempts_remaining(
-                                self.config, attempt
-                            ),
+                            stage=str(error.failure.get("tool_name") or "tool_call"),
+                            failure_class="repeated_deterministic_failure",
+                            attempts_remaining=0,
                             design_failure=error.failure,
                         )
+                        recovery_context["framework_diagnosis"] = diagnosis
                         trace.record(
-                            "planning_recovery_requested",
+                            "planning_repeated_failure_diagnosed",
                             attempt=attempt,
                             error=error_payload,
                             recovery_context=recovery_context,
                         )
-                        if _can_retry(self.config, attempt):
-                            prompt = _recovery_prompt(recovery_context)
-                            continue
+                        # An identical deterministic rejection at the same
+                        # revision contains no new evidence. Do not start a new
+                        # paid model round; product mode falls through to the
+                        # deterministic delivery path below.
                         status = "failed"
                         break
                     except AgentRunError as error:
@@ -828,6 +833,42 @@ def _attempts_remaining(config: InterpreterRunConfig, attempt: int) -> int:
     if config.full_power_diagnostic:
         return 0
     return max(0, config.max_commit_attempts - attempt)
+
+
+def _diagnose_repeated_tool_failure(
+    objective: ObjectivePlanningBrief,
+    profile: PlanningProfile,
+    failure: dict[str, Any],
+) -> dict[str, Any]:
+    """Probe the same contract without a model before assigning blame."""
+
+    probe = ScenePlanningToolkit(objective, profile=profile)
+    skeleton = build_deterministic_scene_skeleton(objective)
+    submitted = probe.submit_scene_skeleton(skeleton)
+    if submitted.get("status") != "ok":
+        return {
+            "classification": "framework_contract_conflict",
+            "probe_stage": "submit_scene_skeleton",
+            "probe_failure": submitted.get("data"),
+            "probe_warnings": submitted.get("warnings", []),
+            "agent_failure": deepcopy(failure),
+        }
+    options = probe.request_design_options(max_options=1)
+    option_values = options.get("data", {}).get("options", [])
+    if not option_values:
+        return {
+            "classification": "deterministic_design_failure",
+            "probe_stage": "request_design_options",
+            "probe_failure": options.get("data"),
+            "probe_warnings": options.get("warnings", []),
+            "agent_failure": deepcopy(failure),
+        }
+    return {
+        "classification": "agent_no_progress",
+        "probe_stage": "deterministic_path_ready",
+        "option_count": len(option_values),
+        "agent_failure": deepcopy(failure),
+    }
 
 
 def _recovery_context(
