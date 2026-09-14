@@ -158,10 +158,14 @@ class WorkflowRunner:
                 )
             if execution_result.render and execution_result.render.get("artifact"):
                 summary["artifacts"]["video"] = execution_result.render["artifact"]
-            for artifact_id in ("glb_preview", "viewer_manifest"):
-                artifact_path = execution_result.artifacts.get(artifact_id)
+            for execution_id, pipeline_id in (
+                ("blend", "scene_blend"),
+                ("glb_preview", "glb_preview"),
+                ("viewer_manifest", "viewer_manifest"),
+            ):
+                artifact_path = execution_result.artifacts.get(execution_id)
                 if artifact_path:
-                    summary["artifacts"][artifact_id] = artifact_path
+                    summary["artifacts"][pipeline_id] = artifact_path
             self._emit("pipeline_execution_completed", status=execution_result.status)
             return self._finish(summary, summary_path, started)
         except ProviderCostLimitExceeded as error:

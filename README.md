@@ -68,7 +68,7 @@ CineScaffold 是一个面向论文研究的自然语言到三维白模视频生�
 - 每个量化为移动的主体阶段都会经过通用投影结果检查；仅有世界坐标位移、但屏幕轨迹和尺度变化都过小时记录 warning，供后续质量优化和评测使用。
 - 未明确要求迎面或背面跟拍时，线性主体运动与摄影机视线必须保留至少 20° 的中位斜视夹角，避免 Agent 仅靠迎面尺寸变化通过运动可读性门禁；明确机位保留用户要求并记录 warning。
 - 默认通过无窗口 Blender CLI 调用固定 Executor；官方 Blender Lab MCP 仅作为显式兼容后端。两种路径都不把任意 Blender Python 暴露给模型。
-- 输出 `.blend`、运行时验证、GLB、执行 manifest，并可选生成 H.264 白模视频。
+- 输出 `.blend`、运行时验证、GLB、执行 manifest，并可选生成 H.264 白模视频；一键 Pipeline 用稳定逻辑 ID `scene_blend` 把已验证的 `.blend` 交给宿主，由宿主决定受控下载策略。
 - CLI 实时显示 Agent 请求、工具调用、token、revision、验证和渲染进度。
 - 可从自然语言、文本六维、Cinematic Brief 或 Scene IR 一键运行到白模视频。
 - CLI 的一键命令由独立异步 Workflow 服务编排；后续 UI 复用同一阶段、事件、失败语义和 `pipeline_summary.json`，不会维护第二套生成逻辑。

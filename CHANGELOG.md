@@ -4,6 +4,8 @@
 
 ### Added
 
+- Core 0.8.27 将已验证的 `scene.blend` 以稳定逻辑 ID `scene_blend` 加入一键 Pipeline artifact map，供 Studio 在自身鉴权、可见性和成功终态门禁后提供受控下载；服务器路径仍不进入浏览器契约。
+
 - Toolkit v0.36 为首次 Design 全部 hard-fail 的情况增加单独 `repair_baseline`：只保留通过 Execution Safety 的最佳失败候选，绝不混入正常 Options；`begin_design_repair` 物化后立即开放受限原子 Candidate Patch。
 - Scene Skeleton 新增 `local_transform` 和 `parabolic` 表达。局部互动会生成可观察的旋转/尺度关键点并由 Validator 复验；抛物线会生成含弧顶的 Transform 轨迹。
 

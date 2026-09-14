@@ -47,9 +47,11 @@ class _ExecutionRunner:
     async def run(self, _payload):
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         video = self.config.output_dir / "diagnostic_preview.mp4"
+        blend = self.config.output_dir / "scene.blend"
         glb = self.config.output_dir / "scene.glb"
         viewer_manifest = self.config.output_dir / "viewer_manifest.json"
         video.write_bytes(b"video")
+        blend.write_bytes(b"blend")
         glb.write_bytes(b"glb")
         viewer_manifest.write_text("{}\n", encoding="utf-8")
         return ExecutionResult(
@@ -58,6 +60,7 @@ class _ExecutionRunner:
             build={"status": "ok"},
             render={"status": "ok", "artifact": str(video)},
             artifacts={
+                "blend": str(blend),
                 "diagnostic_preview": video.name,
                 "glb_preview": str(glb),
                 "viewer_manifest": str(viewer_manifest),
@@ -139,6 +142,7 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((root / "run/cinematic_brief.json").is_file())
             self.assertTrue((root / "run/textual_six_dimensions.txt").is_file())
             self.assertTrue(Path(summary["artifacts"]["video"]).is_file())
+            self.assertTrue(Path(summary["artifacts"]["scene_blend"]).is_file())
             self.assertTrue(Path(summary["artifacts"]["glb_preview"]).is_file())
             self.assertTrue(Path(summary["artifacts"]["viewer_manifest"]).is_file())
             self.assertIn("pipeline_semantic_completed", events)
