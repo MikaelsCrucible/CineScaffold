@@ -46,6 +46,7 @@ def build_pipeline_run_config(
         semantic_parser = SemanticParserConfig(
             system_template_path=paths.semantic_system,
             rules_path=paths.semantic_rules,
+            revision_template_path=paths.semantic_revision,
             format_example_path=paths.semantic_example,
             model_output_schema_path=paths.semantic_schema,
             translation_rules_path=paths.translation_rules,

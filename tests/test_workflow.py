@@ -98,8 +98,10 @@ class _UsageProvider:
 
     def __init__(self, content):
         self.content = content
+        self.calls = 0
 
     def generate(self, _system_prompt, _user_prompt, _schema):
+        self.calls += 1
         return ProviderResponse(
             content=self.content,
             response_id="usage-test-1",
@@ -135,6 +137,8 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
             parser = SemanticParserConfig(
                 system_template_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/system.md",
                 rules_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/rules.md",
+                revision_template_path=ROOT
+                / "src/cinescaffold/resources/prompts/semantic_parser/revision.md",
                 format_example_path=ROOT / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json",
                 model_output_schema_path=ROOT
                 / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json",
@@ -237,10 +241,11 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
                 output_per_million=Decimal("1"),
                 source="test",
             )
+            provider = _UsageProvider(config.semantic_provider.response)
             config = PipelineRunConfig(
                 **{
                     **config.__dict__,
-                    "semantic_provider": _UsageProvider(config.semantic_provider.response),
+                    "semantic_provider": provider,
                     "semantic_cost_rates": rates,
                     "planning": config.planning.model_copy(update={"cost_rates": rates}),
                     "max_provider_cost": Decimal("0.0001"),
@@ -259,6 +264,52 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("provider_cost_incurred", events)
         self.assertIn("provider_cost_limit_exceeded", events)
         self.assertNotIn("pipeline_planning_started", events)
+        self.assertEqual(provider.calls, 1)
+
+    async def test_semantic_revision_reports_two_incremental_costs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self._config(root, semantic=True)
+            assert config.semantic_provider is not None
+            rates = CostRates(
+                currency="CNY",
+                input_per_million=Decimal("1"),
+                output_per_million=Decimal("1"),
+                source="test",
+            )
+            config = PipelineRunConfig(
+                **{
+                    **config.__dict__,
+                    "semantic_provider": _UsageProvider(
+                        config.semantic_provider.response
+                    ),
+                    "semantic_cost_rates": rates,
+                    "planning": config.planning.model_copy(update={"cost_rates": rates}),
+                    "max_provider_cost": Decimal("2"),
+                    "provider_cost_currency": "CNY",
+                }
+            )
+            events: list[tuple[str, dict[str, object]]] = []
+            summary = await WorkflowRunner(
+                config,
+                progress_callback=lambda name, payload: events.append((name, payload)),
+                planning_runner_type=_PlanningRunner,
+                execution_runner_type=_ExecutionRunner,
+            ).run(PipelineSource(kind="text", text="测试"))
+
+        self.assertEqual(summary["status"], "success")
+        starts = [
+            payload for name, payload in events if name == "provider_request_started"
+        ]
+        settlements = [
+            payload for name, payload in events if name == "provider_cost_incurred"
+        ]
+        self.assertEqual([item["request_index"] for item in starts], [1, 2])
+        self.assertEqual([item["request_index"] for item in settlements], [1, 2])
+        self.assertEqual(
+            [item["cumulative_amount"] for item in settlements],
+            ["0.00020000", "0.00040000"],
+        )
 
     async def test_planning_provider_failure_code_reaches_pipeline_summary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

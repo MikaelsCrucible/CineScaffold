@@ -220,6 +220,8 @@ class WorkflowRunner:
             metered_provider = _MeteredProvider(
                 self.config.semantic_provider,
                 rates=self.config.semantic_cost_rates,
+                max_cost=self.config.max_provider_cost,
+                currency=self.config.provider_cost_currency,
                 progress_callback=self.progress_callback,
             )
             result = await asyncio.to_thread(
@@ -347,11 +349,19 @@ class _MeteredProvider:
         wrapped: StructuredOutputProvider,
         *,
         rates: CostRates | None,
+        max_cost: Decimal | None,
+        currency: str | None,
         progress_callback: PipelineEventCallback | None,
     ) -> None:
         self._wrapped = wrapped
         self._rates = rates
         self._progress_callback = progress_callback
+        self._max_cost = max_cost
+        self._currency = currency or (
+            rates.currency if rates is not None else "unknown"
+        )
+        self._request_index = 0
+        self._cumulative_amount = Decimal(0)
         self.name = wrapped.name
         self.model = wrapped.model
 
@@ -361,10 +371,21 @@ class _MeteredProvider:
         user_prompt: str,
         schema: dict[str, Any],
     ) -> ProviderResponse:
+        if (
+            self._max_cost is not None
+            and self._cumulative_amount >= self._max_cost
+        ):
+            raise ProviderCostLimitExceeded(
+                amount=self._cumulative_amount,
+                limit=self._max_cost,
+                currency=self._currency,
+            )
+        self._request_index += 1
+        request_index = self._request_index
         if self._progress_callback is not None:
             self._progress_callback(
                 "provider_request_started",
-                {"stage": "semantic", "request_index": 1},
+                {"stage": "semantic", "request_index": request_index},
             )
         try:
             response = self._wrapped.generate(system_prompt, user_prompt, schema)
@@ -379,9 +400,9 @@ class _MeteredProvider:
                     "provider_cost_incurred",
                     {
                         "stage": "semantic",
-                        "request_index": 1,
+                        "request_index": request_index,
                         "amount": "0.00000000",
-                        "cumulative_amount": "0.00000000",
+                        "cumulative_amount": f"{self._cumulative_amount:.8f}",
                         "currency": self._rates.currency,
                         "pricing_source": self._rates.source,
                         "billing_resolution": "confirmed_not_billed",
@@ -394,14 +415,15 @@ class _MeteredProvider:
             return response
         summary = provider_usage_summary(usage, self._rates)
         amount = estimate_cost_amount(summary["tokens"], self._rates)
+        self._cumulative_amount += amount
         if self._progress_callback is not None:
             self._progress_callback(
                 "provider_cost_incurred",
                 {
                     "stage": "semantic",
-                    "request_index": 1,
+                    "request_index": request_index,
                     "amount": f"{amount:.8f}",
-                    "cumulative_amount": f"{amount:.8f}",
+                    "cumulative_amount": f"{self._cumulative_amount:.8f}",
                     "currency": self._rates.currency,
                     "pricing_source": self._rates.source,
                 },

@@ -24,6 +24,7 @@
 
 ### Changed
 
+- Core 0.8.30 / Semantic Parser v0.14 将 Semantic Prompt 重写为通用严格契约：固定区分视频片段、场景实体、动作阶段、摄影机、光学属性与画面构图，删除故事案例、动词打表、数值量化表和下游实现细节；时间事件继续支持片段内任意数值区间，未新增 `crossing`、`pass_by` 或其他场景专用语义。每次解析现在固定使用初稿与一次独立审查/完整重写两次 Provider 请求；首轮 Schema 或语义契约诊断会送入审查，第二轮仍非法就失败且不再追加请求。两次 usage、请求序号和费用分别记录并累计。转换层不再用类型多数、时间关系改名、`scene_dynamics` 改写或远景层任选参照实体来隐藏初稿错误。
 - Core 0.8.29 / Semantic Parser v0.13 / Toolkit v0.43 移除 Semantic 关系层的 `ground_support`、`orbit_around` 与 `carried_by` 重复协议，以及规范关系已能完整表达含义后仍可能产生冲突的自由文本 `strength`；`distance + strength`、中文关系别名等旧输入不再兼容或自动改写，非规范关系直接失败。Semantic 来源状态也不再暴露仅供 Planning 决策使用的 `agent_selected`。普通人物/车辆接地由 Toolkit 按环境、代理类型与类型化动作确定性建立，公转与载运分别只保留运动层的相对闭合路径和 `carried + carrier_id`。关系 `throughout` 现在明确表示所引用任意数值事件区间，而不是全镜头或三个固定时间点；Planning 继续以类型字段为权威，但允许用动作原文审计上游遗漏并显式失败，禁止静默关键词重解析。
 - Core 0.8.25 / Semantic Parser v0.12 / Toolkit v0.42 建立不可回退的当前产物边界：只接受 Cinematic Brief v0.7、Constraint Plan v0.2、Scene IR v0.2 和 Executor API v0.3；删除旧 Brief 投影、缺字段 Scene IR 自动升级、`legacy_frozen` 时长类型以及无类型运动的确定性猜测分支。旧中间产物必须重新生成，已交付 MP4/GLB 不受影响。
 - Cinematic Brief v0.7 要求每条主体动作和已声明事件直接提供数值时间范围；Schema 不再允许 `null` 后再由规则层猜测恢复。动态场景的缺省斜侧机位在 Validator 阈值上保留安全余量，避免浮点与场景焦点偏移造成候选恰好 hard-fail。

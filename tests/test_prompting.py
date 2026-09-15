@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cinescaffold.prompting import build_prompt
+from cinescaffold.errors import PromptTemplateError
+from cinescaffold.prompting import build_prompt, build_revision_prompt
 from tests.helpers import ROOT
 
 
@@ -37,17 +38,51 @@ class PromptingTest(unittest.TestCase):
         self.assertIn("`inferred` 与系统 `default` 范围只参与评分和选项比较", prompt)
         self.assertIn("一旦应用结果返回 `commit_ready=true`", prompt)
 
-    def test_semantic_rules_freeze_priority_axis_and_lighting_scope(self) -> None:
+    def test_semantic_rules_define_strict_generic_contract(self) -> None:
         rules = (ROOT / "src/cinescaffold/resources/prompts/semantic_parser/rules.md").read_text(encoding="utf-8")
 
-        self.assertIn("明确摄影机、构图或光源要求优先于情绪映射", rules)
-        self.assertIn("缺省初始朝向是世界前方 `(0,-1,0)`", rules)
-        self.assertIn("普通无目标位移保持 `direction_mode=none`", rules)
-        self.assertIn("不授权改变 Blender 白模的中性技术照明", rules)
-        self.assertIn("`scene_dynamics` 只描述主体，不描述摄影机", rules)
-        self.assertIn("不是开放环境在渲染中的可见硬边界", rules)
-        self.assertIn("两者都不得被重新解释为“主要物体最多占画幅多少”", rules)
-        self.assertIn("这不等于用户明确指定了该画幅比例", rules)
+        self.assertIn("不得用含义不明的“主体”", rules)
+        self.assertIn("不得用含义不明的“镜头”", rules)
+        self.assertIn("可位于视频片段内任意数值起止点", rules)
+        self.assertIn("不得按动作数量机械等分时间", rules)
+        self.assertIn("不得发明某个故事专用动作类型或关系类型", rules)
+        self.assertIn("不得由情绪词自行推导摄影机位置", rules)
+        self.assertNotIn("接到人后", rules)
+        self.assertNotIn("等待→上车", rules)
+
+    def test_revision_prompt_contains_source_draft_and_diagnostics(self) -> None:
+        bundle = build_revision_prompt(
+            source_text="测试原文",
+            draft={"summary": "初稿"},
+            diagnostics=[{"code": "test", "message": "需要修正"}],
+            system_template_path=ROOT
+            / "src/cinescaffold/resources/prompts/semantic_parser/system.md",
+            rules_path=ROOT
+            / "src/cinescaffold/resources/prompts/semantic_parser/rules.md",
+            revision_template_path=ROOT
+            / "src/cinescaffold/resources/prompts/semantic_parser/revision.md",
+        )
+
+        self.assertIn("测试原文", bundle.user_prompt)
+        self.assertIn('"summary": "初稿"', bundle.user_prompt)
+        self.assertIn('"code": "test"', bundle.user_prompt)
+
+    def test_revision_prompt_rejects_incomplete_template(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template_path = Path(directory) / "revision.md"
+            template_path.write_text("{{SOURCE_TEXT}}", encoding="utf-8")
+
+            with self.assertRaises(PromptTemplateError):
+                build_revision_prompt(
+                    source_text="测试原文",
+                    draft={},
+                    diagnostics=[],
+                    system_template_path=ROOT
+                    / "src/cinescaffold/resources/prompts/semantic_parser/system.md",
+                    rules_path=ROOT
+                    / "src/cinescaffold/resources/prompts/semantic_parser/rules.md",
+                    revision_template_path=template_path,
+                )
 
 
 if __name__ == "__main__":

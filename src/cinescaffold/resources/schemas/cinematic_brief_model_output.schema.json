@@ -121,7 +121,7 @@
     },
     "motionSemantics": {
       "type": "object",
-      "description": "每个主体动作阶段的类型化语义；事件参与者不自动成为几何运动目标。",
+      "description": "每个场景实体动作阶段的类型化语义；事件参与者不自动成为几何运动目标。",
       "properties": {
         "action_kind": {
           "type": "string",
@@ -140,7 +140,7 @@
         },
         "direction_mode": {
           "type": "string",
-          "description": "只有明确几何方向才使用非 none；普通驶来、离开、接走不等于朝向或远离事件参与者。",
+          "description": "只有明确几何方向才使用非 none；动作参与者和事件参与者不自动成为几何目标。",
           "enum": [
             "none", "world_forward", "toward_target", "away_from_target",
             "relative_to_target"
@@ -182,7 +182,7 @@
     },
     "sceneDynamics": {
       "type": "object",
-      "description": "只分类主体状态：主体位置、姿态、尺度、可见性或容纳关系发生变化才是 dynamic；摄影机运动和环境效果均不计入。",
+      "description": "只分类场景实体状态：场景实体的位置、姿态、尺度、可见性或容纳关系发生变化才是 dynamic；摄影机运动和环境效果均不计入。",
       "properties": {
         "mode": {"type": "string", "enum": ["static", "dynamic"]},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
@@ -204,7 +204,7 @@
     },
     "relationship": {
       "type": "object",
-      "description": "只记录不能由单个主体动作完整表达的双实体空间关系；公转、载运和普通贴地由 motion_semantics 或 Planning 确定性处理，不在此重复。",
+      "description": "只记录不能由单个场景实体动作完整表达的双实体空间关系；围绕目标的路径和载运由 motion_semantics 表达，不在此重复。",
       "properties": {
         "type": {
           "type": "string",
@@ -217,11 +217,11 @@
         "reference_id": {"type": "string"},
         "timeline_event_id": {
           "type": ["string", "null"],
-          "description": "关系发生在任意时刻或区间时，必须引用 timeline.events 中带数值时间的事件；只有全镜头关系才为 null。"
+          "description": "关系发生在任意时刻或区间时，必须引用 timeline.events 中带数值时间的事件；只有全视频片段关系才为 null。"
         },
         "temporal_mode": {
           "type": "string",
-          "description": "throughout 表示覆盖所引用事件的整个任意时间区间；仅当 timeline_event_id 为 null 时才表示全镜头。at_start/at_end 只约束事件边界。",
+          "description": "throughout 表示覆盖所引用事件的整个任意时间区间；仅当 timeline_event_id 为 null 时才表示全视频片段。at_start/at_end 只约束事件边界。",
           "enum": ["throughout", "at_start", "at_end"]
         },
         "source_status": {"$ref": "#/$defs/sourceStatus"},
@@ -297,15 +297,15 @@
     },
     "cameraMovement": {
       "type": "object",
-      "description": "只描述摄影机自身的位置、朝向或焦距变化，绝不描述任何场景主体的运动。",
+      "description": "只描述摄影机自身的位置、朝向或焦距变化，绝不描述场景实体的运动。",
       "properties": {
         "type": {
           "$ref": "#/$defs/annotatedText",
-          "description": "摄影机自身运镜；固定位置旋转跟踪使用 pan，不得写成随主体平移的 follow。"
+          "description": "摄影机自身运镜；固定位置旋转跟踪使用 pan，不得写成随场景实体平移的 follow。"
         },
         "target_id": {
           "type": ["string", "null"],
-          "description": "pan/follow/orbit 的摄影机运动目标主体 ID；没有目标时为 null。"
+          "description": "pan/follow/orbit 的摄影机运动目标场景实体 ID；没有目标时为 null。"
         },
         "direction": {"$ref": "#/$defs/annotatedText"},
         "speed": {"$ref": "#/$defs/annotatedText"},
@@ -346,7 +346,7 @@
     },
     "timelineEvent": {
       "type": "object",
-      "description": "事件可位于镜头内任意数值时间区间，用作动作和空间关系的共享时间锚点。",
+      "description": "事件可位于视频片段内任意数值时间区间，用作动作和空间关系的共享时间锚点。",
       "properties": {
         "id": {"type": "string"},
         "description": {"type": "string"},

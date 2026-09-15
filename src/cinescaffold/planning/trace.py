@@ -460,6 +460,7 @@ def provider_usage_summary(
         raw.get("cache_read_tokens", input_details.get("cached_tokens", 0)) or 0
     )
     cache_write = int(raw.get("cache_write_tokens", 0) or 0)
+    requests = int(raw.get("requests", 1 if usage is not None else 0) or 0)
     values = {
         "input_tokens": input_tokens,
         "cache_write_tokens": cache_write,
@@ -468,21 +469,48 @@ def provider_usage_summary(
         "details": {
             "reasoning_tokens": int(output_details.get("reasoning_tokens", 0) or 0)
         },
-        "requests": 1 if usage is not None else 0,
+        "requests": requests,
         "tool_calls": 0,
     }
     uncached = max(0, input_tokens - cache_read - cache_write)
-    return _token_usage_summary(
-        values,
-        rates,
-        [
-            {
-                "input_tokens": input_tokens,
-                "uncached_input_tokens": uncached,
-                "message_count": 2,
-            }
-        ] if usage is not None else [],
-    )
+    request_input_tokens = raw.get("request_input_tokens")
+    if not isinstance(request_input_tokens, list) or not all(
+        isinstance(item, int) and not isinstance(item, bool)
+        for item in request_input_tokens
+    ):
+        request_input_tokens = [input_tokens] if usage is not None else []
+    request_cache_read_tokens = raw.get("request_cache_read_tokens")
+    if not isinstance(request_cache_read_tokens, list) or len(
+        request_cache_read_tokens
+    ) != len(request_input_tokens) or not all(
+        isinstance(item, int) and not isinstance(item, bool)
+        for item in request_cache_read_tokens
+    ):
+        request_cache_read_tokens = [0] * len(request_input_tokens)
+    request_cache_write_tokens = raw.get("request_cache_write_tokens")
+    if not isinstance(request_cache_write_tokens, list) or len(
+        request_cache_write_tokens
+    ) != len(request_input_tokens) or not all(
+        isinstance(item, int) and not isinstance(item, bool)
+        for item in request_cache_write_tokens
+    ):
+        request_cache_write_tokens = [0] * len(request_input_tokens)
+    request_metrics = [
+        {
+            "input_tokens": item,
+            "uncached_input_tokens": max(
+                0,
+                item
+                - int(request_cache_read_tokens[index] or 0)
+                - int(request_cache_write_tokens[index] or 0),
+            ),
+            "message_count": 2,
+        }
+        for index, item in enumerate(request_input_tokens)
+    ]
+    if len(request_metrics) == 1:
+        request_metrics[0]["uncached_input_tokens"] = uncached
+    return _token_usage_summary(values, rates, request_metrics)
 
 
 def _token_usage_summary(

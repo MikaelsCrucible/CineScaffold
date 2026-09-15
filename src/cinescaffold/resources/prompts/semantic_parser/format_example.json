@@ -5,7 +5,7 @@
   "scene_dynamics": {
     "mode": "static",
     "source_status": "default",
-    "reason": "所有主体状态保持不变；摄影机运动不计入 scene_dynamics"
+    "reason": "所有场景实体的状态保持不变；摄影机运动不计入 scene_dynamics"
   },
   "scene_design": {
     "environment": {"value": null, "source_status": "unknown", "source_text": null},

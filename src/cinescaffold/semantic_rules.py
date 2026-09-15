@@ -3,17 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from cinescaffold.camera_semantics import classify_camera_movement
 from cinescaffold.motion_semantics import planning_motion_shape
-from cinescaffold.relationships import (
-    classify_relationship,
-    normalize_scene_relationships,
-)
+from cinescaffold.relationships import normalize_scene_relationships
 
 TRANSLATION_PARAMETERS_VERSION = "0.5"
 
@@ -38,8 +34,6 @@ def apply_translation_rules(
     _validate_rule_table(rules)
     content = deepcopy(model_content)
     _apply_semantic_defaults(content, rules)
-    normalize_scene_relationships(content)
-    _normalize_spatial_layer_relationships(content)
     normalize_scene_relationships(content)
     _normalize_motion_metadata(content)
     _apply_scene_dynamics(content)
@@ -400,64 +394,6 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
         )
 
 
-def _normalize_spatial_layer_relationships(content: dict[str, Any]) -> None:
-    """Turn an explicit far/background layer into the relation Planning consumes."""
-
-    scene = content.get("scene_design")
-    if not isinstance(scene, dict):
-        return
-    layers = scene.get("spatial_layers")
-    relationships = scene.setdefault("relationships", [])
-    if not isinstance(layers, list) or not isinstance(relationships, list):
-        return
-    subject_ids = [
-        subject.get("id")
-        for subject in content.get("subjects", [])
-        if isinstance(subject, dict) and isinstance(subject.get("id"), str)
-    ]
-    known_ids = set(subject_ids)
-    far_markers = ("远", "后景", "far", "background", "distant")
-    for layer in layers:
-        if not isinstance(layer, dict):
-            continue
-        layer_name = str(layer.get("layer") or "").lower()
-        if not any(marker in layer_name for marker in far_markers):
-            continue
-        far_ids = [
-            entity_id
-            for entity_id in layer.get("content_ids", [])
-            if entity_id in known_ids
-        ]
-        reference_id = next(
-            (entity_id for entity_id in subject_ids if entity_id not in far_ids),
-            None,
-        )
-        if reference_id is None:
-            continue
-        for far_id in far_ids:
-            already_mapped = any(
-                isinstance(relationship, dict)
-                and relationship.get("subject_id") == far_id
-                and relationship.get("reference_id") == reference_id
-                and (classify_relationship(relationship) is not None)
-                and classify_relationship(relationship).kind == "far"
-                for relationship in relationships
-            )
-            if already_mapped:
-                continue
-            relationships.append(
-                {
-                    "type": "far_from",
-                    "subject_id": far_id,
-                    "reference_id": reference_id,
-                    "source_status": layer.get("source_status", "inferred"),
-                    "source_text": layer.get("source_text"),
-                    "timeline_event_id": None,
-                    "temporal_mode": "throughout",
-                }
-            )
-
-
 def _apply_timeline_rules(
     content: dict[str, Any],
     rules: dict[str, Any],
@@ -496,7 +432,6 @@ def _apply_timeline_rules(
         if not timeline.get("relations"):
             raise ValueError("自然语言包含先后关系，但模型没有给出 temporal relation")
 
-    _normalize_temporal_relations(timeline.get("relations", []), events)
     _validate_temporal_relations(timeline.get("relations", []), events)
     _validate_motion_ranges(content.get("subject_motion", []), duration)
 
@@ -625,235 +560,13 @@ def _validate_temporal_relations(
             raise ValueError(f"temporal relation 与事件时间不一致：{relation_id}")
 
 
-def _normalize_temporal_relations(
-    relations: list[dict[str, Any]],
-    events: list[dict[str, Any]],
-) -> None:
-    """Repair qualitative relation labels when the numeric ranges are authoritative.
-
-    Semantic models sometimes use ``before`` to mean "starts before" even when
-    two independently timed actions overlap.  Rejecting the whole Brief loses a
-    valid timeline, so relations without an explicit numeric gap are rewritten
-    to the most precise relation supported by their actual intervals.
-    """
-
-    event_map = {str(item["id"]): item for item in events}
-    for item in relations:
-        source = event_map.get(str(item.get("source_event_id")))
-        target = event_map.get(str(item.get("target_event_id")))
-        if source is None or target is None:
-            continue
-        # An explicit qualitative relation is itself a user requirement, even
-        # when it has no numeric gap. Never rewrite it to fit model-produced
-        # event ranges; validation must expose the contradiction.
-        if item.get("source_status") == "explicit":
-            continue
-        if _relation_matches_ranges(item, source, target):
-            continue
-        item["relation"] = _relation_for_ranges(source, target)
-        # 推断出的零间隔不是独立用户约束；标签纠正后不能留下矛盾边界。
-        item["minimum_gap_seconds"] = None
-        item["maximum_gap_seconds"] = None
-
-
-def _relation_matches_ranges(
-    item: dict[str, Any],
-    source: dict[str, Any],
-    target: dict[str, Any],
-) -> bool:
-    probe = dict(item)
-    try:
-        _validate_temporal_relations([probe], [source, target])
-    except ValueError:
-        return False
-    return True
-
-
-def _relation_for_ranges(
-    source: dict[str, Any],
-    target: dict[str, Any],
-) -> str:
-    tolerance = 1e-6
-    source_start = float(source["start_time_seconds"])
-    source_end = float(source["end_time_seconds"])
-    target_start = float(target["start_time_seconds"])
-    target_end = float(target["end_time_seconds"])
-    if abs(source_end - target_start) <= tolerance:
-        return "meets"
-    if source_end < target_start:
-        return "before"
-    if target_end < source_start:
-        return "after"
-    if abs(source_start - target_start) <= tolerance:
-        return "starts_with"
-    if abs(source_end - target_end) <= tolerance:
-        return "ends_with"
-    if target_start <= source_start and source_end <= target_end:
-        return "during"
-    if source_start < target_start:
-        return "starts_before"
-    if source_start > target_start:
-        return "starts_after"
-    return "overlaps"
-
-
 def _normalize_motion_metadata(content: dict[str, Any]) -> None:
     seen: set[str] = set()
     for index, motion in enumerate(content.get("subject_motion", [])):
-        motion_id = motion.get("motion_id") or f"motion_{index + 1:02d}"
+        motion_id = motion.get("motion_id")
         if not isinstance(motion_id, str) or not motion_id or motion_id in seen:
             raise ValueError("subject_motion.motion_id 必须非空且唯一")
-        motion["motion_id"] = motion_id
         seen.add(motion_id)
-        semantics = motion.get("motion_semantics")
-        if not isinstance(semantics, dict):
-            continue
-        _normalize_motion_primitives(
-            motion,
-            semantics,
-        )
-        if "narrative_required" not in semantics:
-            action = motion.get("action")
-            semantics["narrative_required"] = bool(
-                isinstance(action, dict) and action.get("source_status") == "explicit"
-            )
-
-
-def _normalize_motion_primitives(
-    motion: dict[str, Any],
-    semantics: dict[str, Any],
-) -> None:
-    """把叙事动词收敛为 Planning 实际使用的运动事实。
-
-    arrive/depart/transport 等词不能证明几何方向或目标；只有明确来源的
-    方向才能进入相对几何，容纳和载运继续作为独立状态关系。
-    """
-
-    motion_mode = _reconcile_motion_mode(semantics)
-    if motion_mode is not None:
-        semantics["motion_mode"] = motion_mode
-        semantics["action_kind"] = {
-            "stationary": "hold",
-            "local_interaction": "interact",
-            "self_propelled": "locomotion",
-            "carried": "locomotion",
-        }[motion_mode]
-        if motion_mode == "stationary":
-            semantics["motion_type"] = "static"
-            semantics["path_type"] = "stationary"
-        elif motion_mode == "local_interaction":
-            semantics["motion_type"] = "interactive"
-            semantics["path_type"] = "stationary"
-        elif motion_mode == "carried":
-            semantics["motion_type"] = "carried"
-            semantics["path_type"] = "stationary"
-        elif semantics.get("path_type") == "stationary":
-            semantics["path_type"] = "unspecified"
-
-    semantics["action_kind"] = {
-        "stationary": "hold",
-        "local_interaction": "interact",
-        "self_propelled": "locomotion",
-        "carried": "locomotion",
-    }.get(motion_mode, "other")
-
-    direction = motion.get("direction")
-    direction_is_explicit = (
-        isinstance(direction, dict)
-        and direction.get("source_status") == "explicit"
-        and direction.get("value") not in {None, ""}
-    )
-    if motion_mode == "carried":
-        semantics["direction_mode"] = "none"
-        semantics["target_id"] = None
-        # 被运载主体在载体坐标系内静止，世界轨迹只继承 carrier_id。
-        semantics["path_type"] = "stationary"
-        return
-
-    path_type = semantics.get("path_type")
-    if path_type in {"circular", "elliptical"}:
-        target_id = semantics.get("target_id")
-        if (
-            semantics.get("direction_mode") == "relative_to_target"
-            and isinstance(target_id, str)
-            and target_id
-        ):
-            # A closed path around a named target carries its own geometric
-            # evidence.  It must not be erased merely because the redundant
-            # human-readable `direction` annotation is inferred or unknown.
-            return
-
-    if not direction_is_explicit and semantics.get("direction_mode") in {
-        "world_forward",
-        "toward_target",
-        "away_from_target",
-        "relative_to_target",
-    }:
-        semantics["direction_mode"] = "none"
-        # 容纳已有独立后置状态；几何 target_id 不得重复事件参与者或容器。
-        semantics["target_id"] = None
-
-
-def _reconcile_motion_mode(semantics: dict[str, Any]) -> str | None:
-    """Repair redundant motion labels only when their typed evidence agrees.
-
-    Structured-output providers can satisfy JSON Schema while emitting one
-    contradictory enum.  These fields describe the same coarse fact, so a
-    unique majority can be normalized without another paid model request.
-    Ties remain untouched and are rejected by the strict validator below.
-    """
-
-    valid_modes = {
-        "stationary",
-        "self_propelled",
-        "carried",
-        "local_interaction",
-    }
-    votes: Counter[str] = Counter()
-    declared_mode = semantics.get("motion_mode")
-    if declared_mode in valid_modes:
-        votes[declared_mode] += 1
-
-    type_mode = {
-        "static": "stationary",
-        "interactive": "local_interaction",
-        "walking": "self_propelled",
-        "running": "self_propelled",
-        "flying": "self_propelled",
-        "jumping": "self_propelled",
-        "moving": "self_propelled",
-        "carried": "carried",
-    }.get(semantics.get("motion_type"))
-    if type_mode is not None:
-        votes[type_mode] += 1
-
-    action_kind = semantics.get("action_kind")
-    if action_kind == "hold":
-        votes["stationary"] += 1
-    elif action_kind == "interact":
-        votes["local_interaction"] += 1
-    elif action_kind == "locomotion":
-        # Locomotion excludes stationary/local modes but does not by itself
-        # distinguish self propulsion from being carried.
-        votes["self_propelled"] += 1
-        votes["carried"] += 1
-
-    if semantics.get("path_type") not in {None, "stationary", "unspecified"}:
-        votes["self_propelled"] += 1
-    if semantics.get("carrier_id") is not None:
-        votes["carried"] += 1
-    postconditions = semantics.get("postconditions")
-    if (
-        isinstance(postconditions, dict)
-        and postconditions.get("contained_by_id") is not None
-    ):
-        votes["carried"] += 1
-
-    if not votes:
-        return None
-    highest = max(votes.values())
-    winners = [mode for mode, count in votes.items() if count == highest]
-    return winners[0] if len(winners) == 1 else None
 
 
 def _normalize_camera_movement(content: dict[str, Any]) -> None:
@@ -905,19 +618,11 @@ def _apply_scene_dynamics(content: dict[str, Any]) -> None:
     expected = "dynamic" if dynamic else "static"
     declared = content.get("scene_dynamics")
     if not isinstance(declared, dict):
-        content["scene_dynamics"] = {
-            "mode": expected,
-            "source_status": "inferred",
-            "reason": "根据主体运动和状态转换确定",
-        }
-        return
+        raise ValueError("scene_dynamics 缺少类型化分类")
     if declared.get("mode") != expected:
-        declared.update(
-            {
-                "mode": expected,
-                "source_status": "inferred",
-                "reason": "模型分类与主体时间线不一致，已按类型化动作确定性纠正",
-            }
+        raise ValueError(
+            "scene_dynamics.mode 与类型化动作阶段不一致："
+            f"期望 {expected}，实际 {declared.get('mode')}"
         )
 
 
@@ -1082,6 +787,18 @@ def _validated_motion_semantics(
 
     motion_type = semantics.get("motion_type")
     motion_mode = semantics.get("motion_mode")
+    action_kind = semantics.get("action_kind")
+    expected_action_kind = {
+        "stationary": "hold",
+        "local_interaction": "interact",
+        "self_propelled": "locomotion",
+        "carried": "locomotion",
+    }.get(motion_mode)
+    if action_kind != expected_action_kind:
+        raise ValueError(
+            f"subject_motion[{index}] 的 motion_mode={motion_mode} "
+            f"必须使用 action_kind={expected_action_kind}"
+        )
     expected_type = {
         "stationary": "static",
         "local_interaction": "interactive",
@@ -1111,6 +828,11 @@ def _validated_motion_semantics(
         and target_id not in subject_ids
     ):
         raise ValueError(f"subject_motion[{index}] 的相对方向缺少有效 target_id")
+    if direction_mode in {"none", "world_forward"} and target_id is not None:
+        raise ValueError(
+            f"subject_motion[{index}] 的 direction_mode={direction_mode} "
+            "不得设置 target_id"
+        )
     if target_id == subject_id:
         raise ValueError(f"subject_motion[{index}] 不能以自身作为 target_id")
 
@@ -1143,8 +865,21 @@ def _validated_motion_semantics(
     path_type = semantics.get("path_type")
     if motion_mode == "stationary" and path_type != "stationary":
         raise ValueError(f"subject_motion[{index}] 的静止阶段必须使用 stationary 路径")
+    if motion_mode == "local_interaction" and path_type != "stationary":
+        raise ValueError(
+            f"subject_motion[{index}] 的局部变化必须使用 stationary 路径"
+        )
     if motion_mode == "self_propelled" and path_type == "stationary":
         raise ValueError(f"subject_motion[{index}] 的自主运动不能使用 stationary 路径")
+    if motion_mode == "carried" and (
+        path_type != "stationary"
+        or direction_mode != "none"
+        or target_id is not None
+    ):
+        raise ValueError(
+            f"subject_motion[{index}] 的 carried 阶段必须使用 "
+            "stationary + direction_mode=none + target_id=null"
+        )
     if path_type in {"circular", "elliptical"} and (
         direction_mode != "relative_to_target" or target_id is None
     ):

@@ -1,165 +1,137 @@
-# 四要素到六维 Cinematic Brief 规则 v0.12
+# Cinematic Brief 语义契约 v0.13
 
-## 1. 任务边界
+## 1. 术语与职责
 
-先从用户原话提取四个输入槽位，再按本规则生成六维电影语义：
+以下术语在本契约中含义固定：
 
-- 谁 → `subjects`
-- 做什么 → `subject_motion`
-- 在哪 → `scene_design`
-- 感觉 → `mood`，并推导 `camera`、`composition` 与 `mood.lighting_intent`
+- **视频片段**：用户描述的一个连续输出及其完整时间范围。
+- **场景实体**：需要独立识别、定位、运动、构图或参与关系的对象，对应 `subjects`。
+- **动作阶段**：某个场景实体在一个数值时间区间内保持或改变状态，对应一条 `subject_motion`。
+- **摄影机**：观察场景的虚拟摄影机；其位置、朝向和运动写入 `camera`。
+- **光学属性**：焦距、景深等摄影机光学意图，写入 `camera.lens_intent`。
+- **画面构图**：投影后的景别、画面位置、视觉占比和可见性要求，写入 `composition`。
+- **空间关系**：两个场景实体之间的相对位置或尺度事实，写入 `scene_design.relationships`。
 
-六个输出维度仍为主体、主体运动、场景、影调氛围、构图和摄影机。光源是影调氛围的子项，不替换原始情绪信息。光源语义只供后续视频生成使用，不授权改变 Blender 白模的中性技术照明。
+自然语言中的同一个词可能有多种意思，必须按上下文归入上述唯一维度。不得用含义不明的“主体”混指主要对象、施事者或所有对象；不得用含义不明的“镜头”混指视频片段、摄影机、光学属性或画面构图。JSON 字段名保持 Schema 规定，不因此改名。
 
-## 2. 来源和优先级
+Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键帧、摄影机矩阵、资产替换或渲染参数。数值缺省和量化由应用中的版本化规则处理，不在这里凭常识估算。
 
-1. 用户明确说出的内容标记为 `explicit`。
-2. 由本规则从明确内容推导出的内容标记为 `inferred`。
-3. 输入缺失时使用本规则声明的缺省值，标记为 `default`，并在 `uncertainties` 中记录 `use_default`。
-4. 用户的明确摄影机、构图或光源要求优先于情绪映射；情绪映射只能补充未明确指定的字段。
-5. 不得增加本规则没有授权的电影语义。无法归类的感觉使用 E6，不得自行创造新情绪类别。
-6. `mood.emotional_tones` 必须保持感觉词在用户原文中的出现顺序。同时出现多个感觉时，按首次出现的可匹配感觉确定主类别；其余感觉仍保留。
+## 2. 原文证据与不确定性
 
-## 3. 四要素提取
+所有带来源字段的值必须遵循：
 
-### 谁
+- `explicit`：原文直接表达该值；`source_text` 保存支持它的最小原文片段。
+- `inferred`：该值能由原文事实必然推出，而不是常见理解、较高概率或创作偏好；必须保留证据片段。
+- `default`：本契约或 Schema 明确要求的结构缺省；`source_text` 为 `null`。
+- `unknown`：原文不足以决定；值允许为空时应保持为空，`source_text` 为 `null`。
 
-- 提取所有充当人物、动物、交通工具、天体或其他动作参与者的实体名词及修饰词。
-- 为每个可独立定位或运动的实体创建稳定、唯一的主体 ID。
-- 数量由数量词决定；无数量词时数量缺省为 1；“一群”表示至少 5。
-- 没有明确主体时创建一个“人”，并标记为 `default`。
+会影响几何、时间、方向、目标、路径、构图或摄影机行为的多种合理解释，不得擅自选择。将缺失点写入 `uncertainties`：未选择时用 `unresolved`；应用规则明确给出缺省时用 `use_default`；只有必然推断时用 `use_inference`。摘要不得把推断、缺省或未知内容改写成用户原话。
 
-### 在哪
+用户明确表达的要求优先。不得为了填满字段，复制无关原文作为证据；不得从实体名称、单个汉字、语言子串或故事常识推出方向、目标、载体或时间关系。
 
-- 提取环境或地点名词作为场景标签。
-- 地点中出现但需要独立定位、缩放或参与关系的物体必须同时成为主体，不能只埋在环境字符串里。
-- 没有明确地点时使用“空白空间”，并标记为 `default`。
+## 3. 场景实体与环境
 
-### 做什么
+- 为每个需要独立定位、运动、构图或参与关系的对象创建一个稳定且唯一的 `subjects[].id`。
+- 一个地点名词若只表示环境，写入 `scene_design.environment`；若其中对象还需要独立定位、运动、构图或参与关系，也必须创建场景实体。
+- 只保留原文给出的类别、描述、叙事作用和属性。不能确定的属性不补写。
+- `spatial_layers` 表达原文明确的前景、中景、后景等画面纵深分层，并引用已有场景实体。
+- `environmental_motion` 只描述环境本身的动态，不代替场景实体的动作阶段。
 
-- 为每个主体提取核心动词、目标、方向、先后顺序和明确时长。
-- 这里只读取以场景实体为施事者的动作。以“镜头、摄影机、机位、视角”为施事者的固定、平移、旋转、推拉或跟踪全部属于摄影机维度，绝不能写入 `subject_motion`；反过来，主体的等待、开来、离开或公转也不能直接成为摄影机运动类型。
-- 首先区分主体静态场景与主体动态场景。`scene_dynamics` 只描述主体，不描述摄影机：所有主体的位置、姿态、尺度、可见性、容纳/携带关系和其他可观察状态从头到尾都不变时为 `static`；推近、后拉、横移、环绕、变焦等摄影机变化不能把它变成 `dynamic`。任一主体发生上述变化时才为 `dynamic`。站立、等待、停放等持续状态本身仍是静态。
-- 动态场景按 `subject_id` 分别建立稀疏语义时间线。`subject_motion` 中的每一项是一个主体自己的关键时间范围，不是全场共享分段，也不是逐帧动画关键帧；每项使用稳定、唯一的 `motion_id`。
-- `timeline.events` 可以为空；但一旦输出事件，起止时间必须是总时长内的数字，不能使用 `null`。每条 `subject_motion` 同样必须直接给出数值起止时间。持续静态场景不需要为了“站立”或摄影机运动虚构主体事件；当前契约不接收或修补旧版空时间中间产物。
-- 每个具有独立起止时间的动作阶段必须单独建立 `subject_motion`；同一主体可以出现多条运动记录，不得把“等待→上车→随车离开”等连续阶段合并为一条覆盖全片的动作。
-- “然后、随后、接着、之后、接下来、先…再…”表示关键事件的先后关系，不表示其他主体的持续状态必须同时结束。必须按叙述顺序拆分事件；只有前一事件完整结束后后一事件才开始时使用 `before`/`after`/`meets`，只要求开始先后且允许重叠时使用 `starts_before`/`starts_after`；不得按动词或事件数量机械等分总时长。
-- `meets` 严格表示 source 结束时 target 才开始，不表示两个事件同时结束；两个事件结束点相同应使用 `ends_with`。只有用户明确给出可度量的事件间隔，或明确说“立即/无缝衔接”时，才填写 `minimum_gap_seconds/maximum_gap_seconds`；不能因为选择了 `meets` 就自行补 `0`，其他情况两项都填 `null`。
-- “同时、与此同时、一边…一边…”明确表示并行动作；即使没有这些词，不同主体之间存在等待/抵达、追逐、观察/经过、承载等因果关系时，相关动作也可以并行。使用 `overlaps`、`during`、`starts_with` 或 `ends_with` 表达必要关系。
-- `hold`、等待、站立、保持关闭等持续状态默认延续到明确改变该状态的事件，而不是在另一个主体开始行动时自动结束。没有明确终点时根据因果终止事件推断，并记录 `uncertainties`。
-- 每个主体可以拥有不同的关键时间点。只有到达后才能进入、进入完成后载体才能带走等真正因果边界才需要同步；允许减速、停留、反应等阶段部分重叠或留有间隔。
-- 静态场景为每个叙事主体提供覆盖完整镜头的 `hold`；动态场景不得留下会让主体在无语义授权时自由移动的时间空档，未列出的空档延续上一状态或视为 `hold`。
-- “接走、带走”不能只解释为接近目标；必须拆出到达/接应与随后共同离开的阶段。代理白模无法表现精细上车动作时，仍要保留接应转场和离开阶段。
-- 站、坐、躺、望、等、停、立、靠归为静止。
-- 走、跑、跳、爬、飞、游、追、逃归为位移运动。
-- 举、握、推、拉、指归为局部互动；若没有明确整体位移，主体位置保持静止。
-- “走向/跑向某物”记录目标实体；“远离某物”记录背离目标。只有用户明确说“向前/沿世界前方”时才使用 `world_forward`；普通无目标位移保持 `direction_mode=none`，由 Planning 层选择连续且可读的路线，不能把缺省代理朝向误当成运动指令。
-- 默认路径为匀速直线；绕圈、椭圆、蛇形/S 形和 8 字形分别使用相应路径语义。跳跃使用抛物线语义。
-- 没有明确动作时使用“站立/静止”，并标记为 `default`。
+`scene_dynamics` 只判断场景实体的可观察状态是否改变：位置、姿态、尺度、可见性或容纳状态在视频片段内发生任何变化即为 `dynamic`；全部保持不变即为 `static`。摄影机运动、焦距变化和纯环境效果不改变该分类。分类必须与所有动作阶段的类型字段一致。
 
-#### 类型化运动语义
+## 4. 动作阶段与类型字段
 
-每条 `subject_motion` 都必须包含 `motion_semantics`。`action.value` 保留便于人类阅读和审计的动作描述；下列类型字段才是后续确定性量化和 Planning Agent 的机器依据。不得因为某个汉字碰巧出现在复合词或实体名中就分类，必须结合整句的施事者、受事者、目标、载体和事件阶段理解。
+每个场景实体独立建立稀疏时间线。一个动作或状态具有独立起止范围时，必须建立独立的 `subject_motion`，并提供唯一 `motion_id`、有效 `subject_id` 和数值起止时间。动作阶段是语义区间，不是逐帧动画关键帧。
 
-- `action_kind` 只保留粗粒度事件类别：静止=`hold`，自主运动或随载体运动=`locomotion`，局部状态变化=`interact`，确实无法归类时=`other`。不要把普通运动继续细分为 approach/arrive/depart/transport 等动词类别；原始叙事保留在 `action.value/source_text`，不能由这些文字直接生成几何约束。
-- `motion_type` 是量化速度档位，不得从 `action.value` 的子串推导：静止=`static`，局部互动=`interactive`，步行/爬行=`walking`，跑动=`running`，飞行/游动=`flying`，跳跃=`jumping`，其他自主位移=`moving`，被其他主体携带=`carried`。
-- `motion_mode` 表示位移由谁驱动：无整体位移=`stationary`，主体自主运动=`self_propelled`，跟随载体=`carried`，仅局部动作=`local_interaction`。
-- `direction_mode` 只能是 `none`、`world_forward`、`toward_target`、`away_from_target` 或 `relative_to_target`。后三者必须填写 `target_id`；目标 ID 必须来自 `subjects`。只有用户明确说出方向或几何目标时才能填写非 `none`；“驶来、开走、接走、到达、离开”等普通动作只证明发生运动，不证明朝向或远离某个主体。事件参与者不是运动目标。
-- `carrier_id` 只在 `motion_mode=carried` 时填写，并必须引用另一个主体；其他模式填 `null`。
-- `path_type` 使用 `stationary`、`linear`、`circular`、`elliptical`、`s_curve`、`figure_eight`、`parabolic` 或 `unspecified`。静止必须使用 `stationary`；已经明确路径时不得使用 `unspecified`。
-- `timeline_event_id` 必须引用承载这一动作阶段的 `timeline.events[].id`；确实没有事件记录时才为 `null`。
-- `narrative_required=true` 表示该阶段是复现用户叙事不可缺少的动作或状态。用户直接描述的阶段，以及为兑现“接走、进入、追上、绕行”等明确复合语义而必然推出的阶段，都必须设为 `true`；纯构图辅助动作才可为 `false`。
-- `postconditions.contained_by_id` 表示该阶段结束后主体进入哪个载体；`postconditions.external_visibility` 表示外部代理在阶段结束后是 `visible`、`hidden` 还是 `unchanged`。
-- `motion_semantics.source_status` 表示类型化解释本身的来源。根据用户明确动作完成的语义归一化通常是 `inferred`，同时在 `source_text` 保存对应原文；系统补全动作则为 `default`。
+`action.value` 仅用于人类阅读和原文审计。以下字段共同构成下游唯一使用的机器语义，必须互相一致：
 
-一致性要求：
+### 4.1 动作与驱动方式
 
-- `motion_mode=stationary` 必须配 `motion_type=static`；`local_interaction` 必须配 `interactive`；`carried` 必须配 `motion_type=carried` 和非空 `carrier_id`。
-- `action_kind`、`motion_type`、`motion_mode`、`path_type` 与 `carrier_id` 是同一动作事实的互相校验字段，必须成组一致。Core 只会在这些类型化证据形成唯一多数时纠正单个枚举笔误；证据相互打平时仍会拒绝，不能依赖下游猜测原始动作文字。
-- 进入载体或容器通过 `postconditions.contained_by_id` 表达；只有用户明确描述“朝向/走向该目标”时才同时设置方向 `target_id`。代理白模不能表现进入内部时，通常将 `external_visibility` 设为 `hidden`。
-- 被载体携带通过 `motion_mode=carried + carrier_id` 表达，不再另造 transport 动作。其空间运动继承载体，`direction_mode=none`、`path_type=stationary`，不能重复生成世界轨迹。
-- 绕行通过 `relative_to_target + target_id + circular/elliptical` 表达，不依赖 orbit 动词类别。
+- `motion_mode=stationary`：没有整体位移；必须搭配 `action_kind=hold`、`motion_type=static`、`path_type=stationary`。
+- `motion_mode=local_interaction`：只有局部姿态或局部状态变化；必须搭配 `action_kind=interact`、`motion_type=interactive`、`path_type=stationary`。
+- `motion_mode=self_propelled`：场景实体自主产生整体位移；必须搭配 `action_kind=locomotion`，`motion_type` 从 `walking/running/flying/jumping/moving` 中选择，路径不得为 `stationary`。
+- `motion_mode=carried`：场景实体的世界运动由另一个场景实体承载；必须搭配 `action_kind=locomotion`、`motion_type=carried`、非空 `carrier_id`、`direction_mode=none`、`target_id=null`、`path_type=stationary`。该阶段不重复生成自主世界路径。
 
-通用原则：“载体来接主体”只需分别记录各主体何时运动、静止、隐藏或被载体携带。载体驶来和接载后继续运动都只是 `locomotion`；接载点用事件末端关系表达，不能把被接主体当成载体必须撞向或远离的几何目标。这里的实体类别可以是汽车与人、飞船与货物、电梯与乘客等，不得写死具体故事模板。
+`action_kind=other` 是 Schema 保留值，当前输出不得使用；无法分类时必须在 `uncertainties` 中保留问题，而不是绕过类型字段的一致性。`carrier_id` 仅在 `carried` 时填写，且必须引用另一个已有场景实体。
 
-### 感觉
+### 4.2 方向、目标与路径
 
-- 提取心理状态、情绪或整体氛围词，并保留用户原词。
-- 根据下列关键词归入 E1–E6。未匹配时使用 E6。
+- `direction_mode=none`：原文没有可执行的几何方向；`target_id` 必须为 `null`。
+- `direction_mode=world_forward`：原文明确要求沿世界前方；`target_id` 必须为 `null`。
+- `direction_mode=toward_target`：明确朝某场景实体接近；必须填写该实体的 `target_id`。
+- `direction_mode=away_from_target`：明确背离某场景实体；必须填写该实体的 `target_id`。
+- `direction_mode=relative_to_target`：明确以某场景实体为相对参考执行路径；必须填写该实体的 `target_id`。
 
-| 类别 | 关键词 |
-| --- | --- |
-| E1 渺小 | 孤独、渺小、无助、寂寥、落寞、被遗忘、微不足道 |
-| E2 压迫 | 压迫、危险、窒息、恐惧、威胁、沉重、逼近 |
-| E3 开阔 | 开阔、自由、平静、安宁、释然、舒展 |
-| E4 紧张 | 紧张、急促、冲突、追逐、慌乱、焦虑 |
-| E5 浪漫 | 浪漫、温柔、梦幻、希望、温暖、柔和 |
-| E6 中性 | 以上均未匹配；也是缺省类别 |
+动作的参与者、受影响对象、叙事关注对象和几何运动目标不是同一概念。仅当原文明确提供几何关系时才能填写非 `none` 方向和目标。普通的出现、经过、到达或离开只证明状态或位置发生变化，不自动证明相对于哪个场景实体运动。
 
-## 4. 量化规则
+`path_type` 只在原文提供足够证据时选用 `linear/circular/elliptical/s_curve/figure_eight/parabolic`；自主位移但路径形状未定时用 `unspecified`。不得发明某个故事专用动作类型或关系类型。
 
-下列数字由应用中的版本化量化表确定。输出语义必须与该表一致，但不要计算 Blender 坐标、投影矩阵或关键帧。
+`postconditions` 只描述该动作阶段结束后的容纳状态和外部可见性。`contained_by_id` 是容纳事实，不是方向目标；只有原文明示或必然推出时才填写。
 
-### 主体
+`timeline_event_id` 引用承载同一动作阶段的事件。`narrative_required=true` 仅表示删除该阶段会丢失用户明确叙事或必然语义；不得借此增添新动作。
 
-- 儿童/孩子默认身高 1.2 m，女人 1.65 m，男人 1.75 m，巨人/怪物 2.5 m，其他主体缺省参考高度 1.75 m。
-- 初始位置语义为场景中心的地面接触点，不得把模型几何中心直接放在地面以下。
-- 代理的缺省初始朝向是世界前方 `(0,-1,0)`；这只描述造型朝向，不代表主体必须沿该方向位移。存在明确运动目标时才让代理朝向目标。
+## 5. 时间轴
 
-### 主体运动
+- `timeline.duration_seconds` 是整个视频片段的确定时长。原文只给范围时同时保留 `duration_range_seconds`；原文未给时长时使用当前契约的 15 秒结构缺省，标为 `default` 并登记 `use_default`，不得按动作数量推算。
+- `timeline.events` 是可位于视频片段内任意数值起止点的语义事件，不限于开始、中间或结束三个位置。
+- 各场景实体的动作阶段可以不同步、重叠、相接或留有间隔。不得按动作数量机械等分时间，不得因另一个实体开始动作就结束当前状态。
+- 事件和动作阶段的起止时间必须位于总时长内，且开始时间不得晚于结束时间。
 
-- 走/步行/漫步/踱步：0.8–1.5 m/s。
-- 跑/奔/冲刺/追赶：4.0–6.0 m/s。
-- 飞/飞行：6.0–10.0 m/s。
-- 无明确速度等级的位移运动：1.2 m/s。
-- 静止或仅局部互动：0 m/s。
-- 镜头时长明确时保留；只给出范围或“多少秒以内”时，保留范围并选择其最大值作为本次确定时长，标记为 `inferred`；完全未指定时缺省为 15 秒。模型应先按主体列出动作与状态依赖，再在总时长内分配可重叠的关键范围；禁止按事件数量等分。
+时间关系严格按两个事件的数值区间解释。设 source 为 `S`，target 为 `T`：
 
-### 场景
+- `before`：S 的结束点不晚于 T 的开始点。
+- `after`：S 的开始点不早于 T 的结束点。
+- `meets`：S 的结束点等于 T 的开始点。
+- `overlaps`：S 与 T 有非零重叠；该谓词不额外声明谁包含谁或端点是否相同。
+- `during`：S 完整位于 T 的范围内。
+- `starts_before`：S 的开始点不晚于 T；仅表达开始点次序，不声称结束点次序。
+- `starts_after`：S 的开始点不早于 T；仅表达开始点次序，不声称结束点次序。
+- `starts_with`：S 与 T 的开始点相同。
+- `ends_with`：S 与 T 的结束点相同。
 
-- 地点关键词映射到场景资产索引：荒漠、城市、室内、太空、海洋、森林、山岳、雪地、废墟、空白。
-- 开阔场景默认使用 200×200 m 的语义参考范围，城市默认 100×100 m，室内默认 20×20 m。该范围用于相对距离和尺度量化，不是开放环境在渲染中的可见硬边界；下游可以扩展代理地面以覆盖摄影机视野，但不得据此放大主体间“远近”关系。
-- 当前不存在对应精细资产时仍输出资产索引，由下游使用白模代理环境回退。
-- 飞船等主要物体默认至少 10×10 m，大楼默认高度至少 20 m；“巨大/高耸”等明确尺度词在基础尺度上使用 1.5–3 倍范围。
-- “远处、后景、背景”等明确纵深词必须写入 `spatial_layers` 或主体关系；应用会把只存在于远景层中的实体确定性归一化为 Planning 可消费的纵深关系，不能因模型没有重复填写两个字段而丢失。
-- `scene_design.relationships` 只保留不能由单主体 `motion_semantics` 完整表达的双实体空间事实。使用稳定关系类型：远景纵深=`far_from`、靠近=`proximity`、尺度优势=`scale_dominance`；左右/前后/上下使用 `left_of/right_of/front_of/behind/above/below`。关系强弱不得另写自由文本 `strength`，所需含义必须由唯一的规范 `type` 表达。公转已由 `relative_to_target + target_id + circular/elliptical` 完整表达，载运已由 `carried + carrier_id` 表达，普通人物/车辆贴地由 Planning 根据类型化动作确定性生成；三者都不得重复写入本关系数组。同一句事实不要同时输出同义或反向重复关系。
-- 摄影机的 `focus_target_id` 只表示取景关注对象，`camera.movement.target_id` 只表示 `pan/follow/orbit` 的运动或旋转目标。两者可以相同，但不能互相代填；若输出 `pan/follow/orbit`，必须同时明确填写后者。主体动作的 `target_id` 更不能拿来填写摄影机字段。
-- 时间轴事件可以位于镜头内任意数值时间区间。只有关系在全镜头始终成立时，才使用 `timeline_event_id=null + temporal_mode=throughout`。关系在任意中间时刻/区间成立时，必须创建带实际 `start_time_seconds/end_time_seconds` 的事件，并使用该 `timeline_event_id + throughout`；`throughout` 此时只覆盖该事件区间。只在事件起点或终点的瞬时边界成立时才使用 `at_start/at_end`。不得把只在中途成立的关系扩张成全镜头关系。
+关系枚举与数值区间必须同时成立。只有原文明示可度量间隔时才填写 `minimum_gap_seconds` 或 `maximum_gap_seconds`；否则为 `null`。不得为通过校验而修改原文明示的时间关系；无法同时满足时登记不确定性。
 
-### 摄影机、构图与光源
+## 6. 双实体空间关系
 
-- 摄影机与主体使用相互隔离的时间语义。`camera.movement` 只描述摄影机自身状态变化；`subject_motion` 中的 `motion_mode` 永远不受“固定机位、镜头不平移”等摄影机措辞影响。
-- `camera.movement` 当前表达一个连续的主动运镜区间；区间之前和之后保持相邻摄影机状态。先固定、后执行一次运镜时，只把后一个主动阶段写入该区间，不需要为前段另造主体事件。
-`camera.view_relation_to_motion` 类型化记录摄影机相对主要线性运动的观察关系，只能使用：
+`scene_design.relationships` 只记录不能由单个动作阶段完整表达的双实体空间事实。允许的关系只有：
 
-- `front`：摄影机位于运动主体前方，主体总体朝摄影机接近；
-- `rear`：摄影机位于运动主体后方，形成背面观察或后方跟拍；
-- `side`：主要为侧面观察；
-- `three_quarter`：斜前方或斜后方三分之四观察；
-- `unspecified`：用户没有明确说明。
+- 距离或尺度：`far_from`、`proximity`、`scale_dominance`
+- 水平相对位置：`left_of`、`right_of`
+- 纵深相对位置：`front_of`、`behind`
+- 垂直相对位置：`above`、`below`
 
-只有用户明确表达迎面、正面驶来、背面或后方跟拍时才标为对应的 `front/rear + explicit`；不得根据“镜头静止”“低机位”“跟拍”等不含水平观察关系的信息擅自补成 `front/rear`。没有明确关系时固定输出 `unspecified + default`，不要从情绪映射推断。
+不得增加自由文本强度，不得输出同义或反向重复关系。被承载由 `motion_mode=carried + carrier_id` 表达；围绕目标的路径由 `relative_to_target + target_id + circular/elliptical` 表达；二者均不在空间关系数组中重复。
 
-情绪类别对应的固定参数以应用量化表为准：
+空间关系可以发生在任意时间：
 
-- E1：低机位、极慢推近、主体 1–5%、负空间至少 70%、顶光、暗环境。
-- E2：贴地机位、快速推近、巨物占画幅大部、底光、极暗环境。
-- E3：中机位、缓慢后拉、主体 1–3%、负空间至少 80%、侧光、明亮环境。
-- E4：低机位、快速跟拍、主体 15–25%、侧逆光。
-- E5：常规机位、缓慢环绕、主体 8–15%、柔和顺光。
-- E6：常规机位、静止、主体 5–10%、中性斜顶光。
+- 全视频片段持续成立：`timeline_event_id=null` 且 `temporal_mode=throughout`。
+- 某个任意时间区间持续成立：创建具有实际数值范围的事件，引用其 ID，并用 `throughout`。
+- 只在事件开始或结束的边界成立：分别使用 `at_start` 或 `at_end`。
 
-旧母表中的情绪固定俯仰角、地平线百分比和主体水平位置不再进入量化快照。俯仰角与机位高度、距离、注视点并不独立；地平线位置需要镜头偏移或独立注视策略；“黄金分割”未指定左右方向，三者直接查表会制造互相矛盾或不可验证的摄影机要求。用户明确说出的俯拍/仰拍、地平线或左右构图仍原样保留为 explicit 语义，但不能从情绪类别自动推导。
+不得把只在局部时间成立的关系扩张为全片关系。
 
-情绪表中的 `major_object_frame_ratio` 只是该情绪档案的缺省构图偏好；“远处”只表达场景空间关系，“巨大”只表达实体尺度/尺度优势，两者都不得被重新解释为“主要物体最多占画幅多少”。`translation_parameters.composition` 目前只记录整组来源：它可能因明确情绪映射而标成 `inferred`，但这不等于用户明确指定了该画幅比例；只有原始 `composition` 中确有对应 explicit 要求时，才能把比例当成主动机位指令。
+## 7. 摄影机、光学属性与画面构图
 
-推近和后拉的速度不是独立写死的第四个条件，而是按本次冻结时长计算：`abs(终止距离 - 起始距离) / 时长`。例如 15 m 推到 5 m 的 10 秒镜头为 1 m/s，15 秒镜头约为 0.667 m/s。跟拍速度仍与主体同步，静止镜头为 0 m/s，其他非径向运镜保留各自的显式速度规则。
+`camera` 只描述摄影机，`subject_motion` 只描述场景实体。两者的运动不得互相代填。
 
-“后拉或横移”等原始二选一规则在缺省映射中固定选择前者；用户明确要求横移时保留横移。“主体或最大物体”等二选一规则固定优先注视主体。用户明确指定目标或位置时均以用户要求为准。
+- `camera.movement.type` 表示摄影机自身的运动或旋转。固定位置改变朝向属于 `pan`；摄影机位置随目标一起改变属于 `follow`。只有需要目标的运镜才填写 `camera.movement.target_id`。
+- `camera.focus_target_id` 表示取景关注对象，不等于运镜目标，也不等于动作目标。
+- `camera.view_relation_to_motion` 只描述摄影机相对于主要线性运动的观察方位：`front/rear/side/three_quarter`。原文没有明确方位时必须用 `unspecified + default`。
+- `camera.lens_intent` 只记录光学意图；不得把景别、画面占比或摄影机路径写入此字段。
+- `composition.shot_size`、`screen_placements`、`visual_scales` 和 `visibility_requirements` 只记录原文明确的画面要求。
+- 当前 Schema 的 `camera.movement` 只容纳一个连续主动运镜区间；原文若要求多个互不连续或互相矛盾的运镜阶段，不得静默合并，必须在 `uncertainties` 中说明结构限制。
 
-## 5. 输出要求
+`mood` 只保留原文的情绪、颜色、照明和氛围意图。不得由情绪词自行推导摄影机位置、运镜、景别或画面占比；应用中的确定性量化会处理允许的缺省映射。
 
-- 输出仍须严格符合请求中的 Cinematic Brief Model Output Schema。
-- 不要在 JSON 中添加量化快照字段；应用会在模型响应通过 Schema 后确定性生成 `translation_parameters`。
-- `summary` 只概括原意，不能把推断或默认伪装成用户原话。
-- 主观光源语义写入 `mood.lighting_intent`；不得声称它已应用到 Blender 白模。
+## 8. 输出前强制审查
+
+输出完整 JSON 前逐项确认：
+
+1. 原文中每个有语义作用的场景实体、动作阶段、时间要求、空间关系、摄影机要求、光学属性、构图要求和氛围要求均已保留。
+2. 所有 ID 引用都存在且指向正确类别；所有事件和动作阶段时间都在总时长内。
+3. `action_kind`、`motion_type`、`motion_mode`、方向、目标、载体、路径和后置状态互相一致。
+4. 时间关系名称与事件数值范围一致；空间关系的时间作用域没有被扩大。
+5. 每个非空结论都有准确来源；非必然解释没有冒充事实。
+6. 没有 Schema 之外字段、枚举、故事专用语义或依赖下游从自由文本重新猜测的缺失类型。
+
+发现问题时直接输出修正后的完整对象。无法由原文决定时保留未知并登记 `uncertainties`，不得猜测。
