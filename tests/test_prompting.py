@@ -48,7 +48,7 @@ class PromptingTest(unittest.TestCase):
         self.assertIn("不得发明某个故事专用动作类型或关系类型", rules)
         self.assertIn("不得由情绪词自行推导摄影机位置", rules)
         self.assertIn("各解释共有的可验证事实", rules)
-        self.assertIn("点事件并配合 `at_start/at_end`", rules)
+        self.assertIn("独立事件并配合 `at_midpoint`", rules)
         self.assertIn("关系描述的是需要验证的语义事实", rules)
         self.assertNotIn("接到人后", rules)
         self.assertNotIn("等待→上车", rules)

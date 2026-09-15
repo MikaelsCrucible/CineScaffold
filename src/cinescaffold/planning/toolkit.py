@@ -72,7 +72,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 from cinescaffold.relationships import classify_relationship
 
-TOOLKIT_VERSION = "0.46"
+TOOLKIT_VERSION = "0.47"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -385,6 +385,13 @@ def _route_anchor_motion_violations(
         event_start, event_end = event_ranges[relation.timeline_event_id]
         if relation.temporal_mode == "at_start":
             event_end = event_start
+        elif relation.temporal_mode == "at_midpoint":
+            event_start = event_end = route_anchor_time_seconds(
+                objective,
+                relation,
+                duration,
+                frame_step,
+            )
         elif relation.temporal_mode == "at_end":
             event_start = event_end
         anchor_time = route_anchor_time_seconds(

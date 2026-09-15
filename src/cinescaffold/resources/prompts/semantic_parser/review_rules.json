@@ -113,9 +113,9 @@
         "moment", "when they meet", "cross paths", "closest point", "on arrival", "as it leaves"
       ],
       "structural_signals": ["event_scoped_relationship", "clip_wide_relationship"],
-      "emphasis": "把持续动作与其中的局部条件分开建模；精确时刻未知不等于关系持续全片，文本提示只要求检查时间作用域，不预先指定关系类型。",
+      "emphasis": "把持续动作与其中的局部条件分开建模；精确时刻未知不等于关系持续全片。没有持续含义且未指定开始/结束边界的临界关系使用 at_midpoint，文本提示只要求检查时间作用域，不预先指定关系类型。",
       "audit_questions": [
-        "只在临界点、状态切换点或最近时刻成立的条件是否拥有独立点事件或较短区间？",
+        "只在临界点、状态切换点或最近时刻成立的条件是否拥有独立事件并使用 at_midpoint，而不是 throughout？",
         "初稿是否把局部条件错误扩张成整个动作或整个视频片段的 throughout？"
       ]
     },

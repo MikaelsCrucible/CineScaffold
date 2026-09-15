@@ -1,5 +1,5 @@
 {
-  "version": "semantic-translation-v0.9",
+  "version": "semantic-translation-v0.10",
   "coordinate_system": {
     "handedness": "right",
     "up_axis": "+Z",
@@ -10,7 +10,7 @@
     "environment_label": "空白空间",
     "action_label": "站立/静止",
     "emotion_class": "E6",
-    "duration_seconds": 15.0,
+    "duration_seconds": 10.0,
     "duration_range_resolution": "maximum_seconds",
     "reference_height_m": 1.75,
     "moving_speed_mps": [1.2, 1.2]

@@ -134,6 +134,119 @@ class PlanningDesignTest(unittest.TestCase):
             self.assertEqual(before.interpolation, "linear")
             self.assertEqual(anchor.interpolation, "linear")
 
+    def test_midpoint_event_preserves_each_speed_and_frames_both_participants(
+        self,
+    ) -> None:
+        toolkit, skeleton = _paired_mover_route_case(two_events=False)
+        relationship = toolkit.objective_brief.scene_design["relationships"][0]
+        relationship.update(
+            {
+                "temporal_mode": "at_midpoint",
+                "source_status": "explicit",
+                "source_text": "二者在中途短暂交会",
+            }
+        )
+        toolkit.objective_brief.camera["movement"]["type"].update(
+            {
+                "value": "static",
+                "source_status": "default",
+                "source_text": None,
+            }
+        )
+        toolkit.objective_brief.camera["focus_target_id"].update(
+            {
+                "value": None,
+                "source_status": "default",
+                "source_text": None,
+            }
+        )
+        toolkit.objective_brief.explicit_requirements[:] = [
+            requirement
+            for requirement in toolkit.objective_brief.explicit_requirements
+            if not requirement.path.startswith("content.camera")
+        ]
+        toolkit.objective_brief.explicit_requirements.append(
+            ObjectiveRequirement(
+                path="content.scene_design.relationships[0]",
+                value=relationship,
+                source_text="二者在中途短暂交会",
+            )
+        )
+        skeleton["relations"][0].update(
+            {
+                "temporal_mode": "at_midpoint",
+                "source_status": "explicit",
+            }
+        )
+        skeleton["camera_intent"].update(
+            {
+                "focus_target_id": None,
+                "source_status": "default",
+            }
+        )
+        toolkit.objective_brief.translation_parameters["motions"] = [
+            {
+                "motion_id": "motion_a",
+                "speed_range_mps": [5.0, 5.0],
+            },
+            {
+                "motion_id": "motion_b",
+                "speed_range_mps": [1.2, 1.2],
+            },
+        ]
+        toolkit = ScenePlanningToolkit(toolkit.objective_brief)
+
+        accepted = toolkit.submit_scene_skeleton(skeleton)
+        self.assertEqual(accepted["status"], "ok", accepted)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
+        candidate = next(iter(toolkit._design_options.values())).candidate
+
+        for entity_id, expected_speed in (("actor_a", 5.0), ("actor_b", 1.2)):
+            track = candidate.motion_tracks[f"design_motion_{entity_id}"]
+            anchor_index = next(
+                index
+                for index, item in enumerate(track.keyframes)
+                if math.isclose(item.time_seconds, 2.5, abs_tol=1e-9)
+            )
+            anchor = track.keyframes[anchor_index]
+            before = track.keyframes[anchor_index - 1]
+            after = track.keyframes[anchor_index + 1]
+            self.assertAlmostEqual(
+                math.dist(before.value.translation_m, anchor.value.translation_m)
+                / (anchor.time_seconds - before.time_seconds),
+                expected_speed,
+            )
+            self.assertAlmostEqual(
+                math.dist(anchor.value.translation_m, after.value.translation_m)
+                / (after.time_seconds - anchor.time_seconds),
+                expected_speed,
+            )
+
+        for entity_id in ("actor_a", "actor_b"):
+            exact = candidate.constraints[
+                f"key_event_visible_near_relation_1_{entity_id}"
+            ]
+            context = candidate.constraints[
+                f"key_event_context_visible_near_relation_1_{entity_id}"
+            ]
+            self.assertEqual(exact.strength, "hard")
+            self.assertEqual(exact.time_range_seconds, (2.5, 2.5 + 1 / 24))
+            self.assertEqual(context.time_range_seconds, (1.9, 3.1416666666666666))
+
+        report = toolkit._validate(candidate, ["projection", "composition"])
+        key_event_ids = {
+            f"key_event_visible_near_relation_1_{entity_id}"
+            for entity_id in ("actor_a", "actor_b")
+        } | {
+            f"key_event_context_visible_near_relation_1_{entity_id}"
+            for entity_id in ("actor_a", "actor_b")
+        }
+        self.assertFalse(
+            any(item.constraint_id in key_event_ids for item in report.violations),
+            report.violations,
+        )
+
     def test_scene_skeleton_keeps_only_symbolic_scene_choices(self) -> None:
         skeleton = SceneSkeleton.model_validate(_desert_skeleton())
 

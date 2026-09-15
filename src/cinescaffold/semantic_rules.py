@@ -280,7 +280,7 @@ def reconcile_translation_parameters(
 
 def _camera_active_duration(content: dict[str, Any]) -> float:
     total = max(
-        _number_or(content.get("timeline", {}).get("duration_seconds"), 15.0),
+        _number_or(content.get("timeline", {}).get("duration_seconds"), 10.0),
         1e-6,
     )
     movement = content.get("camera", {}).get("movement", {})
@@ -458,7 +458,9 @@ def _validate_relationship_timing(
         temporal_mode = relationship.get("temporal_mode", "throughout")
         if event_id is None:
             if temporal_mode != "throughout":
-                raise ValueError("关系使用 at_start/at_end 时必须引用 timeline event")
+                raise ValueError(
+                    "关系使用 at_start/at_midpoint/at_end 时必须引用 timeline event"
+                )
         elif event_id not in event_ids:
             raise ValueError(f"空间关系引用未知事件：{event_id}")
 

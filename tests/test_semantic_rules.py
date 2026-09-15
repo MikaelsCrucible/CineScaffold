@@ -144,7 +144,7 @@ class SemanticRulesTest(unittest.TestCase):
 
         self.assertEqual(normalized["subjects"][0]["category"]["value"], "人")
         self.assertEqual(normalized["scene_design"]["environment"]["value"], "空白空间")
-        self.assertEqual(normalized["timeline"]["duration_seconds"], 15.0)
+        self.assertEqual(normalized["timeline"]["duration_seconds"], 10.0)
         self.assertEqual(parameters["emotion_class"]["class_id"], "E6")
         self.assertEqual(parameters["motions"][0]["motion_type"], "static")
         self.assertEqual(parameters["motions"][0]["speed_range_mps"], [0.0, 0.0])
@@ -497,6 +497,48 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(
             (event["start_time_seconds"], event["end_time_seconds"]),
             (4.2, 4.8),
+        )
+
+    def test_relationship_can_target_an_event_midpoint(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": entity_id,
+                "category": self._annotated(label, label),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            }
+            for entity_id, label in (("a", "主体A"), ("b", "主体B"))
+        ]
+        content["timeline"]["events"] = [
+            {
+                "id": "closest_moment",
+                "description": "二者最接近的时刻",
+                "start_time_seconds": 4.0,
+                "end_time_seconds": 6.0,
+                "reference_ids": ["a", "b"],
+                "source_status": "inferred",
+                "source_text": None,
+            }
+        ]
+        content["scene_design"]["relationships"] = [
+            {
+                "type": "proximity",
+                "subject_id": "a",
+                "reference_id": "b",
+                "source_status": "explicit",
+                "source_text": "二者短暂交会",
+                "timeline_event_id": "closest_moment",
+                "temporal_mode": "at_midpoint",
+            }
+        ]
+
+        normalized, _ = apply_translation_rules(content, self.rules)
+
+        self.assertEqual(
+            normalized["scene_design"]["relationships"][0]["temporal_mode"],
+            "at_midpoint",
         )
 
     def test_camera_only_motion_remains_static_scene(self) -> None:

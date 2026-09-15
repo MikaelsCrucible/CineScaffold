@@ -127,7 +127,9 @@ class SkeletonRelation(StrictModel):
         None
     )
     timeline_event_id: str | None = None
-    temporal_mode: Literal["throughout", "at_start", "at_end"] = "throughout"
+    temporal_mode: Literal[
+        "throughout", "at_start", "at_midpoint", "at_end"
+    ] = "throughout"
     source_status: SourceStatus
     source_ref: str
 
@@ -434,7 +436,8 @@ class SceneSkeleton(StrictModel):
                 and relation.temporal_mode != "throughout"
             ):
                 raise ValueError(
-                    f"at_start/at_end Relation 必须引用 timeline event：{relation.relation_id}"
+                    "at_start/at_midpoint/at_end Relation 必须引用 timeline event："
+                    f"{relation.relation_id}"
                 )
             unordered_pair = tuple(sorted((relation.subject_id, relation.reference_id)))
             pair: tuple[str, str] = (
@@ -854,6 +857,9 @@ def _relation_semantic_window(
     start, end = _event_range(objective, relation.timeline_event_id, duration)
     if relation.temporal_mode == "at_start":
         return (start, min(end, start + frame_step))
+    if relation.temporal_mode == "at_midpoint":
+        midpoint = min((start + end) * 0.5, duration - frame_step)
+        return (midpoint, min(duration, midpoint + frame_step))
     if relation.temporal_mode == "at_end":
         return (max(start, end - frame_step), end)
     return (start, end)
@@ -876,6 +882,8 @@ def route_anchor_time_seconds(
     start, end = _event_range(objective, relation.timeline_event_id, duration)
     if relation.temporal_mode == "at_start":
         anchor_time = start
+    elif relation.temporal_mode == "at_midpoint":
+        anchor_time = min((start + end) * 0.5, duration - frame_step)
     elif relation.temporal_mode == "at_end":
         anchor_time = max(start, min(end - frame_step, duration - frame_step))
     else:
@@ -1328,11 +1336,19 @@ def build_design_candidate(
     )
     _add_speed_constraints(objective, skeleton, candidate, profile)
     _add_composition_constraints(objective, skeleton, candidate)
+    _add_key_event_visibility_constraints(objective, skeleton, candidate)
     has_subject_translation = any(
         phase.kind in {"path_move", "carried"} for phase in skeleton.motion_phases
     )
     if objective.scene_dynamics.get("mode") == "static" or not has_subject_translation:
         _fit_static_camera_to_composition(objective, candidate, skeleton, profile)
+    else:
+        _fit_default_static_camera_to_key_events(
+            objective,
+            candidate,
+            skeleton,
+            profile,
+        )
     _fit_open_environment_ground_to_camera(objective, candidate, profile)
     assumptions = _design_assumptions(
         objective,
@@ -2882,7 +2898,7 @@ def _build_camera(
         else float(1.5 if configured_height is None else configured_height)
     )
     has_orbit = any(_is_orbit_phase(item) for item in skeleton.motion_phases)
-    focus_point, focus_height = _camera_focus(candidate, skeleton)
+    focus_point, focus_height = _camera_focus(objective, candidate, skeleton)
     explicit_pitch = _explicit_camera_pitch_degrees(objective)
     if explicit_pitch is not None:
         height = (
@@ -3089,7 +3105,6 @@ def _add_composition_constraints(
             }
         )
         candidate.constraints[constraint.constraint_id] = constraint
-
     for index, placement in enumerate(
         objective.composition.get("screen_placements", [])
     ):
@@ -3273,6 +3288,59 @@ def _add_composition_constraints(
         candidate.constraints[constraint.constraint_id] = constraint
 
 
+def _add_key_event_visibility_constraints(
+    objective: ObjectivePlanningBrief,
+    skeleton: SceneSkeleton,
+    candidate: CandidateState,
+) -> None:
+    """Keep every participant readable around a typed story event."""
+
+    for relation, exact_range, padded_range in _key_event_camera_windows(
+        objective,
+        skeleton,
+        candidate,
+    ):
+        for entity_id in sorted({relation.subject_id, relation.reference_id}):
+            exact = ConstraintSpec.model_validate(
+                {
+                    "constraint_id": (
+                        f"key_event_visible_{relation.relation_id}_{entity_id}"
+                    ),
+                    "type": "keep_in_frame",
+                    "strength": (
+                        "hard" if relation.source_status == "explicit" else "soft"
+                    ),
+                    "subjects": [entity_id],
+                    "time_range_seconds": exact_range,
+                    "parameters": {
+                        "entity_id": entity_id,
+                        "minimum_inside_fraction": 0.9,
+                    },
+                    "source_status": relation.source_status,
+                    "source_ref": relation.source_ref,
+                }
+            )
+            candidate.constraints[exact.constraint_id] = exact
+            padded = ConstraintSpec.model_validate(
+                {
+                    "constraint_id": (
+                        f"key_event_context_visible_{relation.relation_id}_{entity_id}"
+                    ),
+                    "type": "keep_in_frame",
+                    "strength": "soft",
+                    "subjects": [entity_id],
+                    "time_range_seconds": padded_range,
+                    "parameters": {
+                        "entity_id": entity_id,
+                        "minimum_inside_fraction": 0.9,
+                    },
+                    "source_status": "inferred",
+                    "source_ref": relation.source_ref,
+                }
+            )
+            candidate.constraints[padded.constraint_id] = padded
+
+
 def _entity_composition_time_range(
     objective: ObjectivePlanningBrief,
     entity_id: str,
@@ -3428,7 +3496,7 @@ def _fit_static_camera_to_composition(
         for item in candidate.constraints.values()
         if item.type == "projected_size" and item.source_status == "explicit"
     ]
-    focus_point, _ = _camera_focus(candidate, skeleton)
+    focus_point, _ = _camera_focus(objective, candidate, skeleton)
     transform_track = next(
         (item for item in candidate.camera.tracks.values() if item.type == "transform"),
         None,
@@ -3559,6 +3627,93 @@ def _fit_static_camera_to_composition(
                 else item
                 for item in transform_track.keyframes
             ]
+
+
+def _fit_default_static_camera_to_key_events(
+    objective: ObjectivePlanningBrief,
+    candidate: CandidateState,
+    skeleton: SceneSkeleton,
+    profile: PlanningProfile,
+) -> None:
+    """Widen an unspecified static shot until key-event context remains readable."""
+
+    if (
+        candidate.camera is None
+        or skeleton.camera_intent.movement != "static"
+        or skeleton.camera_intent.focus_target_id is not None
+        or candidate.camera.tracks
+    ):
+        return
+    windows = _key_event_camera_windows(objective, skeleton, candidate)
+    if not windows:
+        return
+    samples = [
+        (entity_id, time_seconds)
+        for relation, _, padded_range in windows
+        for entity_id in sorted({relation.subject_id, relation.reference_id})
+        for time_seconds in _camera_window_frame_times(candidate, padded_range)
+    ]
+    if not samples:
+        return
+    focus_point, _ = _camera_focus(objective, candidate, skeleton)
+    focal_length = (
+        candidate.camera.static.focal_length_mm
+        or profile.default_focal_length_mm
+    )
+
+    for _ in range(16):
+        camera_transform = candidate.camera.solved_transform
+        camera_position = camera_transform.translation_m
+        camera_rotation = camera_transform.rotation_quaternion_wxyz
+        if camera_position is None or camera_rotation is None:
+            return
+        all_readable = True
+        for entity_id, time_seconds in samples:
+            entity = candidate.entities[entity_id]
+            transform = _design_entity_transform_at(
+                candidate,
+                candidate.motion_tracks,
+                entity_id,
+                time_seconds,
+            )
+            bounds = project_geometry_bounds(
+                entity.proxy,
+                transform,
+                camera_position,
+                camera_rotation,
+                focal_length,
+                candidate.camera.static.sensor_width_mm,
+                profile.resolution_x / profile.resolution_y,
+            )
+            if bounds[4] <= 0.0 or _projected_inside_fraction(bounds) < 0.9:
+                all_readable = False
+                break
+        if all_readable:
+            return
+        horizontal = (
+            camera_position[0] - focus_point[0],
+            camera_position[1] - focus_point[1],
+        )
+        distance = math.hypot(*horizontal)
+        if distance <= profile.numeric_tolerance:
+            horizontal = (0.0, -1.0)
+            distance = 1.0
+        direction = (horizontal[0] / distance, horizontal[1] / distance)
+        widened_distance = distance * 1.25 + 0.5
+        widened_position = (
+            focus_point[0] + direction[0] * widened_distance,
+            focus_point[1] + direction[1] * widened_distance,
+            camera_position[2],
+        )
+        candidate.camera.solved_transform = camera_transform.model_copy(
+            update={
+                "translation_m": widened_position,
+                "rotation_quaternion_wxyz": look_at_camera_quaternion(
+                    widened_position,
+                    focus_point,
+                ),
+            }
+        )
 
 
 def _fit_open_environment_ground_to_camera(
@@ -3728,7 +3883,7 @@ def _numeric_envelopes(
             for item in transform.keyframes
             if isinstance(item.value, TransformValue)
         ]
-    focus_point, _ = _camera_focus(candidate, skeleton)
+    focus_point, _ = _camera_focus(objective, candidate, skeleton)
     distances = [
         math.dist(item, focus_point) for item in camera_positions if item is not None
     ]
@@ -3907,7 +4062,87 @@ def _proxy_bounding_radius(entity: EntitySpec) -> float:
     return math.hypot(*[item / 2.0 for item in proxy.size_xy_m])
 
 
+def _key_event_camera_windows(
+    objective: ObjectivePlanningBrief,
+    skeleton: SceneSkeleton,
+    candidate: CandidateState,
+) -> list[
+    tuple[
+        SkeletonRelation,
+        tuple[float, float],
+        tuple[float, float],
+    ]
+]:
+    """Return typed event windows plus a bounded cinematic lead-in/out."""
+
+    duration = candidate.timeline.duration_seconds
+    frame_step = (
+        candidate.timeline.fps_denominator / candidate.timeline.fps_numerator
+    )
+    padding = min(1.0, duration * 0.1)
+    windows = []
+    for relation in skeleton.relations:
+        if (
+            relation.timeline_event_id is None
+            or relation.subject_id not in candidate.entities
+            or relation.reference_id not in candidate.entities
+        ):
+            continue
+        participants = (
+            candidate.entities[relation.subject_id],
+            candidate.entities[relation.reference_id],
+        )
+        if any(
+            entity.proxy.type == "plane" or "environment" in entity.tags
+            for entity in participants
+        ):
+            continue
+        exact = _relation_semantic_window(
+            objective,
+            relation,
+            duration,
+            frame_step,
+        )
+        padded = (
+            max(0.0, exact[0] - padding),
+            min(duration, exact[1] + padding),
+        )
+        windows.append((relation, exact, padded))
+    return windows
+
+
+def _camera_window_frame_times(
+    candidate: CandidateState,
+    time_range: tuple[float, float],
+) -> list[float]:
+    """Sample a camera window on the same frozen frame grid as validation."""
+
+    step = candidate.timeline.fps_denominator / candidate.timeline.fps_numerator
+    start, end = time_range
+    return [
+        index * step
+        for index in range(candidate.timeline.frame_count)
+        if start - 1e-9 <= index * step < end - 1e-9
+    ]
+
+
+def _projected_inside_fraction(
+    bounds: tuple[float, float, float, float, float],
+) -> float:
+    left, top, right, bottom, _ = bounds
+    if not all(math.isfinite(item) for item in bounds):
+        return 0.0
+    width = right - left
+    height = bottom - top
+    if width <= 0.0 or height <= 0.0:
+        return 0.0
+    inside_width = max(0.0, min(1.0, right) - max(0.0, left))
+    inside_height = max(0.0, min(1.0, bottom) - max(0.0, top))
+    return min(1.0, inside_width * inside_height / (width * height))
+
+
 def _camera_focus(
+    objective: ObjectivePlanningBrief,
     candidate: CandidateState,
     skeleton: SceneSkeleton,
 ) -> tuple[tuple[float, float, float], float]:
@@ -3918,6 +4153,31 @@ def _camera_focus(
         target = candidate.entities[target_id]
         point = target.solved_transform.translation_m or (0.0, 0.0, 0.0)
         return point, _proxy_half_height(target)
+
+    event_points = [
+        _design_entity_transform_at(
+            candidate,
+            candidate.motion_tracks,
+            entity_id,
+            time_seconds,
+        ).translation_m
+        for relation, _, padded_range in _key_event_camera_windows(
+            objective,
+            skeleton,
+            candidate,
+        )
+        for entity_id in sorted({relation.subject_id, relation.reference_id})
+        for time_seconds in _camera_window_frame_times(candidate, padded_range)
+    ]
+    if event_points:
+        minimum = tuple(
+            min(point[axis] for point in event_points) for axis in range(3)
+        )
+        maximum = tuple(
+            max(point[axis] for point in event_points) for axis in range(3)
+        )
+        point = tuple((minimum[axis] + maximum[axis]) * 0.5 for axis in range(3))
+        return point, point[2]
 
     dependent_ids = {
         phase.subject_id
@@ -4219,6 +4479,9 @@ def _relation_time_range(
     frame_step = candidate.timeline.fps_denominator / candidate.timeline.fps_numerator
     if relation.temporal_mode == "at_start":
         return (start, min(end, start + frame_step))
+    if relation.temporal_mode == "at_midpoint":
+        midpoint = min((start + end) * 0.5, duration - frame_step)
+        return (midpoint, min(duration, midpoint + frame_step))
     if relation.temporal_mode == "at_end":
         return (max(start, end - frame_step), end)
     return (start, end)
@@ -4574,6 +4837,13 @@ def _separate_joint_proximity_route_directions(
             continue
         if relation.temporal_mode == "at_start":
             event_end = event_start
+        elif relation.temporal_mode == "at_midpoint":
+            event_start = event_end = min(
+                (float(event_start) + float(event_end)) * 0.5,
+                candidate.timeline.duration_seconds
+                - candidate.timeline.fps_denominator
+                / candidate.timeline.fps_numerator,
+            )
         elif relation.temporal_mode == "at_end":
             event_start = event_end
         common_start = max(

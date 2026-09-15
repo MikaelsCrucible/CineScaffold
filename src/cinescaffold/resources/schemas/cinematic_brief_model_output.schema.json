@@ -221,8 +221,8 @@
         },
         "temporal_mode": {
           "type": "string",
-          "description": "throughout 表示覆盖所引用事件的整个任意时间区间；仅当 timeline_event_id 为 null 时才表示全视频片段。at_start/at_end 只约束事件边界。",
-          "enum": ["throughout", "at_start", "at_end"]
+          "description": "throughout 表示覆盖所引用事件的整个任意时间区间；仅当 timeline_event_id 为 null 时才表示全视频片段。at_start/at_midpoint/at_end 只约束事件的开始、中央或结束采样。",
+          "enum": ["throughout", "at_start", "at_midpoint", "at_end"]
         },
         "source_status": {"$ref": "#/$defs/sourceStatus"},
         "source_text": {"type": ["string", "null"]}

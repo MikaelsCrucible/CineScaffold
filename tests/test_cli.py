@@ -169,7 +169,7 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertEqual(result["provenance"]["provider"], "mock")
-        self.assertIn("15.0 秒", stdout.getvalue())
+        self.assertIn("10.0 秒", stdout.getvalue())
 
     def test_mock_parse_uses_packaged_resources_outside_repository(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
