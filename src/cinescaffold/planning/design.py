@@ -2104,6 +2104,11 @@ def _build_motion(
         grouped.setdefault(phase.subject_id, []).append(phase)
 
     routes_by_subject = {item.subject_id: item for item in skeleton.route_intents}
+    phase_speed_mps = {
+        phase.phase_id: _phase_preferred_speed_mps(objective, phase, profile)
+        for phase in skeleton.motion_phases
+        if phase.kind == "path_move" and not _is_orbit_phase(phase)
+    }
     route_directions: dict[str, tuple[float, float]] = {}
     for subject_id, phases in grouped.items():
         moving_phases = [
@@ -2140,6 +2145,7 @@ def _build_motion(
         candidate,
         route_anchor_schedules,
         route_directions,
+        phase_speed_mps,
     )
     joint_route_window_positions = _joint_proximity_route_window_positions(
         objective,
@@ -2271,7 +2277,7 @@ def _build_motion(
                 and first_route_anchor is not None
                 and first_route_anchor[1] > first_motion_start + 1e-9
             ):
-                anchor_index, anchor_time, anchor = first_route_anchor
+                _, anchor_time, anchor = first_route_anchor
                 waypoint = _route_anchor_position(
                     skeleton,
                     candidate,
@@ -2284,10 +2290,32 @@ def _build_motion(
                     joint_route_positions,
                 )
                 travel_x, travel_y = route_direction
-                # Put the subject far enough before its first declared endpoint
-                # that every preceding unanchored phase can advance along one route.
-                position[0] = waypoint[0] - travel_x * 8.0 * (anchor_index + 1)
-                position[1] = waypoint[1] - travel_y * 8.0 * (anchor_index + 1)
+                # Back-project from the first fixed waypoint using each preceding
+                # motion phase's semantic speed. A waypoint is an event location,
+                # not an implicit request to slow down or stop there.
+                travel_distance = sum(
+                    phase_speed_mps[item.phase_id]
+                    * max(
+                        0.0,
+                        min(
+                            anchor_time,
+                            _track_end_time(
+                                candidate,
+                                _phase_range(objective, item, duration)[1],
+                                _phase_range(objective, item, duration)[0],
+                            ),
+                        )
+                        - max(
+                            first_motion_start,
+                            _phase_range(objective, item, duration)[0],
+                        ),
+                    )
+                    for item in moving
+                    if _phase_range(objective, item, duration)[0]
+                    < anchor_time - 1e-9
+                )
+                position[0] = waypoint[0] - travel_x * travel_distance
+                position[1] = waypoint[1] - travel_y * travel_distance
                 candidate.entities[subject_id].solved_transform = candidate.entities[
                     subject_id
                 ].solved_transform.model_copy(update={"translation_m": tuple(position)})
@@ -2310,16 +2338,19 @@ def _build_motion(
                 clearance = _proxy_horizontal_radius(
                     candidate.entities[subject_id]
                 ) + _proxy_horizontal_radius(target)
-                required_distance = clearance + 8.0
-                if distance < required_distance:
-                    if distance <= 1e-9:
-                        delta_x, delta_y, distance = 1.0, 0.0, 1.0
-                    position[0] = (
-                        target_position[0] + delta_x / distance * required_distance
-                    )
-                    position[1] = (
-                        target_position[1] + delta_y / distance * required_distance
-                    )
+                first_start, first_end = _phase_range(objective, first, duration)
+                first_sample_end = _track_end_time(candidate, first_end, first_start)
+                required_distance = clearance + phase_speed_mps[first.phase_id] * (
+                    first_sample_end - first_start
+                )
+                if distance <= 1e-9:
+                    delta_x, delta_y, distance = 1.0, 0.0, 1.0
+                position[0] = (
+                    target_position[0] + delta_x / distance * required_distance
+                )
+                position[1] = (
+                    target_position[1] + delta_y / distance * required_distance
+                )
                 candidate.entities[subject_id].solved_transform = candidate.entities[
                     subject_id
                 ].solved_transform.model_copy(update={"translation_m": tuple(position)})
@@ -2450,12 +2481,19 @@ def _build_motion(
                         ),
                         hidden_at_end=hidden_at_end,
                         fallback_direction=previous_direction,
+                        travel_distance_m=(
+                            phase_speed_mps[phase.phase_id]
+                            * (sample_end - phase_points[-1][0])
+                        ),
                     )
                     phase_points.append((sample_end, tuple(endpoint), None))
 
                 for point_index, (point_time, point_position, _) in enumerate(
                     phase_points
                 ):
+                    linear_translation = (
+                        continuous_route or phase.path_family == "linear"
+                    )
                     if point_index == 0:
                         keyframes.append(
                             TrackKeyframe(
@@ -2464,7 +2502,7 @@ def _build_motion(
                                     translation_m=point_position
                                 ),
                                 interpolation=(
-                                    "linear" if continuous_route else "smooth"
+                                    "linear" if linear_translation else "smooth"
                                 ),
                             )
                         )
@@ -2491,7 +2529,7 @@ def _build_motion(
                                 time_seconds=midpoint_time,
                                 value=TransformValue(translation_m=midpoint),
                                 interpolation=(
-                                    "linear" if continuous_route else "smooth"
+                                    "linear" if linear_translation else "smooth"
                                 ),
                             )
                         )
@@ -2528,7 +2566,7 @@ def _build_motion(
                                     abs_tol=1e-9,
                                 )
                                 else (
-                                    "linear" if continuous_route else "smooth"
+                                    "linear" if linear_translation else "smooth"
                                 )
                             ),
                         )
@@ -2540,7 +2578,12 @@ def _build_motion(
                 type="transform",
                 time_range_seconds=(keyframes[0].time_seconds, duration),
                 keyframes=_deduplicate_keyframes(keyframes),
-                interpolation="linear" if continuous_route else "smooth",
+                interpolation=(
+                    "linear"
+                    if continuous_route
+                    or all(item.path_family == "linear" for item in moving)
+                    else "smooth"
+                ),
                 source_ref=moving[0].source_ref,
                 source_refs=sorted(
                     {
@@ -3260,7 +3303,7 @@ def _add_speed_constraints(
     candidate: CandidateState,
     profile: PlanningProfile,
 ) -> None:
-    """把符号速度档位映射为冻结 Profile 范围。"""
+    """Prefer the frozen Semantic motion range over a broad planning label."""
 
     duration = candidate.timeline.duration_seconds
     for phase in skeleton.motion_phases:
@@ -3269,19 +3312,33 @@ def _add_speed_constraints(
             # world-translation m/s constraint.  Their source is carried by the
             # transform/visibility track instead of a contradictory speed gate.
             continue
+        semantic_range = (
+            _phase_semantic_speed_range_mps(objective, phase)
+            if phase.kind == "path_move"
+            and phase.path_family == "linear"
+            and not _is_orbit_phase(phase)
+            and phase.speed_source_status != "explicit"
+            else None
+        )
         generic_explicit_motion = (
             phase.kind == "path_move"
             and not _is_orbit_phase(phase)
             and phase.speed_intent == "unspecified"
             and phase.source_status == "explicit"
+            and semantic_range is None
         )
-        if phase.speed_intent == "unspecified" and not generic_explicit_motion:
+        if (
+            phase.speed_intent == "unspecified"
+            and not generic_explicit_motion
+            and semantic_range is None
+        ):
             continue
-        minimum, maximum = (
-            (0.01, profile.fast_speed_range_mps[1])
-            if generic_explicit_motion
-            else _speed_range(phase.speed_intent, profile)
-        )
+        if semantic_range is not None:
+            minimum, maximum = semantic_range
+        elif generic_explicit_motion:
+            minimum, maximum = (0.01, profile.fast_speed_range_mps[1])
+        else:
+            minimum, maximum = _speed_range(phase.speed_intent, profile)
         constraint = ConstraintSpec.model_validate(
             {
                 "constraint_id": f"skeleton_speed_{phase.phase_id}",
@@ -3593,6 +3650,63 @@ def _speed_range(
         "medium": profile.medium_speed_range_mps,
         "fast": profile.fast_speed_range_mps,
     }[intent]
+
+
+def _phase_semantic_speed_range_mps(
+    objective: ObjectivePlanningBrief,
+    phase: SkeletonMotionPhase,
+) -> tuple[float, float] | None:
+    """Read the numeric range frozen by Semantic Translation for this motion."""
+
+    if phase.motion_id is None:
+        return None
+    motions = objective.translation_parameters.get("motions", [])
+    if not isinstance(motions, list):
+        return None
+    for motion in motions:
+        if not isinstance(motion, dict) or motion.get("motion_id") != phase.motion_id:
+            continue
+        value = motion.get("speed_range_mps")
+        if (
+            not isinstance(value, (list, tuple))
+            or len(value) != 2
+            or any(
+                isinstance(item, bool) or not isinstance(item, (int, float))
+                for item in value
+            )
+        ):
+            return None
+        minimum, maximum = float(value[0]), float(value[1])
+        if (
+            not math.isfinite(minimum)
+            or not math.isfinite(maximum)
+            or minimum < 0.0
+            or maximum <= 0.0
+            or maximum < minimum
+        ):
+            return None
+        return minimum, maximum
+    return None
+
+
+def _phase_preferred_speed_mps(
+    objective: ObjectivePlanningBrief,
+    phase: SkeletonMotionPhase,
+    profile: PlanningProfile,
+) -> float:
+    """Choose one deterministic visible speed inside the authoritative range."""
+
+    if (
+        phase.speed_source_status == "explicit"
+        and phase.speed_intent != "unspecified"
+    ):
+        return sum(_speed_range(phase.speed_intent, profile)) * 0.5
+    semantic_range = _phase_semantic_speed_range_mps(objective, phase)
+    if semantic_range is not None:
+        return sum(semantic_range) * 0.5
+    if phase.speed_intent != "unspecified":
+        return sum(_speed_range(phase.speed_intent, profile)) * 0.5
+    return sum(profile.medium_speed_range_mps) * 0.5
 
 
 def _numeric_envelopes(
@@ -4293,13 +4407,14 @@ def _linear_phase_endpoint(
     semantic_direction_mode: str | None,
     hidden_at_end: bool,
     fallback_direction: tuple[float, float],
+    travel_distance_m: float,
 ) -> list[float]:
     endpoint = list(position)
     if (
         semantic_direction_mode == "world_forward"
         or phase.direction_mode == "world_forward"
     ):
-        endpoint[1] -= 8.0
+        endpoint[1] -= travel_distance_m
     elif phase.direction_mode == "toward_target" and phase.target_id:
         target_entity = candidate.entities[phase.target_id]
         target = _design_entity_transform_at(
@@ -4337,15 +4452,17 @@ def _linear_phase_endpoint(
             if distance <= 1e-9:
                 delta_x, delta_y = fallback_direction
                 distance = math.hypot(delta_x, delta_y)
-            endpoint[0] += delta_x / distance * 8.0
-            endpoint[1] += delta_y / distance * 8.0
+            endpoint[0] += delta_x / distance * travel_distance_m
+            endpoint[1] += delta_y / distance * travel_distance_m
     elif phase.direction_mode == "world_left":
-        endpoint[0] -= 8.0
+        endpoint[0] -= travel_distance_m
+    elif phase.direction_mode == "world_right":
+        endpoint[0] += travel_distance_m
     elif phase.direction_mode == "none":
-        endpoint[0] += fallback_direction[0] * 8.0
-        endpoint[1] += fallback_direction[1] * 8.0
+        endpoint[0] += fallback_direction[0] * travel_distance_m
+        endpoint[1] += fallback_direction[1] * travel_distance_m
     else:
-        endpoint[0] += 8.0
+        endpoint[0] += travel_distance_m
     return endpoint
 
 
@@ -4499,6 +4616,7 @@ def _joint_proximity_route_positions(
     candidate: CandidateState,
     schedules: dict[str, list[tuple[float, SkeletonRouteAnchor]]],
     route_directions: dict[str, tuple[float, float]],
+    phase_speed_mps: dict[str, float],
 ) -> dict[tuple[str, str], tuple[float, float, float]]:
     """Solve both sides of one moving proximity event without build-order bias."""
 
@@ -4543,7 +4661,8 @@ def _joint_proximity_route_positions(
         center_y = (subject_position[1] + reference_position[1]) * 0.5
         route_direction = route_directions.get(first_id, (1.0, 0.0))
         event_time = sum(item[0] for item in by_subject.values()) / len(by_subject)
-        route_progress = 8.0 * event_time / candidate.timeline.duration_seconds
+        first_anchor = by_subject[first_id][1]
+        route_progress = phase_speed_mps.get(first_anchor.phase_id, 0.0) * event_time
         center_x += route_direction[0] * route_progress
         center_y += route_direction[1] * route_progress
         lateral = (-route_direction[1], route_direction[0])

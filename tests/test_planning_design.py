@@ -43,6 +43,97 @@ from tests.helpers import valid_planning_brief
 
 
 class PlanningDesignTest(unittest.TestCase):
+    def test_general_linear_motion_uses_semantic_speed_and_linear_interpolation(
+        self,
+    ) -> None:
+        candidates = {}
+        for motion_type, speed_range in (
+            ("walking", [0.8, 1.5]),
+            ("running", [4.0, 6.0]),
+        ):
+            toolkit, skeleton = _linear_speed_case(motion_type, speed_range)
+            accepted = toolkit.submit_scene_skeleton(skeleton)
+            self.assertEqual(accepted["status"], "ok", accepted)
+            options = toolkit.request_design_options(max_options=1)
+            self.assertTrue(options["data"]["options"], options)
+            candidate = next(iter(toolkit._design_options.values())).candidate
+            candidates[motion_type] = candidate
+
+            track = candidate.motion_tracks["design_motion_man_01"]
+            start, end = track.keyframes[0], track.keyframes[-1]
+            speed = math.dist(
+                start.value.translation_m,
+                end.value.translation_m,
+            ) / (end.time_seconds - start.time_seconds)
+            self.assertAlmostEqual(speed, sum(speed_range) * 0.5)
+            self.assertEqual(track.interpolation, "linear")
+            self.assertTrue(
+                all(
+                    item.interpolation in {"linear", "step"}
+                    for item in track.keyframes
+                )
+            )
+            constraint = candidate.constraints["skeleton_speed_man_move"]
+            self.assertEqual(
+                [constraint.parameters.minimum_mps, constraint.parameters.maximum_mps],
+                speed_range,
+            )
+            self.assertEqual(constraint.strength, "soft")
+
+        walking_track = candidates["walking"].motion_tracks["design_motion_man_01"]
+        running_track = candidates["running"].motion_tracks["design_motion_man_01"]
+        walking_distance = math.dist(
+            walking_track.keyframes[0].value.translation_m,
+            walking_track.keyframes[-1].value.translation_m,
+        )
+        running_distance = math.dist(
+            running_track.keyframes[0].value.translation_m,
+            running_track.keyframes[-1].value.translation_m,
+        )
+        self.assertGreater(running_distance, walking_distance * 4.0)
+
+    def test_event_waypoint_does_not_change_general_linear_speed(self) -> None:
+        toolkit, skeleton = _paired_mover_route_case(two_events=False)
+        for relation in toolkit.objective_brief.scene_design["relationships"]:
+            relation["temporal_mode"] = "at_end"
+        skeleton["relations"][0]["temporal_mode"] = "at_end"
+        toolkit.objective_brief.translation_parameters["motions"] = [
+            {
+                "motion_id": motion_id,
+                "speed_range_mps": [1.2, 1.2],
+            }
+            for motion_id in ("motion_a", "motion_b")
+        ]
+
+        accepted = toolkit.submit_scene_skeleton(skeleton)
+        self.assertEqual(accepted["status"], "ok", accepted)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
+        candidate = next(iter(toolkit._design_options.values())).candidate
+
+        for entity_id in ("actor_a", "actor_b"):
+            track = candidate.motion_tracks[f"design_motion_{entity_id}"]
+            anchor_index = next(
+                index
+                for index, item in enumerate(track.keyframes)
+                if 2.9 < item.time_seconds < 3.1
+            )
+            anchor = track.keyframes[anchor_index]
+            before = track.keyframes[anchor_index - 1]
+            after = track.keyframes[anchor_index + 1]
+            incoming_speed = math.dist(
+                before.value.translation_m,
+                anchor.value.translation_m,
+            ) / (anchor.time_seconds - before.time_seconds)
+            outgoing_speed = math.dist(
+                anchor.value.translation_m,
+                after.value.translation_m,
+            ) / (after.time_seconds - anchor.time_seconds)
+            self.assertAlmostEqual(incoming_speed, 1.2)
+            self.assertAlmostEqual(outgoing_speed, 1.2)
+            self.assertEqual(before.interpolation, "linear")
+            self.assertEqual(anchor.interpolation, "linear")
+
     def test_scene_skeleton_keeps_only_symbolic_scene_choices(self) -> None:
         skeleton = SceneSkeleton.model_validate(_desert_skeleton())
 
@@ -473,7 +564,8 @@ class PlanningDesignTest(unittest.TestCase):
         track = state.motion_tracks["design_motion_car"]
         start = track.keyframes[0].value.translation_m
         end = track.keyframes[1].value.translation_m
-        self.assertGreater(math.dist(start, end), 5.0)
+        elapsed = track.keyframes[1].time_seconds - track.keyframes[0].time_seconds
+        self.assertAlmostEqual(math.dist(start, end) / elapsed, 1.2)
         self.assertEqual(state.entities["car"].solved_transform.translation_m, start)
 
     def test_deterministic_route_does_not_invent_a_global_direction_lock(self) -> None:
@@ -3063,6 +3155,123 @@ def _paired_mover_route_case(
         "camera_intent": _desert_skeleton()["camera_intent"]
         | {"focus_target_id": "actor_a"},
     }
+    return toolkit, skeleton
+
+
+def _linear_speed_case(
+    motion_type: str,
+    speed_range_mps: list[float],
+) -> tuple[ScenePlanningToolkit, dict]:
+    source = _desert_toolkit()
+    objective = source.objective_brief.model_copy(deep=True)
+    motion = {
+        "motion_id": "man_move",
+        "subject_id": "man_01",
+        "action": {
+            "value": motion_type,
+            "source_status": "explicit",
+            "source_text": motion_type,
+        },
+        "motion_semantics": {
+            "action_kind": "locomotion",
+            "motion_type": motion_type,
+            "motion_mode": "self_propelled",
+            "direction_mode": "world_forward",
+            "target_id": None,
+            "carrier_id": None,
+            "path_type": "linear",
+            "timeline_event_id": "move_event",
+            "narrative_required": True,
+            "postconditions": {
+                "contained_by_id": None,
+                "external_visibility": "unchanged",
+            },
+            "source_status": "inferred",
+            "source_text": motion_type,
+        },
+        "direction": {
+            "value": "world_forward",
+            "source_status": "inferred",
+            "source_text": None,
+        },
+        "speed": {
+            "value": None,
+            "source_status": "unknown",
+            "source_text": None,
+        },
+        "trajectory": {
+            "value": "linear",
+            "source_status": "inferred",
+            "source_text": None,
+        },
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 6.0,
+        "secondary_motion": [],
+    }
+    objective = objective.model_copy(
+        update={
+            "subject_motion": [motion],
+            "scene_dynamics": {
+                "mode": "dynamic",
+                "source_status": "inferred",
+                "reason": "the subject changes world position",
+            },
+            "scene_design": objective.scene_design | {"relationships": []},
+            "timeline": objective.timeline
+            | {
+                "events": [
+                    {
+                        "id": "move_event",
+                        "description": "the subject moves in a straight line",
+                        "start_time_seconds": 0.0,
+                        "end_time_seconds": 6.0,
+                        "reference_ids": ["man_01"],
+                        "source_status": "inferred",
+                    }
+                ],
+                "relations": [],
+            },
+            "translation_parameters": objective.translation_parameters
+            | {
+                "motions": [
+                    {
+                        "motion_id": "man_move",
+                        "subject_id": "man_01",
+                        "motion_type": motion_type,
+                        "speed_range_mps": speed_range_mps,
+                    }
+                ]
+            },
+            "explicit_requirements": [
+                *[
+                    item
+                    for item in objective.explicit_requirements
+                    if not item.path.startswith("content.scene_design.relationships[")
+                ],
+                ObjectiveRequirement(
+                    path="content.subject_motion[0].action",
+                    value=motion_type,
+                )
+            ],
+        }
+    )
+    toolkit = ScenePlanningToolkit(objective)
+    skeleton = _desert_skeleton()
+    skeleton["relations"] = []
+    skeleton["motion_phases"] = [
+        _symbolic_phase(
+            "man_move",
+            "man_01",
+            "path_move",
+            0,
+            event="move_event",
+            direction="world_forward",
+            path="linear",
+            status="explicit",
+            motion_id="man_move",
+        )
+    ]
+    skeleton["camera_intent"]["focus_target_id"] = "man_01"
     return toolkit, skeleton
 
 

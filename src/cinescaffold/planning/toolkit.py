@@ -72,7 +72,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 from cinescaffold.relationships import classify_relationship
 
-TOOLKIT_VERSION = "0.45"
+TOOLKIT_VERSION = "0.46"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -8012,7 +8012,6 @@ def _constraint_violation(
             sample_times = sorted(
                 {
                     start,
-                    end_sample,
                     *_timeline_frame_times(
                         state.timeline,
                         start=start,
@@ -8040,7 +8039,10 @@ def _constraint_violation(
                 length(subtract(right, left))
                 for left, right in zip(positions, positions[1:])
             )
-            elapsed = end_sample - start
+            # Speed is measured over actual rendered samples. The mathematical
+            # end-minus-epsilon probe used by point/hold constraints is not a
+            # frame and would add a stationary tail after the final keyframe.
+            elapsed = sample_times[-1] - sample_times[0]
             speed = traveled / elapsed if elapsed > 0 else math.inf
             if not _within_range(
                 speed,

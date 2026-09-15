@@ -24,6 +24,7 @@
 
 ### Changed
 
+- Core 0.8.34 / Toolkit v0.46 让普通直线主体运动直接采用 Semantic Translation 已冻结的动作速度范围：确定性构建器按阶段时长选择范围中值并生成对应位移，走路与跑步不再共同退化为固定 8 米；线性阶段和普通事件路径点使用匀速线性插值，路径点不再隐含缓入、减速或停顿。用户明确速度仍为 hard constraint，动作类型推导速度保持 soft，因而不会压过明确的停下、转向或时空关系。速度 Validator 只用真实渲染帧计算时间，不再把最后关键帧之后的数学 `end-epsilon` 静止尾段计入平均速度。
 - Core 0.8.33 / Semantic Parser v0.16 在固定第二轮审查前生成版本化 `ReviewPacket`：稳定错误码和字段路径可确认契约错误，原文、初稿文本与只读结构信号只召回待复核风险。每个包最多携带五条规则、触发证据和审查问题，并以 `attention_only_no_semantic_inference` 明确禁止把关键词当成动作、方向、目标、关系或时间答案；完整契约不被裁剪，模型调用仍为两次。规则目录版本、SHA-256、命中规则与证据写入 Brief provenance。
 - Core 0.8.32 / Semantic Parser v0.15 / Toolkit v0.45 将多解释语句拆成“各解释共有的类型化事实”与“真正欠定的方向、路径、先后或精确时间”；局部关系必须使用独立点事件或较短区间，不得因存在歧义而整条遗漏，也不得扩张为完整动作。Route Anchor 现在只接受类型化空间关系或类型化容纳后置状态，Planning 不能再从动作自由文本补造关系。单个局部双移动 proximity 会获得确定性的相对运动；持续整段的并肩关系和多次关系保持原拓扑决策。持续区间的相遇会物化事件首、中、末三个线性路径点，在满足接近与碰撞净空的同时不再因内部 smooth keyframe 产生瞬时停顿；Validator 会拒绝局部事件前后相对位置恒定的共同平移。
 - Core 0.8.31 / Toolkit v0.44 删除 Route Anchor 的动作边界字段，改由所引用 Relation 的 timeline event 与 `temporal_mode` 唯一确定路径点时刻；旧 Skeleton 不做兼容迁移。单个 Semantic Motion 现在可在同一连续 Track 内包含多个事件路径点。确定性 Skeleton 会为同一 proximity 事件里所有正在移动的参与者生成 Anchor，Design 联合求出接近且不碰撞的位置并消除实体顺序依赖；Validator 会拒绝动作内部 Anchor 前后应继续运动却停滞的轨迹。Planning Prompt 只说明这项通用事件路径能力，不增加故事专用动作、关系或语言关键词规则。
