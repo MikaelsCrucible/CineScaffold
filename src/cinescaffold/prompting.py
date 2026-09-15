@@ -14,6 +14,7 @@ REVISION_PLACEHOLDERS = {
     "{{SOURCE_TEXT}}",
     "{{DRAFT_JSON}}",
     "{{DIAGNOSTICS_JSON}}",
+    "{{REVIEW_PACKET_JSON}}",
 }
 
 
@@ -62,6 +63,7 @@ def build_revision_prompt(
     system_template_path: Path,
     rules_path: Path,
     revision_template_path: Path,
+    review_packet: dict[str, object] | None = None,
     *,
     source_kind: Literal["natural_text", "textual_six"] = "natural_text",
 ) -> PromptBundle:
@@ -90,6 +92,11 @@ def build_revision_prompt(
         "{{DRAFT_JSON}}": json.dumps(draft, ensure_ascii=False, indent=2),
         "{{DIAGNOSTICS_JSON}}": json.dumps(
             diagnostics,
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "{{REVIEW_PACKET_JSON}}": json.dumps(
+            review_packet or {},
             ensure_ascii=False,
             indent=2,
         ),

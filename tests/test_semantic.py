@@ -55,6 +55,8 @@ class SemanticParserTest(unittest.TestCase):
             / "src/cinescaffold/resources/prompts/semantic_parser/rules.md",
             revision_template_path=ROOT
             / "src/cinescaffold/resources/prompts/semantic_parser/revision.md",
+            review_rules_path=ROOT
+            / "src/cinescaffold/resources/prompts/semantic_parser/review_rules.json",
             format_example_path=ROOT
             / "src/cinescaffold/resources/prompts/semantic_parser/format_example.json",
             model_output_schema_path=ROOT
@@ -84,6 +86,14 @@ class SemanticParserTest(unittest.TestCase):
         self.assertEqual(result["provenance"]["source_kind"], "natural_text")
         self.assertRegex(result["provenance"]["textual_six_sha256"], r"^sha256:[0-9a-f]{64}$")
         self.assertIsNone(result["provenance"]["provider_usage"])
+        review = result["provenance"]["semantic_review"]
+        self.assertEqual(review["catalog_version"], "semantic-review-rules-v0.1")
+        self.assertEqual(
+            review["selection_policy"],
+            "attention_only_no_semantic_inference",
+        )
+        self.assertIn("SOURCE.COVERAGE", review["selected_rule_ids"])
+        self.assertRegex(review["rules_sha256"], r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(result["translation_parameters"]["emotion_class"]["class_id"], "E6")
         self.assertFalse(
             result["translation_parameters"]["lighting"]["applied_to_blender_preview"]
@@ -137,7 +147,30 @@ class SemanticParserTest(unittest.TestCase):
 
         self.assertEqual(len(provider.calls), 2)
         self.assertIn("semantic_contract_failed", provider.calls[1]["user_prompt"])
+        self.assertIn(
+            "semantic_scene_dynamics_contract_failed",
+            provider.calls[1]["user_prompt"],
+        )
         self.assertIn("scene_dynamics.mode", provider.calls[1]["user_prompt"])
+        self.assertIn('"kind": "confirmed_error"', provider.calls[1]["user_prompt"])
+
+    def test_revision_receives_text_recalled_review_without_story_mapping(self) -> None:
+        provider = _SequenceProvider([valid_model_output(), valid_model_output()])
+
+        result = parse_cinematic_brief(
+            "男生和女生擦肩而过。",
+            provider,
+            self._config(),
+        )
+
+        revision_prompt = provider.calls[1]["user_prompt"]
+        self.assertIn('"rule_id": "MULTI_ENTITY.SHARED_FACTS"', revision_prompt)
+        self.assertIn('"rule_id": "TIMELINE.LOCAL_EVENT_SCOPE"', revision_prompt)
+        self.assertIn('"kind": "review_risk"', revision_prompt)
+        self.assertIn(
+            "MULTI_ENTITY.SHARED_FACTS",
+            result["provenance"]["semantic_review"]["selected_rule_ids"],
+        )
 
     def test_revision_does_not_add_story_specific_motion_semantics(self) -> None:
         prompt_text = "\n".join(

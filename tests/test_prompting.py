@@ -66,6 +66,10 @@ class PromptingTest(unittest.TestCase):
             source_text="测试原文",
             draft={"summary": "初稿"},
             diagnostics=[{"code": "test", "message": "需要修正"}],
+            review_packet={
+                "selection_policy": "attention_only_no_semantic_inference",
+                "findings": [{"rule_id": "SOURCE.COVERAGE"}],
+            },
             system_template_path=ROOT
             / "src/cinescaffold/resources/prompts/semantic_parser/system.md",
             rules_path=ROOT
@@ -77,6 +81,8 @@ class PromptingTest(unittest.TestCase):
         self.assertIn("测试原文", bundle.user_prompt)
         self.assertIn('"summary": "初稿"', bundle.user_prompt)
         self.assertIn('"code": "test"', bundle.user_prompt)
+        self.assertIn('"rule_id": "SOURCE.COVERAGE"', bundle.user_prompt)
+        self.assertIn("关键词、初稿文字和结构信号只能召回审查规则", bundle.user_prompt)
 
     def test_revision_prompt_rejects_incomplete_template(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -184,6 +184,12 @@ def _add_semantic_arguments(parser: argparse.ArgumentParser) -> None:
         default=resources.semantic_revision,
     )
     parser.add_argument(
+        "--review-rules",
+        type=Path,
+        default=resources.semantic_review_rules,
+        help="Semantic Revision 的版本化规则召回目录",
+    )
+    parser.add_argument(
         "--system-template",
         type=Path,
         default=resources.semantic_system,
@@ -549,6 +555,7 @@ def _semantic_parser_config(args: argparse.Namespace) -> SemanticParserConfig:
         system_template_path=args.system_template,
         rules_path=args.rules,
         revision_template_path=args.revision_template,
+        review_rules_path=args.review_rules,
         format_example_path=args.format_example,
         model_output_schema_path=args.schema,
         translation_rules_path=args.translation_rules,

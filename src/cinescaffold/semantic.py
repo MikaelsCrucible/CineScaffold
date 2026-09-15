@@ -8,11 +8,16 @@ from typing import Any, Literal
 from cinescaffold.errors import SchemaValidationError
 from cinescaffold.prompting import build_prompt, build_revision_prompt
 from cinescaffold.providers.base import ProviderResponse, StructuredOutputProvider
+from cinescaffold.resources.paths import RuntimeResourcePaths
 from cinescaffold.schema import load_schema, validate_model_output
 from cinescaffold.semantic_rules import (
     apply_translation_rules,
     load_translation_rules,
     translation_rules_sha256,
+)
+from cinescaffold.semantic_review import (
+    build_semantic_review_packet,
+    load_semantic_review_catalog,
 )
 from cinescaffold.textual_six import (
     TextualSixDimensions,
@@ -30,7 +35,8 @@ class SemanticParserConfig:
     model_output_schema_path: Path
     translation_rules_path: Path
     translation_parameters_schema_path: Path
-    prompt_version: str = "semantic-parser-v0.15"
+    review_rules_path: Path | None = None
+    prompt_version: str = "semantic-parser-v0.16"
 
 
 @dataclass(frozen=True)
@@ -76,6 +82,13 @@ def parse_semantic_input(
         translation_rules,
         source_text,
     )
+    review_catalog = load_semantic_review_catalog(_review_rules_path(config))
+    review_packet = build_semantic_review_packet(
+        source_text,
+        draft_response.content,
+        diagnostics,
+        review_catalog,
+    )
     revision_prompt = build_revision_prompt(
         source_text=source_text,
         draft=draft_response.content,
@@ -83,6 +96,7 @@ def parse_semantic_input(
         system_template_path=config.system_template_path,
         rules_path=config.rules_path,
         revision_template_path=config.revision_template_path,
+        review_packet=review_packet,
         source_kind=source_kind,
     )
     response = provider.generate(
@@ -115,6 +129,16 @@ def parse_semantic_input(
             "translation_rules_sha256": translation_rules_sha256(
                 config.translation_rules_path
             ),
+            "semantic_review": {
+                "catalog_version": review_catalog.version,
+                "rules_sha256": review_catalog.sha256,
+                "selection_policy": review_packet["selection_policy"],
+                "selected_rule_ids": [
+                    finding["rule_id"] for finding in review_packet["findings"]
+                ],
+                "findings": review_packet["findings"],
+                "unmatched_diagnostics": review_packet["unmatched_diagnostics"],
+            },
             "response_id": response.response_id,
             "provider_usage": _aggregate_provider_usage(
                 [draft_response, response]
@@ -144,10 +168,12 @@ def _audit_semantic_draft(
     try:
         apply_translation_rules(content, translation_rules, source_text)
     except (SchemaValidationError, ValueError) as error:
+        message = str(error)
         return [
             {
-                "code": "semantic_contract_failed",
-                "message": str(error),
+                "code": _semantic_contract_failure_code(message),
+                "parent_code": "semantic_contract_failed",
+                "message": message,
             }
         ]
     return [
@@ -159,6 +185,38 @@ def _audit_semantic_draft(
             ),
         }
     ]
+
+
+def _semantic_contract_failure_code(message: str) -> str:
+    """Classify deterministic failures without treating text as scene semantics."""
+
+    if any(token in message for token in ("target_id", "相对方向", "几何目标")):
+        return "semantic_direction_contract_failed"
+    if any(
+        token in message
+        for token in ("carrier_id", "contained_by_id", "external_visibility", "carried")
+    ):
+        return "semantic_state_contract_failed"
+    if any(token in message for token in ("timeline", "时间范围", "先后关系")):
+        return "semantic_timeline_contract_failed"
+    if any(token in message for token in ("空间关系", "关系使用", "关系引用")):
+        return "semantic_relationship_contract_failed"
+    if "camera" in message:
+        return "semantic_camera_contract_failed"
+    if "scene_dynamics" in message:
+        return "semantic_scene_dynamics_contract_failed"
+    if "subject_motion" in message:
+        return "semantic_motion_contract_failed"
+    return "semantic_contract_failed"
+
+
+def _review_rules_path(config: SemanticParserConfig) -> Path:
+    if config.review_rules_path is not None:
+        return config.review_rules_path
+    sibling = config.rules_path.with_name("review_rules.json")
+    if sibling.is_file():
+        return sibling
+    return RuntimeResourcePaths.from_package().semantic_review_rules
 
 
 def _validate_and_translate(

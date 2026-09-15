@@ -12,6 +12,7 @@ class RuntimeResourcePaths:
     semantic_system: Path
     semantic_rules: Path
     semantic_revision: Path
+    semantic_review_rules: Path
     semantic_example: Path
     semantic_schema: Path
     translation_rules: Path
@@ -33,6 +34,8 @@ class RuntimeResourcePaths:
             semantic_system=root / "prompts/semantic_parser/system.md",
             semantic_rules=root / "prompts/semantic_parser/rules.md",
             semantic_revision=root / "prompts/semantic_parser/revision.md",
+            semantic_review_rules=root
+            / "prompts/semantic_parser/review_rules.json",
             semantic_example=root / "prompts/semantic_parser/format_example.json",
             semantic_schema=root / "schemas/cinematic_brief_model_output.schema.json",
             translation_rules=root / "prompts/semantic_parser/translation_rules.json",

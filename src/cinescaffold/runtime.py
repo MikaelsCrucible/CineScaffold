@@ -47,6 +47,7 @@ def build_pipeline_run_config(
             system_template_path=paths.semantic_system,
             rules_path=paths.semantic_rules,
             revision_template_path=paths.semantic_revision,
+            review_rules_path=paths.semantic_review_rules,
             format_example_path=paths.semantic_example,
             model_output_schema_path=paths.semantic_schema,
             translation_rules_path=paths.translation_rules,

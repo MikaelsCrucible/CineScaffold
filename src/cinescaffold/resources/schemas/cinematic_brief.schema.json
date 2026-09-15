@@ -18,6 +18,19 @@
         "parser_prompt_version": {"type": "string"},
         "rules_sha256": {"type": "string"},
         "translation_rules_sha256": {"type": "string"},
+        "semantic_review": {
+          "type": "object",
+          "properties": {
+            "catalog_version": {"type": "string"},
+            "rules_sha256": {"type": "string"},
+            "selection_policy": {"type": "string", "const": "attention_only_no_semantic_inference"},
+            "selected_rule_ids": {"type": "array", "items": {"type": "string"}},
+            "findings": {"type": "array", "items": {"type": "object"}},
+            "unmatched_diagnostics": {"type": "array", "items": {"type": "object"}}
+          },
+          "required": ["catalog_version", "rules_sha256", "selection_policy", "selected_rule_ids", "findings", "unmatched_diagnostics"],
+          "additionalProperties": false
+        },
         "response_id": {"type": ["string", "null"]},
         "provider_usage": {"type": ["object", "null"]}
       },

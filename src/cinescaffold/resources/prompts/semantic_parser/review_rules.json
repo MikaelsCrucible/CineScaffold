@@ -1,0 +1,192 @@
+{
+  "version": "semantic-review-rules-v0.1",
+  "max_selected_rules": 5,
+  "rules": [
+    {
+      "id": "SOURCE.COVERAGE",
+      "title": "逐句语义覆盖",
+      "priority": 10,
+      "always": true,
+      "diagnostic_codes": ["independent_semantic_review_required"],
+      "diagnostic_path_prefixes": [],
+      "text_cues": [],
+      "structural_signals": [],
+      "emphasis": "重新从原文逐句建立事实清单，再与初稿逐项对照；初稿结构合法不代表没有遗漏。",
+      "audit_questions": [
+        "原文中每个具有几何、时间、动作、摄影机、构图或氛围作用的片段是否都有对应类型字段？",
+        "是否有信息只保留在 summary、action.value 或 source_text 中，而没有进入下游使用的类型字段？"
+      ]
+    },
+    {
+      "id": "CONTRACT.SCHEMA",
+      "title": "关闭 Schema 修正",
+      "priority": 100,
+      "always": false,
+      "diagnostic_codes": ["schema_validation_failed"],
+      "diagnostic_path_prefixes": ["$"],
+      "text_cues": [],
+      "structural_signals": [],
+      "emphasis": "按诊断路径修正字段形状、必填项或封闭枚举，同时复核相邻字段，不能通过删除原文事实来规避结构错误。",
+      "audit_questions": [
+        "诊断路径对应的字段是否严格满足 Schema？",
+        "修正结构后，原文事实、来源证据和引用关系是否仍然完整？"
+      ]
+    },
+    {
+      "id": "CONTRACT.SEMANTIC",
+      "title": "确定性语义契约修正",
+      "priority": 90,
+      "always": false,
+      "diagnostic_codes": ["semantic_contract_failed"],
+      "diagnostic_path_prefixes": [],
+      "text_cues": [],
+      "structural_signals": [],
+      "emphasis": "先按确定性诊断修正已经证实的契约冲突，再对照原文复核关联字段；不得删除叙事事实或虚构新事实来让错误消失。",
+      "audit_questions": [
+        "诊断指出的字段组合为什么与当前契约冲突？",
+        "最小修正是否同时保持原文证据、实体引用和时间作用域？"
+      ]
+    },
+    {
+      "id": "MOTION.TYPE_CONSISTENCY",
+      "title": "动作类型一致性",
+      "priority": 80,
+      "always": false,
+      "diagnostic_codes": ["semantic_motion_contract_failed", "semantic_scene_dynamics_contract_failed"],
+      "diagnostic_path_prefixes": ["subject_motion", "scene_dynamics"],
+      "text_cues": [
+        "走路", "行走", "走向", "奔跑", "跑向", "飞行", "跳跃", "移动", "静止", "停下",
+        "walk", "run", "fly", "jump", "move", "stop"
+      ],
+      "structural_signals": ["multiple_moving_subjects"],
+      "emphasis": "逐个场景实体核对每个动作阶段的动作类别、驱动方式、位移类型、路径与场景动态分类；文本提示只触发复核，不证明任何具体枚举。",
+      "audit_questions": [
+        "每个实际发生位移的场景实体是否都有自己的动作阶段和非静止运动语义？",
+        "motion_mode、action_kind、motion_type、path_type 与 scene_dynamics 是否相互一致？"
+      ]
+    },
+    {
+      "id": "MOTION.DIRECTION_EVIDENCE",
+      "title": "方向与目标证据",
+      "priority": 55,
+      "always": false,
+      "diagnostic_codes": ["semantic_direction_contract_failed"],
+      "diagnostic_path_prefixes": ["subject_motion"],
+      "text_cues": [
+        "相向", "同向", "迎面", "朝向", "朝着", "远离", "追赶", "追上",
+        "opposite direction", "same direction", "toward", "away from", "chase", "overtake"
+      ],
+      "structural_signals": [],
+      "emphasis": "方向、几何目标和事件参与者必须分开核对；只有原文明示或必然推出时才能填写具体方向或 target_id，不能由常见场景补全。",
+      "audit_questions": [
+        "原文是否真的确定了每个移动实体的方向和几何目标？",
+        "初稿是否把另一事件参与者自动当成 target_id，或反过来遗漏了明确目标？"
+      ]
+    },
+    {
+      "id": "MULTI_ENTITY.SHARED_FACTS",
+      "title": "多实体共有事实",
+      "priority": 70,
+      "always": false,
+      "diagnostic_codes": ["semantic_relationship_contract_failed"],
+      "diagnostic_path_prefixes": ["scene_design.relationships"],
+      "text_cues": [
+        "相遇", "碰面", "交会", "交错", "擦肩", "彼此经过", "靠近", "接近",
+        "meet", "cross paths", "pass each other", "near each other", "approach each other"
+      ],
+      "structural_signals": ["event_scoped_relationship"],
+      "emphasis": "先列出多种合理解释，再保留这些解释共享且当前 Schema 可表达的实体参与、独立动作、局部事件或空间关系；不得由提示词直接选择方向、路径或关系枚举。",
+      "audit_questions": [
+        "所有合理解释是否共享一个应被类型化的多实体事件或空间事实？",
+        "是否因为方向或路径不确定，就连参与者、各自位移或共有局部事实也一起遗漏？"
+      ]
+    },
+    {
+      "id": "TIMELINE.LOCAL_EVENT_SCOPE",
+      "title": "局部事件时间作用域",
+      "priority": 75,
+      "always": false,
+      "diagnostic_codes": ["semantic_timeline_contract_failed", "semantic_relationship_contract_failed"],
+      "diagnostic_path_prefixes": ["timeline", "scene_design.relationships"],
+      "text_cues": [
+        "瞬间", "一刻", "相遇", "碰面", "交会", "交错", "擦肩", "最近时", "到达时", "离开时", "进入时",
+        "moment", "when they meet", "cross paths", "closest point", "on arrival", "as it leaves"
+      ],
+      "structural_signals": ["event_scoped_relationship", "clip_wide_relationship"],
+      "emphasis": "把持续动作与其中的局部条件分开建模；精确时刻未知不等于关系持续全片，文本提示只要求检查时间作用域，不预先指定关系类型。",
+      "audit_questions": [
+        "只在临界点、状态切换点或最近时刻成立的条件是否拥有独立点事件或较短区间？",
+        "初稿是否把局部条件错误扩张成整个动作或整个视频片段的 throughout？"
+      ]
+    },
+    {
+      "id": "TIMELINE.ORDER_AND_OVERLAP",
+      "title": "动作先后与重叠",
+      "priority": 65,
+      "always": false,
+      "diagnostic_codes": ["semantic_timeline_contract_failed"],
+      "diagnostic_path_prefixes": ["timeline"],
+      "text_cues": [
+        "首先", "然后", "随后", "接着", "之后", "之前", "同时", "期间", "与此同时",
+        "first", "then", "after", "before", "simultaneously", "while", "during"
+      ],
+      "structural_signals": ["temporal_relations_present"],
+      "emphasis": "独立拆分有不同时间范围的动作和事件，并让数值区间与类型化时间关系一致；不得机械等分，也不得把并行误改成顺序。",
+      "audit_questions": [
+        "原文表达的先后、相接、包含、重叠或同始同终是否都有独立事件？",
+        "事件数值区间是否与关系枚举同时成立？"
+      ]
+    },
+    {
+      "id": "CAMERA.DIMENSION_SEPARATION",
+      "title": "摄影机、光学与构图区分",
+      "priority": 50,
+      "always": false,
+      "diagnostic_codes": ["semantic_camera_contract_failed"],
+      "diagnostic_path_prefixes": ["camera", "composition"],
+      "text_cues": [
+        "镜头", "机位", "摄影机", "焦距", "景深", "景别", "构图", "画面",
+        "camera", "lens", "focal length", "depth of field", "framing", "composition"
+      ],
+      "structural_signals": [],
+      "emphasis": "分别核对视频片段、摄影机运动、光学属性与画面构图，不能让同一个含混词跨字段替代信息。",
+      "audit_questions": [
+        "描述的是摄影机位置变化、仅旋转、焦距/景深，还是投影后的构图要求？",
+        "固定位置但改变朝向是否被误写成位置跟随，或构图要求是否被误塞进摄影机动作？"
+      ]
+    },
+    {
+      "id": "STATE.CARRIAGE_AND_CONTAINMENT",
+      "title": "承载、容纳与可见性后置状态",
+      "priority": 60,
+      "always": false,
+      "diagnostic_codes": ["semantic_state_contract_failed"],
+      "diagnostic_path_prefixes": ["subject_motion"],
+      "text_cues": [
+        "上车", "下车", "进入", "离开", "乘坐", "搭乘", "承载", "拿着", "抱着", "装入", "取出",
+        "board", "disembark", "enter", "exit", "ride", "carry", "put into", "take out"
+      ],
+      "structural_signals": [],
+      "emphasis": "分别核对自主位移、被承载的世界运动、动作结束后的容纳状态和外部可见性；这些事实互不替代。",
+      "audit_questions": [
+        "发生接近或进入过程的实体是否仍具有独立动作阶段？",
+        "carrier_id、contained_by_id 与 external_visibility 是否只在原文有证据时填写并保持一致？"
+      ]
+    },
+    {
+      "id": "EVIDENCE.UNCERTAINTY_BOUNDARY",
+      "title": "证据与不确定性边界",
+      "priority": 45,
+      "always": false,
+      "diagnostic_codes": [],
+      "diagnostic_path_prefixes": [],
+      "text_cues": ["可能", "或许", "大概", "似乎", "也许", "maybe", "perhaps", "possibly", "seems"],
+      "structural_signals": ["uncertainties_present"],
+      "emphasis": "逐项区分明确事实、必然推断、结构缺省和真正未知；不确定性只覆盖分歧字段，不能吞掉所有合理解释共有的事实。",
+      "audit_questions": [
+        "source_status 与最小 source_text 是否真的支持当前字段值？",
+        "uncertainties 是否过宽，或是否把常见理解错误标成 inferred？"
+      ]
+    }
+  ]
+}
