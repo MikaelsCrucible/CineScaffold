@@ -761,7 +761,6 @@ def _route_context_index(objective: ObjectivePlanningBrief) -> dict[str, Any]:
             "subject_id": item.get("subject_id"),
             "reference_id": item.get("reference_id"),
             "type": item.get("type"),
-            "strength": item.get("strength"),
             "event_id": item.get("timeline_event_id"),
             "temporal_mode": item.get("temporal_mode", "throughout"),
             "source_status": item.get("source_status"),

@@ -116,7 +116,6 @@ class EntitySizeRequest(StrictModel):
 class SkeletonRelation(StrictModel):
     relation_id: str = Field(min_length=1)
     kind: Literal[
-        "ground_support",
         "camera_depth_order",
         "relative_position",
         "proximity",
@@ -419,8 +418,6 @@ class SceneSkeleton(StrictModel):
                 "pan/follow/orbit 摄影机必须单独提供 movement_target_id；"
                 "focus_target_id 不能代替运动目标"
             )
-        proxy_families = {item.entity_id: item.proxy_family for item in self.entities}
-        ground_subjects: dict[str, str] = {}
         relation_shapes: set[tuple[object, ...]] = set()
         distance_meanings: dict[tuple[object, ...], set[str]] = {}
         far_orientations: dict[
@@ -461,20 +458,6 @@ class SceneSkeleton(StrictModel):
                     (unordered_pair, *timing),
                     set(),
                 ).add((relation.subject_id, relation.reference_id))
-            if relation.kind == "ground_support":
-                if proxy_families[relation.reference_id] != "ground_plane":
-                    raise ValueError(
-                        f"ground_support 必须指向 ground_plane：{relation.relation_id}"
-                    )
-                previous_ground = ground_subjects.get(relation.subject_id)
-                if (
-                    previous_ground is not None
-                    and previous_ground != relation.reference_id
-                ):
-                    raise ValueError(
-                        f"同一实体的 ground_support 不得指向多个地面：{relation.subject_id}"
-                    )
-                ground_subjects[relation.subject_id] = relation.reference_id
         if any(
             meanings == {"camera_depth_order", "proximity"}
             for meanings in distance_meanings.values()
@@ -854,7 +837,6 @@ def _validate_typed_source_bindings(
         "proximity": "proximity",
         "relative_position": "relative_position",
         "scale_dominance": "scale_dominance",
-        "ground_support": "ground_support",
     }
     for relation in skeleton.relations:
         if not relation.source_ref.startswith(relationship_prefix):
@@ -1232,11 +1214,11 @@ def _build_entities(
     size_requests: dict[str, EntitySizeRequest],
 ) -> dict[str, EntitySpec]:
     subject_parameters = _subject_parameters(objective)
-    ground_links = {
-        item.subject_id: item
-        for item in skeleton.relations
-        if item.kind == "ground_support"
-    }
+    ground_ids = [
+        item.entity_id
+        for item in skeleton.entities
+        if item.proxy_family == "ground_plane"
+    ]
     entities: dict[str, EntitySpec] = {}
     for item in skeleton.entities:
         parameters = subject_parameters.get(item.entity_id, {})
@@ -1248,16 +1230,15 @@ def _build_entities(
                 for requirement in objective.explicit_requirements
                 if requirement.path == "content.scene_design.environment"
             )
-        ground = ground_links.get(item.entity_id)
+        ground_id, ground_mode = _deterministic_ground_interaction(
+            objective,
+            item,
+            ground_ids,
+        )
         ground_interaction = GroundInteractionSpec(
-            mode="must_touch" if ground else "must_be_above",
-            ground_entity_id=ground.reference_id if ground else None,
-            source_status=(ground.source_status if ground else "default"),
-            source_ref=(
-                ground.source_ref
-                if ground and ground.source_status == "explicit"
-                else None
-            ),
+            mode=ground_mode,
+            ground_entity_id=ground_id,
+            source_status="inferred" if ground_id is not None else "default",
         )
         tags = [item.semantic_type, item.scale_intent]
         if item.proxy_family == "ground_plane":
@@ -1282,6 +1263,39 @@ def _build_entities(
             ground_interaction=ground_interaction,
         )
     return entities
+
+
+def _deterministic_ground_interaction(
+    objective: ObjectivePlanningBrief,
+    entity: SkeletonEntity,
+    ground_ids: list[str],
+) -> tuple[
+    str | None,
+    Literal["must_be_above", "must_touch"],
+]:
+    """Ground ordinary people/vehicles without asking either model to restate it."""
+
+    if not ground_ids or entity.proxy_family not in {"human_capsule", "vehicle_box"}:
+        return None, "must_be_above"
+    semantics = [
+        motion.get("motion_semantics")
+        for motion in objective.subject_motion
+        if isinstance(motion, dict) and motion.get("subject_id") == entity.entity_id
+    ]
+    # A per-entity contact mode cannot remain must_touch through an airborne,
+    # jumping, or carried phase. Those paths still start from a grounded
+    # deterministic transform and the default validator prevents penetration.
+    has_non_ground_phase = any(
+        isinstance(item, dict)
+        and (
+            item.get("motion_type") in {"flying", "jumping", "carried"}
+            or item.get("motion_mode") == "carried"
+        )
+        for item in semantics
+    )
+    if has_non_ground_phase:
+        return ground_ids[0], "must_be_above"
+    return ground_ids[0], "must_touch"
 
 
 def _proxy_geometry(
@@ -1885,21 +1899,6 @@ def _relation_allows_containment_overlap(
     """Containment transitions may overlap the container at their boundary."""
 
     pair = {relation.subject_id, relation.reference_id}
-    prefix = "content.scene_design.relationships["
-    if relation.source_ref.startswith(prefix):
-        try:
-            index = int(relation.source_ref[len(prefix) :].split("]", 1)[0])
-            source = objective.scene_design.get("relationships", [])[index]
-        except (IndexError, TypeError, ValueError, AttributeError):
-            source = None
-        meaning = classify_relationship(source) if isinstance(source, dict) else None
-        source_pair = (
-            {source.get("subject_id"), source.get("reference_id")}
-            if isinstance(source, dict)
-            else set()
-        )
-        if meaning is not None and meaning.kind == "carried_by" and source_pair == pair:
-            return True
     for motion in objective.subject_motion:
         if not isinstance(motion, dict) or motion.get("subject_id") not in pair:
             continue
@@ -2344,8 +2343,14 @@ def _build_motion(
                         value
                         * (
                             1.0
-                            if candidate.entities[subject_id].ground_interaction.mode
-                            == "must_touch"
+                            if candidate.entities[
+                                subject_id
+                            ].ground_interaction.ground_entity_id
+                            is not None
+                            and candidate.entities[
+                                subject_id
+                            ].ground_interaction.mode
+                            in {"must_touch", "must_be_above"}
                             and axis == 2
                             else 1.08
                         )
@@ -3556,9 +3561,10 @@ def _camera_focus(
         return point, _proxy_half_height(target)
 
     dependent_ids = {
-        relation.subject_id
-        for relation in skeleton.relations
-        if relation.kind == "orbit_around"
+        phase.subject_id
+        for phase in skeleton.motion_phases
+        if phase.direction_mode == "relative_to_target"
+        and phase.path_family in {"circle", "ellipse"}
     }
     anchors = [
         entity

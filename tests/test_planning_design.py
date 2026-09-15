@@ -47,13 +47,13 @@ class PlanningDesignTest(unittest.TestCase):
         skeleton = SceneSkeleton.model_validate(_desert_skeleton())
 
         self.assertEqual(skeleton.entities[1].proxy_family, "human_capsule")
-        self.assertEqual(skeleton.relations[1].kind, "camera_depth_order")
+        self.assertEqual(skeleton.relations[0].kind, "camera_depth_order")
         self.assertNotIn("translation_m", skeleton.model_dump(mode="json"))
         self.assertTrue(skeleton_hash(skeleton).startswith("sha256:"))
 
     def test_scene_skeleton_rejects_unknown_references(self) -> None:
         value = _desert_skeleton()
-        value["relations"][1]["subject_id"] = "missing_ship"
+        value["relations"][0]["subject_id"] = "missing_ship"
 
         with self.assertRaises(ValidationError):
             SceneSkeleton.model_validate(value)
@@ -93,7 +93,7 @@ class PlanningDesignTest(unittest.TestCase):
 
     def test_scene_skeleton_rejects_reversed_far_relations(self) -> None:
         value = _desert_skeleton()
-        duplicate = dict(value["relations"][1])
+        duplicate = dict(value["relations"][0])
         duplicate.update(
             relation_id="same_far_relation_reversed",
             subject_id="man_01",
@@ -130,16 +130,84 @@ class PlanningDesignTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source_ref 无法解析"):
             validate_scene_skeleton(objective, skeleton)
 
-    def test_scene_skeleton_rejects_duplicate_ids_and_non_ground_support(self) -> None:
+    def test_scene_skeleton_rejects_duplicate_relation_ids(self) -> None:
         duplicate = _desert_skeleton()
         duplicate["relations"].append(dict(duplicate["relations"][0]))
-        wrong_ground = _desert_skeleton()
-        wrong_ground["relations"][0]["reference_id"] = "ship_01"
 
         with self.assertRaisesRegex(ValidationError, "Relation ID"):
             SceneSkeleton.model_validate(duplicate)
-        with self.assertRaisesRegex(ValidationError, "ground_plane"):
-            SceneSkeleton.model_validate(wrong_ground)
+
+    def test_ground_contact_is_derived_for_ordinary_people_and_vehicles(self) -> None:
+        toolkit = _desert_toolkit()
+        skeleton = _desert_skeleton()
+        accepted = toolkit.submit_scene_skeleton(skeleton)
+        options = toolkit.request_design_options(max_options=1)
+
+        self.assertEqual(accepted["status"], "ok", accepted)
+        self.assertTrue(options["data"]["options"], options)
+        option_id = options["data"]["options"][0]["option_id"]
+        candidate = toolkit._design_options[option_id].candidate
+        self.assertEqual(
+            candidate.entities["man_01"].ground_interaction.mode,
+            "must_touch",
+        )
+        self.assertEqual(
+            candidate.entities["ship_01"].ground_interaction.mode,
+            "must_touch",
+        )
+        self.assertNotIn(
+            "ground_support",
+            {item["kind"] for item in skeleton["relations"]},
+        )
+        validation = toolkit._validate(candidate, ["transforms"])
+        self.assertTrue(validation.hard_pass, validation.violations)
+
+    def test_mixed_carried_subject_must_touch_during_its_ground_phase(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+        skeleton = build_deterministic_scene_skeleton(toolkit.objective_brief)
+        toolkit.submit_scene_skeleton(skeleton)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
+        option_id = options["data"]["options"][0]["option_id"]
+        candidate = toolkit._design_options[option_id].candidate
+        self.assertEqual(
+            candidate.entities["man"].ground_interaction.mode,
+            "must_be_above",
+        )
+        self.assertEqual(
+            candidate.entities["man"].ground_interaction.source_status,
+            "inferred",
+        )
+        self.assertTrue(
+            toolkit._validate(candidate, ["transforms"]).hard_pass,
+        )
+
+        floated = candidate.model_copy(deep=True)
+        man_track = floated.motion_tracks["design_motion_man"]
+        man_track.keyframes = [
+            keyframe.model_copy(
+                update={
+                    "value": keyframe.value.model_copy(
+                        update={
+                            "translation_m": (
+                                keyframe.value.translation_m[0],
+                                keyframe.value.translation_m[1],
+                                keyframe.value.translation_m[2] + 1.0,
+                            )
+                        }
+                    )
+                }
+            )
+            if keyframe.time_seconds < 4.0
+            else keyframe
+            for keyframe in man_track.keyframes
+        ]
+        violations = toolkit._validate(floated, ["transforms"]).violations
+
+        self.assertIn(
+            "ENTITY_GROUND_CONTACT_VIOLATED",
+            {item.code for item in violations},
+        )
 
     def test_scene_skeleton_must_include_every_brief_subject(self) -> None:
         objective = project_objective_brief(valid_planning_brief()).objective_brief
@@ -532,7 +600,7 @@ class PlanningDesignTest(unittest.TestCase):
                 )
                 toolkit = ScenePlanningToolkit(objective)
                 skeleton = _desert_skeleton()
-                skeleton["relations"] = skeleton["relations"][:1]
+                skeleton["relations"] = []
                 skeleton["camera_intent"]["movement"] = movement
                 skeleton["camera_intent"]["movement_target_id"] = (
                     "man_01" if movement == "orbit" else None
@@ -601,7 +669,7 @@ class PlanningDesignTest(unittest.TestCase):
         )
         toolkit = ScenePlanningToolkit(objective)
         skeleton = _desert_skeleton()
-        skeleton["relations"] = skeleton["relations"][:1]
+        skeleton["relations"] = []
         skeleton["motion_phases"][0].update(
             motion_id="walk_01",
             kind="path_move",
@@ -695,7 +763,7 @@ class PlanningDesignTest(unittest.TestCase):
         )
         toolkit = ScenePlanningToolkit(objective)
         skeleton = _desert_skeleton()
-        skeleton["relations"] = skeleton["relations"][:1]
+        skeleton["relations"] = []
         skeleton["motion_phases"][0].update(
             motion_id="walk_01",
             kind="path_move",
@@ -1507,7 +1575,7 @@ class PlanningDesignTest(unittest.TestCase):
             for phase in skeleton["motion_phases"]
             if phase.get("motion_id") == "earth_orbit"
         )
-        earth_phase["source_ref"] = "content.scene_design.relationships[0]"
+        earth_phase["source_ref"] = "content.subject_motion[2].motion_semantics"
 
         rejected = toolkit.submit_scene_skeleton(skeleton)
 
@@ -1757,7 +1825,7 @@ class PlanningDesignTest(unittest.TestCase):
             local_components=["rotation", "scale"],
         )
         skeleton["motion_phases"][3]["timeline_event_id"] = "arrival_and_boarding"
-        skeleton["relations"][1]["timeline_event_id"] = "arrival_and_boarding"
+        skeleton["relations"][0]["timeline_event_id"] = "arrival_and_boarding"
         toolkit.objective_brief.scene_design["relationships"][0][
             "timeline_event_id"
         ] = "arrival_and_boarding"
@@ -1994,7 +2062,7 @@ class PlanningDesignTest(unittest.TestCase):
                 "direction_mode"
             ] = "none"
         skeleton = _pickup_skeleton()
-        skeleton["relations"][1].update(
+        skeleton["relations"][0].update(
             timeline_event_id="boarding",
             temporal_mode="at_start",
         )
@@ -2004,7 +2072,7 @@ class PlanningDesignTest(unittest.TestCase):
         toolkit.objective_brief.scene_design["relationships"][0][
             "temporal_mode"
         ] = "at_start"
-        del skeleton["relations"][2]
+        del skeleton["relations"][1]
         skeleton["motion_phases"][1].update(
             direction_mode="none",
             target_id=None,
@@ -2056,7 +2124,7 @@ class PlanningDesignTest(unittest.TestCase):
         )
         toolkit = ScenePlanningToolkit(objective)
         skeleton = _pickup_skeleton()
-        skeleton["relations"][1].update(
+        skeleton["relations"][0].update(
             timeline_event_id="boarding",
             temporal_mode="at_start",
         )
@@ -2066,7 +2134,7 @@ class PlanningDesignTest(unittest.TestCase):
         toolkit.objective_brief.scene_design["relationships"][0][
             "temporal_mode"
         ] = "at_start"
-        del skeleton["relations"][2]
+        del skeleton["relations"][1]
         skeleton["motion_phases"][1].update(direction_mode="none", target_id=None)
         skeleton["motion_phases"][5].update(direction_mode="none", target_id=None)
         skeleton["route_intents"][0].update(
@@ -2239,14 +2307,6 @@ def _desert_skeleton() -> dict:
         ],
         "relations": [
             {
-                "relation_id": "man_ground",
-                "kind": "ground_support",
-                "subject_id": "man_01",
-                "reference_id": "ground",
-                "source_status": "inferred",
-                "source_ref": "translation_parameters.subjects[0].ground_contact_position_m",
-            },
-            {
                 "relation_id": "ship_behind_man",
                 "kind": "camera_depth_order",
                 "subject_id": "ship_01",
@@ -2393,40 +2453,9 @@ def _typed_solar_toolkit() -> ScenePlanningToolkit:
             },
             "subject_motion": motions,
             "scene_design": source.objective_brief.scene_design
-            | {
-                "relationships": [
-                    {
-                        "type": "orbit_around",
-                        "subject_id": "earth",
-                        "reference_id": "sun",
-                        "timeline_event_id": None,
-                        "temporal_mode": "throughout",
-                        "strength": "hard",
-                        "source_status": "explicit",
-                        "source_text": "earth orbits sun",
-                    },
-                    {
-                        "type": "orbit_around",
-                        "subject_id": "moon",
-                        "reference_id": "earth",
-                        "timeline_event_id": None,
-                        "temporal_mode": "throughout",
-                        "strength": "hard",
-                        "source_status": "explicit",
-                        "source_text": "moon orbits earth",
-                    },
-                ]
-            },
+            | {"relationships": []},
             "explicit_requirements": [
                 *source.objective_brief.explicit_requirements,
-                ObjectiveRequirement(
-                    path="content.scene_design.relationships[0]",
-                    value="earth orbits sun",
-                ),
-                ObjectiveRequirement(
-                    path="content.scene_design.relationships[1]",
-                    value="moon orbits earth",
-                ),
                 ObjectiveRequirement(
                     path="content.subject_motion[1].motion_semantics",
                     value="earth relative circle around sun",
@@ -2481,14 +2510,6 @@ def _pickup_skeleton() -> dict:
             _symbolic_entity("car", "car", "vehicle", "vehicle_box", "large", 1),
         ],
         "relations": [
-            {
-                "relation_id": "man_road",
-                "kind": "ground_support",
-                "subject_id": "man",
-                "reference_id": "road",
-                "source_status": "inferred",
-                "source_ref": "translation_parameters.scene.asset_key",
-            },
             {
                 "relation_id": "car_stops_beside_man",
                 "kind": "proximity",

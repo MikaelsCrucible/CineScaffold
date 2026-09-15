@@ -68,7 +68,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 from cinescaffold.relationships import classify_relationship
 
-TOOLKIT_VERSION = "0.42"
+TOOLKIT_VERSION = "0.43"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -656,10 +656,10 @@ class ScenePlanningToolkit:
                 "closed_path": "closed=true 会确定性补上末段到首点",
                 "cycle_count": "闭合路径在 Track 时间段内的循环次数，可为正小数",
                 "nested_orbit_readability": (
-                    "嵌套 orbit_around 不得同相锁定；未指定周期时应让子轨道具有可辨识节奏"
+                    "嵌套相对闭合轨道不得同相锁定；未指定周期时应让子轨道具有可辨识节奏"
                 ),
                 "trajectory_selection": (
-                    "普通 orbit_around 使用 circle/ellipse；S 形使用 catmull_rom；"
+                    "普通相对公转使用 circle/ellipse；S 形使用 catmull_rom；"
                     "∞ 形使用 lemniscate；polyline 只用于明确折线路径"
                 ),
                 "analytic_path_defaults": {
@@ -2810,7 +2810,13 @@ class ScenePlanningToolkit:
         if "timeline" in checks:
             violations.extend(_timeline_violations(state))
         if "transforms" in checks or "rebuildability" in checks:
-            violations.extend(_transform_violations(state, self.profile))
+            violations.extend(
+                _transform_violations(
+                    state,
+                    self.objective_brief,
+                    self.profile,
+                )
+            )
         if "camera" in checks or "rebuildability" in checks:
             violations.extend(_camera_violations(state, self.profile))
         if "projection" in checks:
@@ -5382,7 +5388,7 @@ def _orbit_trajectory_violations(
             violations.append(
                 _violation(
                     "ORBIT_PATH_REQUIRED",
-                    f"orbit_around 必须使用 path_follow：{subject_id} -> {reference_id}",
+                    f"相对公转必须使用 path_follow：{subject_id} -> {reference_id}",
                     entity_ids=[subject_id, reference_id],
                     expected={"track_type": "path_follow"},
                     actual={"track_type": None},
@@ -5396,7 +5402,7 @@ def _orbit_trajectory_violations(
             violations.append(
                 _violation(
                     "ORBIT_REFERENCE_FRAME_INVALID",
-                    f"orbit_around 必须相对被环绕主体求值：{subject_id} -> {reference_id}",
+                    f"公转必须相对被环绕主体求值：{subject_id} -> {reference_id}",
                     entity_ids=[subject_id, reference_id],
                     expected={"space": "target_relative", "target_id": reference_id},
                     actual={"space": path.space, "target_id": path.target_id},
@@ -5415,7 +5421,7 @@ def _orbit_trajectory_violations(
                 _violation(
                     "ORBIT_TRAJECTORY_NOT_ANALYTIC",
                     (
-                        f"普通 orbit_around 不得用 {path.representation} 近似："
+                        f"普通相对公转不得用 {path.representation} 近似："
                         f"{subject_id} -> {reference_id}"
                     ),
                     entity_ids=[subject_id, reference_id],
@@ -5502,16 +5508,6 @@ def _objective_orbit_pairs(
     objective_brief: ObjectivePlanningBrief,
 ) -> set[tuple[str, str]]:
     pairs: set[tuple[str, str]] = set()
-    for item in objective_brief.scene_design.get("relationships", []):
-        if not isinstance(item, dict):
-            continue
-        meaning = classify_relationship(item)
-        if meaning is None or meaning.kind != "orbit":
-            continue
-        subject_id = item.get("subject_id")
-        reference_id = item.get("reference_id")
-        if isinstance(subject_id, str) and isinstance(reference_id, str):
-            pairs.add((subject_id, reference_id))
     for motion in objective_brief.subject_motion:
         if not isinstance(motion, dict):
             continue
@@ -5672,6 +5668,7 @@ def _direction_sweeps(directions: list[tuple[float, float, float]]) -> bool:
 
 def _transform_violations(
     state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
     profile: PlanningProfile,
 ) -> list[Violation]:
     violations: list[Violation] = []
@@ -5718,12 +5715,19 @@ def _transform_violations(
                         actual={"parent_scale": invalid_parent_scale[1]},
                     )
                 )
-    violations.extend(_ground_penetration_violations(state, profile))
+    violations.extend(
+        _ground_penetration_violations(
+            state,
+            objective_brief,
+            profile,
+        )
+    )
     return violations
 
 
 def _ground_penetration_violations(
     state: CandidateState,
+    objective_brief: ObjectivePlanningBrief,
     profile: PlanningProfile,
 ) -> list[Violation]:
     ground_ids = [
@@ -5758,6 +5762,17 @@ def _ground_penetration_violations(
             interaction = entity.ground_interaction
             if interaction.mode == "unconstrained":
                 continue
+            effective_mode = (
+                _effective_ground_mode(
+                    objective_brief,
+                    entity.entity_id,
+                    time_seconds,
+                    interaction.mode,
+                    interaction.source_status,
+                )
+                if interaction.ground_entity_id is not None
+                else interaction.mode
+            )
             if interaction.ground_entity_id:
                 ground_z = ground_levels.get(interaction.ground_entity_id)
                 if ground_z is None:
@@ -5804,7 +5819,7 @@ def _ground_penetration_violations(
                 continue
             violation = _ground_interaction_violation(
                 entity,
-                interaction.mode,
+                effective_mode,
                 penetration_m,
                 clearance_m,
                 ground_z,
@@ -5825,6 +5840,45 @@ def _ground_penetration_violations(
             )
         )
     return violations
+
+
+def _effective_ground_mode(
+    objective_brief: ObjectivePlanningBrief,
+    entity_id: str,
+    time_seconds: float,
+    default_mode: str,
+    source_status: str,
+) -> str:
+    """Require contact during typed ground phases of otherwise airborne subjects."""
+
+    if default_mode != "must_be_above" or source_status != "inferred":
+        return default_mode
+    subject_motions = [
+        motion
+        for motion in objective_brief.subject_motion
+        if isinstance(motion, dict) and motion.get("subject_id") == entity_id
+    ]
+    active_semantics = [
+        motion.get("motion_semantics")
+        for motion in subject_motions
+        if float(motion.get("start_time_seconds") or 0.0)
+        <= time_seconds
+        < float(
+            motion.get("end_time_seconds")
+            or objective_brief.timeline.get("duration_seconds")
+            or 0.0
+        )
+        and isinstance(motion.get("motion_semantics"), dict)
+    ]
+    if any(
+        semantics.get("motion_mode") == "carried"
+        or semantics.get("motion_type") in {"flying", "jumping"}
+        for semantics in active_semantics
+    ):
+        return "must_be_above"
+    if active_semantics:
+        return "must_touch"
+    return default_mode
 
 
 def _ground_interaction_violation(
@@ -6806,7 +6860,6 @@ def _equivalent_motion_source_refs(
 ) -> list[set[str]]:
     """识别同一客观运动在 Brief 中的等价来源路径。"""
     explicit_refs = {item.path for item in objective_brief.explicit_requirements}
-    relationships = objective_brief.scene_design.get("relationships", [])
     events = objective_brief.timeline.get("events", [])
     groups: list[set[str]] = []
     for motion_index, motion in enumerate(objective_brief.subject_motion):
@@ -6815,8 +6868,6 @@ def _equivalent_motion_source_refs(
         semantics = motion.get("motion_semantics")
         if not isinstance(semantics, dict):
             semantics = {}
-        subject_id = motion.get("subject_id")
-        target_id = semantics.get("target_id")
         refs = {
             ref
             for ref in (
@@ -6832,29 +6883,6 @@ def _equivalent_motion_source_refs(
             for event_index, event in enumerate(events):
                 if isinstance(event, dict) and event.get("id") == event_id:
                     ref = f"content.timeline.events[{event_index}]"
-                    if ref in explicit_refs:
-                        refs.add(ref)
-        typed_relative_path = (
-            semantics.get("direction_mode") == "relative_to_target"
-            and semantics.get("path_type") in {"circular", "elliptical"}
-            and isinstance(subject_id, str)
-            and isinstance(target_id, str)
-        )
-        if typed_relative_path or not semantics:
-            for relation_index, relationship in enumerate(relationships):
-                if not isinstance(relationship, dict):
-                    continue
-                meaning = classify_relationship(relationship)
-                is_orbit = meaning is not None and meaning.kind == "orbit"
-                if (
-                    is_orbit
-                    and relationship.get("subject_id") == subject_id
-                    and (
-                        not typed_relative_path
-                        or relationship.get("reference_id") == target_id
-                    )
-                ):
-                    ref = f"content.scene_design.relationships[{relation_index}]"
                     if ref in explicit_refs:
                         refs.add(ref)
         if len(refs) > 1:
@@ -6941,10 +6969,11 @@ def _equivalent_spatial_layer_source_refs(
                 )
                 if isinstance(item, str)
             }
-            relation_class = _depth_semantic_class(
-                " ".join(
-                    str(relationship.get(name) or "") for name in ("type", "strength")
-                )
+            meaning = classify_relationship(relationship)
+            relation_class = (
+                meaning.kind
+                if meaning is not None and meaning.kind in {"far", "proximity"}
+                else None
             )
             if content_ids & relation_ids and relation_class == layer_class:
                 refs.add(relation_ref)

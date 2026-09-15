@@ -320,7 +320,6 @@
           "type": "proximity",
           "subject_id": "car",
           "reference_id": "man",
-          "strength": "近距离",
           "source_status": "explicit",
           "source_text": "车停在了他身边",
           "timeline_event_id": "wait_and_arrive",
@@ -330,19 +329,8 @@
           "type": "proximity",
           "subject_id": "man",
           "reference_id": "car",
-          "strength": "近距离",
           "source_status": "inferred",
           "source_text": "他走到车旁准备上车",
-          "timeline_event_id": "boarding",
-          "temporal_mode": "at_end"
-        },
-        {
-          "type": "carried_by",
-          "subject_id": "man",
-          "reference_id": "car",
-          "strength": null,
-          "source_status": "inferred",
-          "source_text": "他上了车",
           "timeline_event_id": "boarding",
           "temporal_mode": "at_end"
         }

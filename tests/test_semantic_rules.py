@@ -264,7 +264,6 @@ class SemanticRulesTest(unittest.TestCase):
                     "type": "far_from",
                     "subject_id": "ship",
                     "reference_id": "man",
-                    "strength": "scene_relative",
                     "source_status": "explicit",
                     "source_text": "远处有巨大的飞船",
                     "timeline_event_id": None,
@@ -456,6 +455,60 @@ class SemanticRulesTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "不能全部覆盖完整镜头"):
             apply_translation_rules(content, self.rules, "先等待，然后离开")
+
+    def test_relationship_throughout_can_target_an_arbitrary_event_interval(
+        self,
+    ) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": entity_id,
+                "category": self._annotated(label, label),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            }
+            for entity_id, label in (("a", "主体A"), ("b", "主体B"))
+        ]
+        content["timeline"].update(
+            {
+                "duration_seconds": 10.0,
+                "duration_source_status": "explicit",
+                "events": [
+                    {
+                        "id": "temporary_near",
+                        "description": "二者短暂靠近",
+                        "start_time_seconds": 4.2,
+                        "end_time_seconds": 4.8,
+                        "reference_ids": ["a", "b"],
+                        "source_status": "explicit",
+                        "source_text": "二者在中途短暂靠近",
+                    }
+                ],
+            }
+        )
+        content["scene_design"]["relationships"] = [
+            {
+                "type": "proximity",
+                "subject_id": "a",
+                "reference_id": "b",
+                "source_status": "explicit",
+                "source_text": "二者在中途短暂靠近",
+                "timeline_event_id": "temporary_near",
+                "temporal_mode": "throughout",
+            }
+        ]
+
+        normalized, _ = apply_translation_rules(content, self.rules)
+
+        relation = normalized["scene_design"]["relationships"][0]
+        self.assertEqual(relation["timeline_event_id"], "temporary_near")
+        self.assertEqual(relation["temporal_mode"], "throughout")
+        event = normalized["timeline"]["events"][0]
+        self.assertEqual(
+            (event["start_time_seconds"], event["end_time_seconds"]),
+            (4.2, 4.8),
+        )
 
     def test_camera_only_motion_remains_static_scene(self) -> None:
         content = valid_model_output()
@@ -977,7 +1030,7 @@ class SemanticRulesTest(unittest.TestCase):
             ["sun", "earth"],
         )
 
-    def test_unique_orbit_relation_repairs_missing_closed_path_target(self) -> None:
+    def test_closed_path_requires_its_own_typed_target(self) -> None:
         content = valid_model_output()
         content["subjects"] = [
             {
@@ -1000,24 +1053,10 @@ class SemanticRulesTest(unittest.TestCase):
                 path_type="circular",
             )
         ]
-        content["scene_design"]["relationships"] = [
-            {
-                "type": "orbit_around",
-                "subject_id": "man_01",
-                "reference_id": "sun",
-                "strength": "explicit",
-                "source_status": "explicit",
-                "source_text": "围绕太阳运动",
-                "timeline_event_id": None,
-                "temporal_mode": "throughout",
-            }
-        ]
+        content["scene_design"]["relationships"] = []
 
-        normalized, _ = apply_translation_rules(content, self.rules)
-
-        semantics = normalized["subject_motion"][0]["motion_semantics"]
-        self.assertEqual(semantics["direction_mode"], "relative_to_target")
-        self.assertEqual(semantics["target_id"], "sun")
+        with self.assertRaisesRegex(ValueError, "相对闭合路径缺少有效几何目标"):
+            apply_translation_rules(content, self.rules)
 
     def test_orbit_relation_does_not_hide_conflicting_closed_path_direction(
         self,
@@ -1045,18 +1084,7 @@ class SemanticRulesTest(unittest.TestCase):
                 path_type="circular",
             )
         ]
-        content["scene_design"]["relationships"] = [
-            {
-                "type": "orbit_around",
-                "subject_id": "moon",
-                "reference_id": "earth",
-                "strength": "explicit",
-                "source_status": "explicit",
-                "source_text": "月亮绕地球公转",
-                "timeline_event_id": None,
-                "temporal_mode": "throughout",
-            }
-        ]
+        content["scene_design"]["relationships"] = []
 
         with self.assertRaisesRegex(ValueError, "相对闭合路径"):
             apply_translation_rules(content, self.rules)

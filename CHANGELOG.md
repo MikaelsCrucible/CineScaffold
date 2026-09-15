@@ -24,6 +24,7 @@
 
 ### Changed
 
+- Core 0.8.29 / Semantic Parser v0.13 / Toolkit v0.43 移除 Semantic 关系层的 `ground_support`、`orbit_around` 与 `carried_by` 重复协议，以及规范关系已能完整表达含义后仍可能产生冲突的自由文本 `strength`；`distance + strength`、中文关系别名等旧输入不再兼容或自动改写，非规范关系直接失败。Semantic 来源状态也不再暴露仅供 Planning 决策使用的 `agent_selected`。普通人物/车辆接地由 Toolkit 按环境、代理类型与类型化动作确定性建立，公转与载运分别只保留运动层的相对闭合路径和 `carried + carrier_id`。关系 `throughout` 现在明确表示所引用任意数值事件区间，而不是全镜头或三个固定时间点；Planning 继续以类型字段为权威，但允许用动作原文审计上游遗漏并显式失败，禁止静默关键词重解析。
 - Core 0.8.25 / Semantic Parser v0.12 / Toolkit v0.42 建立不可回退的当前产物边界：只接受 Cinematic Brief v0.7、Constraint Plan v0.2、Scene IR v0.2 和 Executor API v0.3；删除旧 Brief 投影、缺字段 Scene IR 自动升级、`legacy_frozen` 时长类型以及无类型运动的确定性猜测分支。旧中间产物必须重新生成，已交付 MP4/GLB 不受影响。
 - Cinematic Brief v0.7 要求每条主体动作和已声明事件直接提供数值时间范围；Schema 不再允许 `null` 后再由规则层猜测恢复。动态场景的缺省斜侧机位在 Validator 阈值上保留安全余量，避免浮点与场景焦点偏移造成候选恰好 hard-fail。
 - Core 0.8.23 / Toolkit v0.41 将所有独立主体位移统一为 `path_move`；公转只由 `relative_to_target + target_id + circle/ellipse` 表达，不再在 Planning 层重复提交 `orbit` kind、`orbit_around` direction 或 Skeleton Relation。旧版 Brief 的公转关系仍作为兼容输入确定性转换。
@@ -34,6 +35,7 @@
 
 ### Fixed
 
+- 混合地面/离地动作的主体不再因为全局 `must_be_above` 策略失去步行阶段的贴地校验；Validator 会按数值时刻读取类型化动作，在静止、步行、跑动和普通局部互动阶段要求接触，在飞行、跳跃和载运阶段只禁止穿地。接地判断不读取动作文本或实体名称。
 - Core 0.8.28 对 Provider HTTP 响应执行真正的总墙钟截止时间；DeepSeek 非流式空行保活仍可被解析，但不能刷新 `semantic_timeout`。HTTP、网络与超时异常新增稳定、无 Secret 的 Provider failure code，503 明确归类为 `provider_overloaded`，Planning 的 PydanticAI HTTP 异常使用同一状态码映射。底层仍不自动重试，避免在 usage 未知时制造重复费用。
 - Core 0.8.24 修复闭合目标相对路径被通用方向清理误伤的问题：`circular/elliptical + relative_to_target + target_id` 自身就是完整几何证据，不再要求重复的自然语言 `direction` 标注。若 motion 唯一缺失目标、但同一事件存在唯一规范公转关系，Semantic 会确定性补齐；多候选和冲突目标继续失败关闭。模糊线性“驶来/离开”的伪目标清理规则不变。
 - Core 0.8.23 / Toolkit v0.41 修复 Semantic 合法输出无法映射到 Planning Schema、`motion_id` 可借无关来源绕过类型校验、多个轨道证据按主体键互相覆盖、仅短暂重叠的相对路径冒充完整动作，以及闭合轨道冒充刚性携带绑定。Semantic、确定性构建器与 Skeleton Validator 现在共用同一闭合运动映射；相对运动和携带按完整区间并集检查，携带额外要求相对 Transform 恒定。

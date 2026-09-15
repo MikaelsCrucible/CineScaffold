@@ -4,34 +4,35 @@ import unittest
 
 from cinescaffold.planning.models import build_deterministic_scene_skeleton
 from cinescaffold.planning.objective import project_objective_brief
-from cinescaffold.relationships import normalize_scene_relationships
+from cinescaffold.relationships import (
+    classify_relationship,
+    normalize_scene_relationships,
+)
 from tests.helpers import valid_planning_brief
 
 
 class RelationshipBoundaryTest(unittest.TestCase):
-    def test_distance_strength_and_reverse_synonym_collapse_to_one_far_relation(
-        self,
-    ) -> None:
+    def test_duplicate_canonical_far_relations_collapse(self) -> None:
         content = {
             "scene_design": {
-                "spatial_layers": [
-                    {"layer": "远景", "content_ids": ["ship_01"]},
-                    {"layer": "前景", "content_ids": ["man_01"]},
-                ],
                 "relationships": [
                     {
-                        "type": "distance",
-                        "strength": "far",
-                        "subject_id": "man_01",
-                        "reference_id": "ship_01",
-                        "source_status": "explicit",
+                        "type": "far_from",
+                        "subject_id": "ship_01",
+                        "reference_id": "man_01",
+                        "source_status": "inferred",
+                        "source_text": None,
+                        "timeline_event_id": None,
+                        "temporal_mode": "throughout",
                     },
                     {
                         "type": "far_from",
-                        "strength": "scene_relative",
                         "subject_id": "ship_01",
                         "reference_id": "man_01",
                         "source_status": "explicit",
+                        "source_text": "远处有飞船",
+                        "timeline_event_id": None,
+                        "temporal_mode": "throughout",
                     },
                 ],
             }
@@ -44,44 +45,33 @@ class RelationshipBoundaryTest(unittest.TestCase):
             [
                 {
                     "type": "far_from",
-                    "strength": "scene_relative",
                     "subject_id": "ship_01",
                     "reference_id": "man_01",
                     "source_status": "explicit",
+                    "source_text": "远处有飞船",
                     "timeline_event_id": None,
                     "temporal_mode": "throughout",
                 }
             ],
         )
 
-    def test_generic_distance_uses_near_strength(self) -> None:
-        content = {
-            "scene_design": {
-                "relationships": [
-                    {
-                        "type": "distance",
-                        "strength": "near",
-                        "subject_id": "a",
-                        "reference_id": "b",
-                    }
-                ]
-            }
-        }
-
-        normalize_scene_relationships(content)
-
-        self.assertEqual(
-            content["scene_design"]["relationships"][0]["type"], "proximity"
+    def test_noncanonical_distance_is_not_reinterpreted_from_strength(self) -> None:
+        self.assertIsNone(
+            classify_relationship({"type": "distance", "strength": "near"})
         )
 
-    def test_smaller_than_is_oriented_toward_the_dominant_entity(self) -> None:
+    def test_canonical_scale_dominance_preserves_declared_orientation(self) -> None:
         content = {
             "scene_design": {
                 "relationships": [
                     {
-                        "type": "smaller_than",
+                        "type": "scale_dominance",
                         "subject_id": "moon",
                         "reference_id": "earth",
+                        "source_status": "explicit",
+                        "source_text": "月亮在画面中占主导",
+                        "timeline_event_id": None,
+                        "temporal_mode": "throughout",
                     }
                 ]
             }
@@ -91,8 +81,8 @@ class RelationshipBoundaryTest(unittest.TestCase):
 
         relation = content["scene_design"]["relationships"][0]
         self.assertEqual(relation["type"], "scale_dominance")
-        self.assertEqual(relation["subject_id"], "earth")
-        self.assertEqual(relation["reference_id"], "moon")
+        self.assertEqual(relation["subject_id"], "moon")
+        self.assertEqual(relation["reference_id"], "earth")
 
     def test_malformed_relationship_item_is_not_silently_deleted(self) -> None:
         content = {"scene_design": {"relationships": ["not-an-object"]}}
@@ -108,7 +98,6 @@ class RelationshipBoundaryTest(unittest.TestCase):
         brief["content"]["scene_design"]["relationships"] = [
             {
                 "type": "visually_echoes",
-                "strength": "subtle",
                 "subject_id": "ship_01",
                 "reference_id": "man_01",
                 "source_status": "inferred",
@@ -208,9 +197,7 @@ class RelationshipBoundaryTest(unittest.TestCase):
             )
         )
 
-    def test_explicit_ground_support_is_not_duplicated_by_environment_fallback(
-        self,
-    ) -> None:
+    def test_ground_contact_is_derived_without_a_semantic_relationship(self) -> None:
         brief = valid_planning_brief()
         brief["content"]["subjects"][1]["id"] = "road_01"
         brief["content"]["subjects"][1]["category"] = {
@@ -218,34 +205,12 @@ class RelationshipBoundaryTest(unittest.TestCase):
             "source_status": "explicit",
             "source_text": "路面上",
         }
-        brief["content"]["scene_design"]["relationships"] = [
-            {
-                "type": "ground_support",
-                "subject_id": "man_01",
-                "reference_id": "road_01",
-                "strength": None,
-                "source_status": "explicit",
-                "source_text": "男人站在路面上",
-                "timeline_event_id": None,
-                "temporal_mode": "throughout",
-            }
-        ]
+        brief["content"]["scene_design"]["relationships"] = []
         objective = project_objective_brief(brief).objective_brief
 
         skeleton = build_deterministic_scene_skeleton(objective)
 
-        self.assertEqual(
-            [
-                item
-                for item in skeleton["relations"]
-                if item["kind"] == "ground_support" and item["subject_id"] == "man_01"
-            ],
-            [
-                item
-                for item in skeleton["relations"]
-                if item["source_status"] == "explicit"
-            ],
-        )
+        self.assertFalse(skeleton["relations"])
         road = next(
             item for item in skeleton["entities"] if item["entity_id"] == "road_01"
         )

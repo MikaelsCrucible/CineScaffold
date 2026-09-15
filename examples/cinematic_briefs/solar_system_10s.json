@@ -202,28 +202,7 @@
         "source_text": null
       },
       "spatial_layers": [],
-      "relationships": [
-        {
-          "type": "orbit_around",
-          "subject_id": "earth",
-          "reference_id": "sun",
-          "strength": null,
-          "source_status": "explicit",
-          "source_text": "地球绕太阳公转",
-          "timeline_event_id": null,
-          "temporal_mode": "throughout"
-        },
-        {
-          "type": "orbit_around",
-          "subject_id": "moon",
-          "reference_id": "earth",
-          "strength": null,
-          "source_status": "explicit",
-          "source_text": "月亮绕地球公转",
-          "timeline_event_id": null,
-          "temporal_mode": "throughout"
-        }
-      ],
+      "relationships": [],
       "environmental_motion": []
     },
     "mood": {

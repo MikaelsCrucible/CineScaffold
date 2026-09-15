@@ -2047,11 +2047,10 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             NARRATIVE_FIDELITY_CHECKS,
         )
 
-    def test_equivalent_orbit_action_relationship_and_event_share_mapping(self) -> None:
+    def test_equivalent_orbit_action_direction_and_event_share_mapping(self) -> None:
         toolkit = _toolkit()
         action_ref = "content.subject_motion[0].action"
         direction_ref = "content.subject_motion[0].direction"
-        relationship_ref = "content.scene_design.relationships[0]"
         event_ref = "content.timeline.events[0]"
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
             update={
@@ -2069,16 +2068,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                         },
                     }
                 ],
-                "scene_design": {
-                    "relationships": [
-                        {
-                            "type": "orbits",
-                            "subject_id": "man_01",
-                            "reference_id": "ship_01",
-                            "source_status": "explicit",
-                        }
-                    ]
-                },
+                "scene_design": {"relationships": []},
                 "timeline": toolkit.objective_brief.timeline
                 | {
                     "events": [
@@ -2091,9 +2081,6 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                 "explicit_requirements": [
                     ObjectiveRequirement(path=action_ref, value="围绕飞船公转"),
                     ObjectiveRequirement(path=direction_ref, value="环绕飞船"),
-                    ObjectiveRequirement(
-                        path=relationship_ref, value={"type": "orbits"}
-                    ),
                     ObjectiveRequirement(path=event_ref, value={"id": "event_orbit"}),
                 ],
             }
@@ -2103,7 +2090,6 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             state.required_source_refs = [
                 action_ref,
                 direction_ref,
-                relationship_ref,
                 event_ref,
             ]
             state.runner_mapped_source_refs = []
@@ -2152,8 +2138,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     ],
                     "relationships": [
                         {
-                            "type": "distance",
-                            "strength": "远",
+                            "type": "far_from",
                             "subject_id": "ship_01",
                             "reference_id": "man_01",
                             "source_status": "explicit",
@@ -2164,7 +2149,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     ObjectiveRequirement(path=layer_ref, value={"layer": "远景"}),
                     ObjectiveRequirement(
                         path=relationship_ref,
-                        value={"type": "distance", "strength": "远"},
+                        value={"type": "far_from"},
                     ),
                 ],
             }
@@ -3874,6 +3859,7 @@ def _orbit_track(
     *,
     cycle_count: float = 1.0,
     plane_normal: tuple[float, float, float] | None = None,
+    source_ref: str = "content.subject_motion[0].motion_semantics",
 ) -> dict:
     track = {
         "track_id": track_id,
@@ -3889,7 +3875,7 @@ def _orbit_track(
             "parameterization": "arc_length",
             "orientation_mode": "keep",
         },
-        "source_ref": "content.scene_design.relationships[0]",
+        "source_ref": source_ref,
     }
     if plane_normal is not None:
         track["path"]["plane_normal"] = list(plane_normal)
@@ -3906,20 +3892,37 @@ def _relative_motion_toolkit(
     toolkit = _toolkit()
     toolkit.objective_brief = toolkit.objective_brief.model_copy(
         update={
-            "scene_design": {
-                "relationships": [
-                    {
-                        "type": "orbit_around",
-                        "subject_id": "earth",
-                        "reference_id": "sun",
+            "scene_design": {"relationships": []},
+            "subject_motion": [
+                {
+                    "motion_id": "earth_orbit",
+                    "subject_id": "earth",
+                    "start_time_seconds": 0.0,
+                    "end_time_seconds": 6.0,
+                    "motion_semantics": {
+                        "motion_mode": "self_propelled",
+                        "direction_mode": "relative_to_target",
+                        "target_id": "sun",
+                        "path_type": "circular",
+                        "timeline_event_id": None,
+                        "narrative_required": True,
                     },
-                    {
-                        "type": "orbit_around",
-                        "subject_id": "moon",
-                        "reference_id": "earth",
+                },
+                {
+                    "motion_id": "moon_orbit",
+                    "subject_id": "moon",
+                    "start_time_seconds": 0.0,
+                    "end_time_seconds": 6.0,
+                    "motion_semantics": {
+                        "motion_mode": "self_propelled",
+                        "direction_mode": "relative_to_target",
+                        "target_id": "earth",
+                        "path_type": "circular",
+                        "timeline_event_id": None,
+                        "narrative_required": True,
                     },
-                ]
-            }
+                },
+            ],
         }
     )
     toolkit.apply_entity_patch(
@@ -3936,6 +3939,7 @@ def _relative_motion_toolkit(
         "sun",
         10.0,
         plane_normal=plane_normal,
+        source_ref="content.subject_motion[0].motion_semantics",
     )
     if earth_radius_m != 10.0:
         earth_track["path"] = {
@@ -3961,6 +3965,7 @@ def _relative_motion_toolkit(
                 2.0,
                 cycle_count=moon_cycle_count,
                 plane_normal=plane_normal,
+                source_ref="content.subject_motion[1].motion_semantics",
             ),
         ],
         [],

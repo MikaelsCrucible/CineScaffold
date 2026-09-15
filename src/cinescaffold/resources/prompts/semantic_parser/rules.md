@@ -1,4 +1,4 @@
-# 四要素到六维 Cinematic Brief 规则 v0.11
+# 四要素到六维 Cinematic Brief 规则 v0.12
 
 ## 1. 任务边界
 
@@ -122,9 +122,9 @@
 - 当前不存在对应精细资产时仍输出资产索引，由下游使用白模代理环境回退。
 - 飞船等主要物体默认至少 10×10 m，大楼默认高度至少 20 m；“巨大/高耸”等明确尺度词在基础尺度上使用 1.5–3 倍范围。
 - “远处、后景、背景”等明确纵深词必须写入 `spatial_layers` 或主体关系；应用会把只存在于远景层中的实体确定性归一化为 Planning 可消费的纵深关系，不能因模型没有重复填写两个字段而丢失。
-- `scene_design.relationships` 的 `type` 与 `strength` 是一个整体，不能让其一遮蔽另一个。使用稳定关系类型：远景纵深=`far_from`、靠近=`proximity`、公转=`orbit_around`、尺度优势=`scale_dominance`；左右/前后/上下使用 `left_of/right_of/front_of/behind/above/below`。同一句事实不要同时输出同义或反向重复关系。
+- `scene_design.relationships` 只保留不能由单主体 `motion_semantics` 完整表达的双实体空间事实。使用稳定关系类型：远景纵深=`far_from`、靠近=`proximity`、尺度优势=`scale_dominance`；左右/前后/上下使用 `left_of/right_of/front_of/behind/above/below`。关系强弱不得另写自由文本 `strength`，所需含义必须由唯一的规范 `type` 表达。公转已由 `relative_to_target + target_id + circular/elliptical` 完整表达，载运已由 `carried + carrier_id` 表达，普通人物/车辆贴地由 Planning 根据类型化动作确定性生成；三者都不得重复写入本关系数组。同一句事实不要同时输出同义或反向重复关系。
 - 摄影机的 `focus_target_id` 只表示取景关注对象，`camera.movement.target_id` 只表示 `pan/follow/orbit` 的运动或旋转目标。两者可以相同，但不能互相代填；若输出 `pan/follow/orbit`，必须同时明确填写后者。主体动作的 `target_id` 更不能拿来填写摄影机字段。
-- 关系持续成立时使用 `temporal_mode=throughout` 且 `timeline_event_id=null`。只在某事件起点或终点成立时，必须填写对应事件 ID，并使用 `at_start` 或 `at_end`；不得把“到达终点时靠近”扩张成整个移动阶段持续靠近。
+- 时间轴事件可以位于镜头内任意数值时间区间。只有关系在全镜头始终成立时，才使用 `timeline_event_id=null + temporal_mode=throughout`。关系在任意中间时刻/区间成立时，必须创建带实际 `start_time_seconds/end_time_seconds` 的事件，并使用该 `timeline_event_id + throughout`；`throughout` 此时只覆盖该事件区间。只在事件起点或终点的瞬时边界成立时才使用 `at_start/at_end`。不得把只在中途成立的关系扩张成全镜头关系。
 
 ### 摄影机、构图与光源
 

@@ -43,10 +43,9 @@ def valid_planning_brief() -> dict[str, Any]:
     content["subject_motion"] = []
     content["scene_design"]["relationships"] = [
         {
-            "type": "远处",
+            "type": "far_from",
             "subject_id": "ship_01",
             "reference_id": "man_01",
-            "strength": "明显",
             "timeline_event_id": None,
             "temporal_mode": "throughout",
             "source_status": "explicit",

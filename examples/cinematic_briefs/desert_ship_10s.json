@@ -174,7 +174,6 @@
           "type": "far_from",
           "subject_id": "ship_01",
           "reference_id": "man_01",
-          "strength": "scene_relative",
           "source_status": "explicit",
           "source_text": "远处有巨大的飞船",
           "timeline_event_id": null,

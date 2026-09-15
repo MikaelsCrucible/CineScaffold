@@ -242,29 +242,6 @@ def build_deterministic_scene_skeleton(
         )
 
     relations: list[dict[str, Any]] = []
-    declared_ground_subjects = {
-        str(relationship.get("subject_id"))
-        for relationship in objective.scene_design.get("relationships", [])
-        if isinstance(relationship, dict)
-        and (meaning := classify_relationship(relationship)) is not None
-        and meaning.kind == "ground_support"
-        and relationship.get("subject_id") is not None
-    }
-    if ground_id:
-        for entity_id, category in categories.items():
-            if entity_id not in declared_ground_subjects and _mock_proxy_family(
-                category
-            ) in {"human_capsule", "vehicle_box"}:
-                relations.append(
-                    {
-                        "relation_id": f"ground_{entity_id}",
-                        "kind": "ground_support",
-                        "subject_id": entity_id,
-                        "reference_id": ground_id,
-                        "source_status": "inferred",
-                        "source_ref": "translation_parameters.scene.asset_key",
-                    }
-                )
     for index, relationship in enumerate(
         objective.scene_design.get("relationships", [])
     ):
@@ -273,19 +250,16 @@ def build_deterministic_scene_skeleton(
         if not subject_id or not reference_id:
             continue
         meaning = classify_relationship(relationship)
-        if meaning is None or meaning.kind == "carried_by":
-            # Unknown provider vocabulary must never silently become proximity.
-            # Carriage is represented by a typed Motion Phase, not a no-op relation.
-            continue
-        if meaning.kind == "orbit":
-            # Current Briefs carry orbit topology only in typed motion semantics.
-            continue
+        if meaning is None:
+            raise ValueError(
+                f"当前 Cinematic Brief 使用了非规范关系类型："
+                f"{relationship.get('type')}"
+            )
         kind = {
             "far": "camera_depth_order",
             "proximity": "proximity",
             "relative_position": "relative_position",
             "scale_dominance": "scale_dominance",
-            "ground_support": "ground_support",
         }[meaning.kind]
         relation_payload = {
             "relation_id": f"relationship_{index + 1:02d}",

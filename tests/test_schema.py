@@ -79,6 +79,53 @@ class SchemaTest(unittest.TestCase):
         with self.assertRaises(SchemaValidationError):
             validate_model_output(value, self.schema)
 
+    def test_redundant_relationship_types_are_not_part_of_semantic_contract(
+        self,
+    ) -> None:
+        for relation_type in ("ground_support", "orbit_around", "carried_by"):
+            with self.subTest(relation_type=relation_type):
+                value = valid_model_output()
+                value["scene_design"]["relationships"] = [
+                    {
+                        "type": relation_type,
+                        "subject_id": "subject",
+                        "reference_id": "reference",
+                        "source_status": "inferred",
+                        "source_text": None,
+                        "timeline_event_id": None,
+                        "temporal_mode": "throughout",
+                    }
+                ]
+
+                with self.assertRaises(SchemaValidationError):
+                    validate_model_output(value, self.schema)
+
+    def test_semantic_contract_rejects_planning_only_source_status(self) -> None:
+        value = valid_model_output()
+        value["summary"] = "测试"
+        value["camera"]["movement"]["type"]["source_status"] = "agent_selected"
+
+        with self.assertRaises(SchemaValidationError):
+            validate_model_output(value, self.schema)
+
+    def test_semantic_relationship_rejects_free_text_strength(self) -> None:
+        value = valid_model_output()
+        value["scene_design"]["relationships"] = [
+            {
+                "type": "proximity",
+                "subject_id": "a",
+                "reference_id": "b",
+                "strength": "非常近",
+                "source_status": "explicit",
+                "source_text": "二者非常近",
+                "timeline_event_id": None,
+                "temporal_mode": "throughout",
+            }
+        ]
+
+        with self.assertRaises(SchemaValidationError):
+            validate_model_output(value, self.schema)
+
 
 def _annotated(value: str) -> dict[str, str]:
     return {"value": value, "source_status": "explicit", "source_text": value}
