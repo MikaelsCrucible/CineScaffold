@@ -288,14 +288,14 @@ class SkeletonRouteAnchor(StrictModel):
     anchor_id: str = Field(min_length=1)
     phase_id: str = Field(
         min_length=1,
-        description="路径点所属的线性运动阶段",
-    )
-    boundary: Literal["at_start", "at_end"] = Field(
-        description="路径点约束该运动阶段的起点或终点",
+        description="包含该事件路径点的线性运动阶段",
     )
     relation_id: str = Field(
         min_length=1,
-        description="该路径点必须满足的既有 proximity 或 relative_position 关系",
+        description=(
+            "决定路径点时间与空间条件的既有 proximity 或 relative_position 关系；"
+            "时间由该关系引用的 timeline event 与 temporal_mode 唯一确定"
+        ),
     )
 
 
@@ -515,12 +515,10 @@ class SceneSkeleton(StrictModel):
             anchor_ids = [item.anchor_id for item in route.anchors]
             if len(anchor_ids) != len(set(anchor_ids)):
                 raise ValueError(f"Route Anchor ID 不得重复：{route.route_id}")
-            phase_boundaries = [
-                (item.phase_id, item.boundary) for item in route.anchors
-            ]
-            if len(phase_boundaries) != len(set(phase_boundaries)):
+            anchor_relation_ids = [item.relation_id for item in route.anchors]
+            if len(anchor_relation_ids) != len(set(anchor_relation_ids)):
                 raise ValueError(
-                    f"同一运动阶段边界只能有一个 Route Anchor：{route.route_id}"
+                    f"同一 Route Intent 不得重复锚定同一 Relation：{route.route_id}"
                 )
             for anchor in route.anchors:
                 phase = phases_by_id.get(anchor.phase_id)
@@ -548,6 +546,10 @@ class SceneSkeleton(StrictModel):
                 if route.subject_id not in {relation.subject_id, relation.reference_id}:
                     raise ValueError(
                         f"Route Anchor 的空间关系不包含运动主体：{anchor.anchor_id}"
+                    )
+                if relation.timeline_event_id is None:
+                    raise ValueError(
+                        f"Route Anchor 必须引用带 timeline event 的空间关系：{anchor.anchor_id}"
                     )
         return self
 
@@ -638,6 +640,46 @@ def validate_scene_skeleton(
         and frame_count > 0
         else 1.0 / 24.0
     )
+    relations_by_id = {item.relation_id: item for item in value.relations}
+    anchors_by_subject_time: dict[tuple[str, float], str] = {}
+    for route in value.route_intents:
+        for anchor in route.anchors:
+            phase = next(
+                item for item in value.motion_phases if item.phase_id == anchor.phase_id
+            )
+            relation = relations_by_id[anchor.relation_id]
+            anchor_time = route_anchor_time_seconds(
+                objective,
+                relation,
+                float(duration_value),
+                frame_step,
+                phase=phase,
+            )
+            phase_start, phase_end = phase_ranges[phase.phase_id]
+            phase_sample_end = max(
+                phase_start,
+                min(
+                    phase_end - frame_step,
+                    float(duration_value) - frame_step,
+                ),
+            )
+            if not (
+                phase_start - 1e-9
+                <= anchor_time
+                <= phase_sample_end + 1e-9
+            ):
+                raise ValueError(
+                    "Route Anchor 的事件时刻不在所引用 Motion Phase 内："
+                    f"{anchor.anchor_id}"
+                )
+            slot = (route.subject_id, round(anchor_time, 9))
+            previous = anchors_by_subject_time.get(slot)
+            if previous is not None:
+                raise ValueError(
+                    "同一主体在同一事件时刻只能有一个 Route Anchor："
+                    f"{previous} / {anchor.anchor_id}"
+                )
+            anchors_by_subject_time[slot] = anchor.anchor_id
     distance_relations: dict[
         tuple[str, str],
         list[tuple[str, tuple[float, float], str]],
@@ -815,6 +857,50 @@ def _relation_semantic_window(
     if relation.temporal_mode == "at_end":
         return (max(start, end - frame_step), end)
     return (start, end)
+
+
+def route_anchor_time_seconds(
+    objective: ObjectivePlanningBrief,
+    relation: SkeletonRelation,
+    duration: float,
+    frame_step: float,
+    *,
+    phase: SkeletonMotionPhase | None = None,
+) -> float:
+    """Resolve a symbolic relation to one renderable waypoint time."""
+
+    if relation.timeline_event_id is None:
+        raise ValueError(
+            f"Route Anchor Relation 缺少 timeline event：{relation.relation_id}"
+        )
+    start, end = _event_range(objective, relation.timeline_event_id, duration)
+    if relation.temporal_mode == "at_start":
+        anchor_time = start
+    elif relation.temporal_mode == "at_end":
+        anchor_time = max(start, min(end - frame_step, duration - frame_step))
+    else:
+        anchor_time = min((start + end) * 0.5, duration - frame_step)
+    if phase is None:
+        return anchor_time
+    phase_start, phase_end = _phase_range(objective, phase, duration)
+    phase_sample_end = max(
+        phase_start,
+        min(phase_end - frame_step, duration - frame_step),
+    )
+    # A motion endpoint remains the entity's world position until another
+    # translation phase changes it, so a later relation may legitimately bind
+    # the endpoint of the phase that brought the entity there.
+    return min(max(anchor_time, phase_start), phase_sample_end)
+
+
+def route_anchor_phase_time_range(
+    objective: ObjectivePlanningBrief,
+    phase: SkeletonMotionPhase,
+    duration: float,
+) -> tuple[float, float]:
+    """Expose the authoritative motion interval used by route validation."""
+
+    return _phase_range(objective, phase, duration)
 
 
 def _ranges_overlap(
@@ -1079,7 +1165,9 @@ def task_capability_slice(
             "decision_owner": "planning_agent",
             "coordinate_owner": "toolkit",
             "anchor_relations": ["proximity", "relative_position"],
-            "anchor_boundaries": ["at_start", "at_end"],
+            "anchor_timing": "referenced relation timeline event and temporal_mode",
+            "interior_event_waypoints": True,
+            "joint_moving_proximity": True,
             "continuity_modes": ["preserve_direction", "allow_turns"],
             "axis_reference": "optional entity horizontal long axis",
         },
@@ -1536,7 +1624,10 @@ def _place_entities(
     skeleton: SceneSkeleton,
     profile: PlanningProfile,
 ) -> None:
-    for index, entity in enumerate(candidate.entities.values()):
+    # Initial layout must not change when an equivalent Skeleton serializes its
+    # entity array in another order.
+    for index, entity_id in enumerate(sorted(candidate.entities)):
+        entity = candidate.entities[entity_id]
         if entity.proxy.type == "plane":
             position = (0.0, 0.0, 0.0)
         else:
@@ -1955,6 +2046,39 @@ def _build_motion(
     for phase in skeleton.motion_phases:
         grouped.setdefault(phase.subject_id, []).append(phase)
 
+    routes_by_subject = {item.subject_id: item for item in skeleton.route_intents}
+    route_directions: dict[str, tuple[float, float]] = {}
+    for subject_id, phases in grouped.items():
+        moving_phases = [
+            item
+            for item in phases
+            if item.kind == "path_move" and not _is_orbit_phase(item)
+        ]
+        if not moving_phases:
+            continue
+        direction = _selected_route_direction(moving_phases)
+        route = routes_by_subject.get(subject_id)
+        if (
+            route is not None
+            and route.axis_reference_id is not None
+            and all(item.direction_mode == "none" for item in moving_phases)
+        ):
+            direction = _reference_route_direction(
+                candidate.entities[route.axis_reference_id]
+            )
+        route_directions[subject_id] = direction
+    route_anchor_schedules = _route_anchor_schedules(
+        objective,
+        skeleton,
+        candidate,
+    )
+    joint_route_positions = _joint_proximity_route_positions(
+        skeleton,
+        candidate,
+        route_anchor_schedules,
+        route_directions,
+    )
+
     grouped_items = _motion_group_build_order(
         objective,
         grouped,
@@ -2041,28 +2165,17 @@ def _build_motion(
                 or (0.0, 0.0, _proxy_half_height(candidate.entities[subject_id]))
             )
             first = moving[0]
-            route = next(
-                (
-                    item
-                    for item in skeleton.route_intents
-                    if item.subject_id == subject_id
-                ),
-                None,
-            )
-            route_direction = _selected_route_direction(moving)
-            if (
-                route is not None
-                and route.axis_reference_id is not None
-                and all(item.direction_mode == "none" for item in moving)
-            ):
-                route_direction = _reference_route_direction(
-                    candidate.entities[route.axis_reference_id]
+            route = routes_by_subject.get(subject_id)
+            route_direction = route_directions[subject_id]
+            scheduled_anchors = route_anchor_schedules.get(subject_id, [])
+            anchors_by_phase: dict[
+                str,
+                list[tuple[float, SkeletonRouteAnchor]],
+            ] = {}
+            for anchor_time, anchor in scheduled_anchors:
+                anchors_by_phase.setdefault(anchor.phase_id, []).append(
+                    (anchor_time, anchor)
                 )
-            route_anchors = (
-                {(item.phase_id, item.boundary): item for item in route.anchors}
-                if route is not None
-                else {}
-            )
             first_motion_start = _phase_range(objective, first, duration)[0]
             has_prior_authored_state = any(
                 phase is not first
@@ -2074,18 +2187,20 @@ def _build_motion(
             can_stage_initial = (
                 first_motion_start <= 1e-9 or not has_prior_authored_state
             )
-            first_end_anchor = next(
+            first_route_anchor = next(
                 (
-                    (index, route_anchors[(phase.phase_id, "at_end")])
+                    (index, anchor_time, anchor)
                     for index, phase in enumerate(moving)
-                    if (phase.phase_id, "at_end") in route_anchors
+                    for anchor_time, anchor in anchors_by_phase.get(phase.phase_id, [])
                 ),
                 None,
             )
-            if can_stage_initial and first_end_anchor is not None:
-                anchor_index, anchor = first_end_anchor
-                anchor_phase = moving[anchor_index]
-                _, anchor_end = _phase_range(objective, anchor_phase, duration)
+            if (
+                can_stage_initial
+                and first_route_anchor is not None
+                and first_route_anchor[1] > first_motion_start + 1e-9
+            ):
+                anchor_index, anchor_time, anchor = first_route_anchor
                 waypoint = _route_anchor_position(
                     skeleton,
                     candidate,
@@ -2094,11 +2209,8 @@ def _build_motion(
                     anchor,
                     route_direction,
                     profile,
-                    _track_end_time(
-                        candidate,
-                        anchor_end,
-                        _phase_range(objective, anchor_phase, duration)[0],
-                    ),
+                    anchor_time,
+                    joint_route_positions,
                 )
                 travel_x, travel_y = route_direction
                 # Put the subject far enough before its first declared endpoint
@@ -2111,7 +2223,7 @@ def _build_motion(
             if (
                 first.direction_mode == "toward_target"
                 and first.target_id
-                and first_end_anchor is None
+                and first_route_anchor is None
                 and can_stage_initial
             ):
                 # 让“接近”阶段拥有可见的初始距离，避免代理一开始已经贴着目标。
@@ -2169,7 +2281,19 @@ def _build_motion(
                         ]
                     )
                     continue
-                start_anchor = route_anchors.get((phase.phase_id, "at_start"))
+                sample_end = _track_end_time(candidate, end, start)
+                phase_anchors = sorted(
+                    anchors_by_phase.get(phase.phase_id, []),
+                    key=lambda item: item[0],
+                )
+                start_anchor = next(
+                    (
+                        anchor
+                        for anchor_time, anchor in phase_anchors
+                        if math.isclose(anchor_time, start, abs_tol=1e-9)
+                    ),
+                    None,
+                )
                 if start_anchor is not None:
                     position = list(
                         _route_anchor_position(
@@ -2181,6 +2305,7 @@ def _build_motion(
                             previous_direction,
                             profile,
                             start,
+                            joint_route_positions,
                         )
                     )
                     if phase is first:
@@ -2191,13 +2316,9 @@ def _build_motion(
                         ].solved_transform.model_copy(
                             update={"translation_m": tuple(position)}
                         )
-                keyframes.append(
-                    TrackKeyframe(
-                        time_seconds=start,
-                        value=TransformValue(translation_m=tuple(position)),
-                        interpolation="smooth",
-                    )
-                )
+                phase_points: list[
+                    tuple[float, tuple[float, float, float], SkeletonRouteAnchor | None]
+                ] = [(start, tuple(position), start_anchor)]
                 hidden_at_end = any(
                     item.kind == "visibility"
                     and item.timeline_event_id == phase.timeline_event_id
@@ -2205,22 +2326,27 @@ def _build_motion(
                     and item.transition_at == "at_end"
                     for item in phases
                 )
-                previous_position = tuple(position)
-                end_anchor = route_anchors.get((phase.phase_id, "at_end"))
-                if end_anchor is not None:
-                    position = list(
-                        _route_anchor_position(
-                            skeleton,
-                            candidate,
-                            tracks,
-                            subject_id,
-                            end_anchor,
-                            previous_direction,
-                            profile,
-                            _track_end_time(candidate, end, start),
-                        )
+                for anchor_time, anchor in phase_anchors:
+                    if anchor_time <= start + 1e-9:
+                        continue
+                    waypoint = _route_anchor_position(
+                        skeleton,
+                        candidate,
+                        tracks,
+                        subject_id,
+                        anchor,
+                        previous_direction,
+                        profile,
+                        anchor_time,
+                        joint_route_positions,
                     )
-                else:
+                    phase_points.append((anchor_time, waypoint, anchor))
+                if not math.isclose(
+                    phase_points[-1][0],
+                    sample_end,
+                    abs_tol=1e-9,
+                ):
+                    endpoint_start = list(phase_points[-1][1])
                     endpoint_phase = phase
                     if (
                         phase.direction_mode == "away_from_target"
@@ -2229,12 +2355,12 @@ def _build_motion(
                         endpoint_phase = phase.model_copy(
                             update={"direction_mode": "none", "target_id": None}
                         )
-                    position = _linear_phase_endpoint(
+                    endpoint = _linear_phase_endpoint(
                         candidate,
                         endpoint_phase,
-                        position,
+                        endpoint_start,
                         tracks,
-                        _track_end_time(candidate, end, start),
+                        sample_end,
                         semantic_direction_mode=_objective_motion_direction(
                             objective,
                             phase,
@@ -2242,53 +2368,83 @@ def _build_motion(
                         hidden_at_end=hidden_at_end,
                         fallback_direction=previous_direction,
                     )
-                if phase.path_family == "parabolic":
-                    midpoint_time = start + (end - start) * 0.5
-                    horizontal_distance = math.hypot(
-                        position[0] - previous_position[0],
-                        position[1] - previous_position[1],
-                    )
-                    midpoint = (
-                        (previous_position[0] + position[0]) * 0.5,
-                        (previous_position[1] + position[1]) * 0.5,
-                        max(previous_position[2], position[2])
-                        + max(1.0, horizontal_distance * 0.25),
-                    )
+                    phase_points.append((sample_end, tuple(endpoint), None))
+
+                for point_index, (point_time, point_position, _) in enumerate(
+                    phase_points
+                ):
+                    if point_index == 0:
+                        keyframes.append(
+                            TrackKeyframe(
+                                time_seconds=point_time,
+                                value=TransformValue(
+                                    translation_m=point_position
+                                ),
+                                interpolation="smooth",
+                            )
+                        )
+                        continue
+                    previous_time, previous_position, _ = phase_points[
+                        point_index - 1
+                    ]
+                    if phase.path_family == "parabolic":
+                        midpoint_time = previous_time + (
+                            point_time - previous_time
+                        ) * 0.5
+                        horizontal_distance = math.hypot(
+                            point_position[0] - previous_position[0],
+                            point_position[1] - previous_position[1],
+                        )
+                        midpoint = (
+                            (previous_position[0] + point_position[0]) * 0.5,
+                            (previous_position[1] + point_position[1]) * 0.5,
+                            max(previous_position[2], point_position[2])
+                            + max(1.0, horizontal_distance * 0.25),
+                        )
+                        keyframes.append(
+                            TrackKeyframe(
+                                time_seconds=midpoint_time,
+                                value=TransformValue(translation_m=midpoint),
+                                interpolation="smooth",
+                            )
+                        )
+                    delta_x = point_position[0] - previous_position[0]
+                    delta_y = point_position[1] - previous_position[1]
+                    delta_length = math.hypot(delta_x, delta_y)
+                    if delta_length > 1e-9:
+                        proposed_direction = (
+                            delta_x / delta_length,
+                            delta_y / delta_length,
+                        )
+                        if (
+                            route is not None
+                            and route.continuity == "preserve_direction"
+                            and proposed_direction[0] * previous_direction[0]
+                            + proposed_direction[1] * previous_direction[1]
+                            <= 0.0
+                        ):
+                            raise ValueError(
+                                f"Route Intent {route.route_id} 的路径点导致运动方向反转："
+                                f"previous={previous_direction}, proposed={proposed_direction}, "
+                                f"phase={phase.phase_id}"
+                            )
+                        previous_direction = proposed_direction
                     keyframes.append(
                         TrackKeyframe(
-                            time_seconds=midpoint_time,
-                            value=TransformValue(translation_m=midpoint),
-                            interpolation="smooth",
+                            time_seconds=point_time,
+                            value=TransformValue(translation_m=point_position),
+                            interpolation=(
+                                "step"
+                                if math.isclose(
+                                    point_time,
+                                    sample_end,
+                                    abs_tol=1e-9,
+                                )
+                                else "smooth"
+                            ),
                         )
                     )
-                delta_x = position[0] - previous_position[0]
-                delta_y = position[1] - previous_position[1]
-                delta_length = math.hypot(delta_x, delta_y)
-                if delta_length > 1e-9:
-                    proposed_direction = (
-                        delta_x / delta_length,
-                        delta_y / delta_length,
-                    )
-                    if (
-                        route is not None
-                        and route.continuity == "preserve_direction"
-                        and proposed_direction[0] * previous_direction[0]
-                        + proposed_direction[1] * previous_direction[1]
-                        <= 0.0
-                    ):
-                        raise ValueError(
-                            f"Route Intent {route.route_id} 的路径点导致运动方向反转："
-                            f"previous={previous_direction}, proposed={proposed_direction}, "
-                            f"phase={phase.phase_id}"
-                        )
-                    previous_direction = proposed_direction
-                keyframes.append(
-                    TrackKeyframe(
-                        time_seconds=_track_end_time(candidate, end, start),
-                        value=TransformValue(translation_m=tuple(position)),
-                        interpolation="step",
-                    )
-                )
+                position = list(phase_points[-1][1])
             track = TrackSpec(
                 track_id=f"design_motion_{subject_id}",
                 target_entity_id=subject_id,
@@ -4123,6 +4279,113 @@ def _selected_route_direction(
     return (1.0, 0.0)
 
 
+def _route_anchor_schedules(
+    objective: ObjectivePlanningBrief,
+    skeleton: SceneSkeleton,
+    candidate: CandidateState,
+) -> dict[str, list[tuple[float, SkeletonRouteAnchor]]]:
+    """Order each subject's symbolic waypoints by their semantic event time."""
+
+    relations = {item.relation_id: item for item in skeleton.relations}
+    phases = {item.phase_id: item for item in skeleton.motion_phases}
+    frame_step = (
+        candidate.timeline.fps_denominator / candidate.timeline.fps_numerator
+    )
+    schedules: dict[str, list[tuple[float, SkeletonRouteAnchor]]] = {}
+    for route in skeleton.route_intents:
+        schedules[route.subject_id] = sorted(
+            (
+                (
+                    route_anchor_time_seconds(
+                        objective,
+                        relations[anchor.relation_id],
+                        candidate.timeline.duration_seconds,
+                        frame_step,
+                        phase=phases[anchor.phase_id],
+                    ),
+                    anchor,
+                )
+                for anchor in route.anchors
+            ),
+            key=lambda item: (item[0], item[1].anchor_id),
+        )
+    return schedules
+
+
+def _joint_proximity_route_positions(
+    skeleton: SceneSkeleton,
+    candidate: CandidateState,
+    schedules: dict[str, list[tuple[float, SkeletonRouteAnchor]]],
+    route_directions: dict[str, tuple[float, float]],
+) -> dict[tuple[str, str], tuple[float, float, float]]:
+    """Solve both sides of one moving proximity event without build-order bias."""
+
+    anchors_by_relation: dict[
+        str,
+        list[tuple[str, float, SkeletonRouteAnchor]],
+    ] = {}
+    for subject_id, anchors in schedules.items():
+        for time_seconds, anchor in anchors:
+            anchors_by_relation.setdefault(anchor.relation_id, []).append(
+                (subject_id, time_seconds, anchor)
+            )
+
+    solved: dict[tuple[str, str], tuple[float, float, float]] = {}
+    relations = {item.relation_id: item for item in skeleton.relations}
+    for relation_id, bindings in anchors_by_relation.items():
+        relation = relations[relation_id]
+        if relation.kind != "proximity":
+            continue
+        by_subject = {
+            subject_id: (time_seconds, anchor)
+            for subject_id, time_seconds, anchor in bindings
+        }
+        participants = {relation.subject_id, relation.reference_id}
+        if set(by_subject) != participants:
+            continue
+
+        subject = candidate.entities[relation.subject_id]
+        reference = candidate.entities[relation.reference_id]
+        subject_position = subject.solved_transform.translation_m or (
+            0.0,
+            0.0,
+            _proxy_half_height(subject),
+        )
+        reference_position = reference.solved_transform.translation_m or (
+            0.0,
+            0.0,
+            _proxy_half_height(reference),
+        )
+        center_x = (subject_position[0] + reference_position[0]) * 0.5
+        center_y = (subject_position[1] + reference_position[1]) * 0.5
+        route_direction = route_directions.get(relation.subject_id, (1.0, 0.0))
+        event_time = sum(item[0] for item in by_subject.values()) / len(by_subject)
+        route_progress = 8.0 * event_time / candidate.timeline.duration_seconds
+        center_x += route_direction[0] * route_progress
+        center_y += route_direction[1] * route_progress
+        lateral = (-route_direction[1], route_direction[0])
+        clearance = max(
+            0.75,
+            _proxy_lateral_radius(subject, route_direction)
+            + _proxy_lateral_radius(reference, route_direction)
+            + 0.25,
+        )
+        half_clearance = clearance * 0.5
+        subject_anchor = by_subject[relation.subject_id][1]
+        reference_anchor = by_subject[relation.reference_id][1]
+        solved[(relation.subject_id, subject_anchor.anchor_id)] = (
+            center_x - lateral[0] * half_clearance,
+            center_y - lateral[1] * half_clearance,
+            subject_position[2],
+        )
+        solved[(relation.reference_id, reference_anchor.anchor_id)] = (
+            center_x + lateral[0] * half_clearance,
+            center_y + lateral[1] * half_clearance,
+            reference_position[2],
+        )
+    return solved
+
+
 def _reference_route_direction(entity: EntitySpec) -> tuple[float, float]:
     """Use a reference proxy's longest horizontal axis without exposing meters."""
 
@@ -4143,8 +4406,16 @@ def _route_anchor_position(
     route_direction: tuple[float, float],
     profile: PlanningProfile,
     time_seconds: float,
+    joint_positions: dict[
+        tuple[str, str],
+        tuple[float, float, float],
+    ],
 ) -> tuple[float, float, float]:
     """Resolve one symbolic route anchor into a validated world-space waypoint."""
+
+    joint_position = joint_positions.get((subject_id, anchor.anchor_id))
+    if joint_position is not None:
+        return joint_position
 
     relation = next(
         item for item in skeleton.relations if item.relation_id == anchor.relation_id

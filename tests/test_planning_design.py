@@ -2177,6 +2177,137 @@ class PlanningDesignTest(unittest.TestCase):
 
         self.assertEqual([item.id for item in failures], ["violation_1"])
 
+    def test_one_motion_can_use_multiple_event_timed_route_anchors(self) -> None:
+        toolkit, skeleton = _paired_mover_route_case(two_events=True)
+
+        accepted = toolkit.submit_scene_skeleton(skeleton)
+        self.assertEqual(accepted["status"], "ok", accepted)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
+        candidate = next(iter(toolkit._design_options.values())).candidate
+
+        for entity_id in ("actor_a", "actor_b"):
+            track = candidate.motion_tracks[f"design_motion_{entity_id}"]
+            times = [item.time_seconds for item in track.keyframes]
+            self.assertIn(2.5, times)
+            self.assertIn(4.5, times)
+            resolver_before = _WorldTransformResolver(
+                candidate,
+                2.5 - 1 / 24,
+                toolkit.profile,
+            )
+            resolver_at = _WorldTransformResolver(candidate, 2.5, toolkit.profile)
+            resolver_after = _WorldTransformResolver(
+                candidate,
+                2.5 + 1 / 24,
+                toolkit.profile,
+            )
+            before = resolver_before.entity(entity_id).translation_m
+            at = resolver_at.entity(entity_id).translation_m
+            after = resolver_after.entity(entity_id).translation_m
+            self.assertGreater(math.dist(before, at), 1e-7)
+            self.assertGreater(math.dist(at, after), 1e-7)
+
+        self.assertTrue(
+            toolkit._validate(candidate, ["motion", "hard_semantics"]).hard_pass
+        )
+
+    def test_moving_proximity_participants_are_jointly_anchored(self) -> None:
+        toolkit, skeleton = _paired_mover_route_case(two_events=False)
+        reverse_toolkit, reverse_skeleton = _paired_mover_route_case(two_events=False)
+        reverse_skeleton["entities"] = [
+            reverse_skeleton["entities"][0],
+            *reversed(reverse_skeleton["entities"][1:]),
+        ]
+        reverse_skeleton["route_intents"] = list(
+            reversed(reverse_skeleton["route_intents"])
+        )
+
+        candidates = []
+        for current_toolkit, current_skeleton in (
+            (toolkit, skeleton),
+            (reverse_toolkit, reverse_skeleton),
+        ):
+            accepted = current_toolkit.submit_scene_skeleton(current_skeleton)
+            self.assertEqual(accepted["status"], "ok", accepted)
+            options = current_toolkit.request_design_options(max_options=1)
+            self.assertTrue(options["data"]["options"], options)
+            candidates.append(
+                next(iter(current_toolkit._design_options.values())).candidate
+            )
+
+        solved_positions = []
+        for candidate in candidates:
+            resolver = _WorldTransformResolver(candidate, 2.5, toolkit.profile)
+            first = resolver.entity("actor_a")
+            second = resolver.entity("actor_b")
+            self.assertLessEqual(
+                math.dist(first.translation_m, second.translation_m),
+                2.0,
+            )
+            _, surface_clearance, _ = surface_clearance_ratio(
+                candidate.entities["actor_a"].proxy,
+                first,
+                candidate.entities["actor_b"].proxy,
+                second,
+                ground_plane=True,
+            )
+            self.assertGreaterEqual(
+                surface_clearance,
+                -toolkit.profile.numeric_tolerance,
+            )
+            solved_positions.append((first.translation_m, second.translation_m))
+        self.assertEqual(solved_positions[0], solved_positions[1])
+
+    def test_validator_rejects_stalled_motion_before_an_internal_anchor(self) -> None:
+        toolkit, skeleton = _paired_mover_route_case(two_events=False)
+        toolkit.submit_scene_skeleton(skeleton)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
+        candidate = next(iter(toolkit._design_options.values())).candidate.model_copy(
+            deep=True
+        )
+        track = candidate.motion_tracks["design_motion_actor_a"]
+        anchor = next(item for item in track.keyframes if item.time_seconds == 2.5)
+        prior = max(
+            (item for item in track.keyframes if item.time_seconds < 2.5),
+            key=lambda item: item.time_seconds,
+        )
+        prior.value = anchor.value.model_copy(deep=True)
+
+        report = toolkit._validate(candidate, ["motion"])
+
+        self.assertIn(
+            "ROUTE_ANCHOR_MOTION_DISCONTINUITY",
+            {item.code for item in report.violations},
+        )
+        self.assertFalse(report.hard_pass)
+
+    def test_deterministic_skeleton_anchors_every_moving_proximity_participant(
+        self,
+    ) -> None:
+        toolkit, _ = _paired_mover_route_case(two_events=False)
+
+        skeleton = build_deterministic_scene_skeleton(toolkit.objective_brief)
+        anchored_subjects = {
+            route["subject_id"]
+            for route in skeleton["route_intents"]
+            if any(
+                anchor["relation_id"] == "relationship_01"
+                for anchor in route["anchors"]
+            )
+        }
+
+        self.assertEqual(anchored_subjects, {"actor_a", "actor_b"})
+        self.assertNotIn("boundary", str(skeleton["route_intents"]))
+
+    def test_route_anchor_rejects_removed_phase_boundary_contract(self) -> None:
+        _, skeleton = _paired_mover_route_case(two_events=False)
+        skeleton["route_intents"][0]["anchors"][0]["boundary"] = "at_end"
+
+        with self.assertRaises(ValidationError):
+            SceneSkeleton.model_validate(skeleton)
+
     def test_scene_skeleton_rejects_special_board_motion_kind(self) -> None:
         value = _pickup_skeleton()
         value["motion_phases"][2]["kind"] = "board"
@@ -2591,7 +2722,6 @@ def _pickup_skeleton() -> dict:
                     {
                         "anchor_id": "car_arrival_waypoint",
                         "phase_id": "car_arrive",
-                        "boundary": "at_end",
                         "relation_id": "car_stops_beside_man",
                     }
                 ],
@@ -2600,6 +2730,218 @@ def _pickup_skeleton() -> dict:
         ],
         "camera_intent": _symbolic_camera(None),
     }
+
+
+def _paired_mover_route_case(
+    *,
+    two_events: bool,
+) -> tuple[ScenePlanningToolkit, dict]:
+    source = _desert_toolkit()
+    objective = source.objective_brief.model_copy(deep=True)
+    event_specs = [
+        {
+            "id": "near_event_1",
+            "description": "two moving entities are near",
+            "start_time_seconds": 2.0,
+            "end_time_seconds": 3.0,
+            "reference_ids": ["actor_a", "actor_b"],
+            "source_status": "inferred",
+        }
+    ]
+    if two_events:
+        event_specs.append(
+            {
+                "id": "near_event_2",
+                "description": "the same entities are near again",
+                "start_time_seconds": 4.0,
+                "end_time_seconds": 5.0,
+                "reference_ids": ["actor_a", "actor_b"],
+                "source_status": "inferred",
+            }
+        )
+    move_events = [
+        {
+            "id": "move_a",
+            "description": "actor a moves",
+            "start_time_seconds": 0.0,
+            "end_time_seconds": 6.0,
+            "reference_ids": ["actor_a"],
+            "source_status": "inferred",
+        },
+        {
+            "id": "move_b",
+            "description": "actor b moves",
+            "start_time_seconds": 0.0,
+            "end_time_seconds": 6.0,
+            "reference_ids": ["actor_b"],
+            "source_status": "inferred",
+        },
+    ]
+
+    def motion(subject_id: str, event_id: str, motion_id: str) -> dict:
+        return {
+            "motion_id": motion_id,
+            "subject_id": subject_id,
+            "action": {
+                "value": "move",
+                "source_status": "inferred",
+                "source_text": None,
+            },
+            "motion_semantics": {
+                "action_kind": "locomotion",
+                "motion_type": "moving",
+                "motion_mode": "self_propelled",
+                "direction_mode": "none",
+                "target_id": None,
+                "carrier_id": None,
+                "path_type": "linear",
+                "timeline_event_id": event_id,
+                "narrative_required": True,
+                "postconditions": {
+                    "contained_by_id": None,
+                    "external_visibility": "unchanged",
+                },
+                "source_status": "inferred",
+                "source_text": None,
+            },
+            "direction": {
+                "value": None,
+                "source_status": "unknown",
+                "source_text": None,
+            },
+            "speed": {
+                "value": None,
+                "source_status": "unknown",
+                "source_text": None,
+            },
+            "trajectory": {
+                "value": "linear",
+                "source_status": "inferred",
+                "source_text": None,
+            },
+            "start_time_seconds": 0.0,
+            "end_time_seconds": 6.0,
+            "secondary_motion": [],
+        }
+
+    relationships = [
+        {
+            "type": "proximity",
+            "subject_id": "actor_a",
+            "reference_id": "actor_b",
+            "timeline_event_id": event["id"],
+            "temporal_mode": "throughout",
+            "source_status": "inferred",
+            "source_text": None,
+        }
+        for event in event_specs
+    ]
+    objective.subjects[0]["id"] = "actor_a"
+    objective.subjects[1]["id"] = "actor_b"
+    objective = objective.model_copy(
+        update={
+            "subject_motion": [
+                motion("actor_a", "move_a", "motion_a"),
+                motion("actor_b", "move_b", "motion_b"),
+            ],
+            "scene_dynamics": {
+                "mode": "dynamic",
+                "source_status": "inferred",
+                "reason": "both entities move",
+            },
+            "scene_design": objective.scene_design
+            | {"relationships": relationships},
+            "timeline": objective.timeline
+            | {
+                "events": [*move_events, *event_specs],
+                "relations": [],
+            },
+            "explicit_requirements": [
+                item
+                for item in objective.explicit_requirements
+                if not item.path.startswith("content.scene_design.relationships[")
+            ],
+        }
+    )
+    toolkit = ScenePlanningToolkit(objective)
+
+    relations = [
+        {
+            "relation_id": f"near_relation_{index}",
+            "kind": "proximity",
+            "subject_id": "actor_a",
+            "reference_id": "actor_b",
+            "timeline_event_id": event["id"],
+            "temporal_mode": "throughout",
+            "source_status": "inferred",
+            "source_ref": f"content.scene_design.relationships[{index - 1}]",
+        }
+        for index, event in enumerate(event_specs, start=1)
+    ]
+    anchors = {
+        subject_id: [
+            {
+                "anchor_id": f"{subject_id}_near_{index}",
+                "phase_id": f"{subject_id}_move",
+                "relation_id": relation["relation_id"],
+            }
+            for index, relation in enumerate(relations, start=1)
+        ]
+        for subject_id in ("actor_a", "actor_b")
+    }
+    skeleton = {
+        "entities": [
+            {
+                "entity_id": "ground",
+                "semantic_type": "ground",
+                "role": "environment",
+                "proxy_family": "ground_plane",
+                "scale_intent": "large",
+                "source_refs": [],
+            },
+            _symbolic_entity(
+                "actor_a", "human", "mover", "human_capsule", "human", 0
+            ),
+            _symbolic_entity(
+                "actor_b", "human", "mover", "human_capsule", "human", 1
+            ),
+        ],
+        "relations": relations,
+        "motion_phases": [
+            _symbolic_phase(
+                "actor_a_move",
+                "actor_a",
+                "path_move",
+                0,
+                event="move_a",
+                path="linear",
+                status="inferred",
+                motion_id="motion_a",
+            ),
+            _symbolic_phase(
+                "actor_b_move",
+                "actor_b",
+                "path_move",
+                1,
+                event="move_b",
+                path="linear",
+                status="inferred",
+                motion_id="motion_b",
+            ),
+        ],
+        "route_intents": [
+            {
+                "route_id": f"route_{subject_id}",
+                "subject_id": subject_id,
+                "anchors": anchors[subject_id],
+                "continuity": "preserve_direction",
+            }
+            for subject_id in ("actor_a", "actor_b")
+        ],
+        "camera_intent": _desert_skeleton()["camera_intent"]
+        | {"focus_target_id": "actor_a"},
+    }
+    return toolkit, skeleton
 
 
 def _symbolic_entity(

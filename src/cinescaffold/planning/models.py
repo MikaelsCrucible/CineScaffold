@@ -21,6 +21,7 @@ from pydantic_ai.usage import RequestUsage
 from cinescaffold.camera_semantics import classify_camera_movement
 from cinescaffold.errors import ConfigurationError
 from cinescaffold.motion_semantics import planning_motion_shape
+from cinescaffold.planning.design import SkeletonRelation, route_anchor_time_seconds
 from cinescaffold.planning.objective import ObjectivePlanningBrief
 from cinescaffold.relationships import classify_relationship
 
@@ -426,56 +427,91 @@ def build_deterministic_scene_skeleton(
                 }
             )
 
-    event_ends = {
-        str(item.get("id")): float(item["end_time_seconds"])
+    event_ids = {
+        str(item.get("id"))
         for item in objective.timeline.get("events", [])
         if item.get("id") is not None
+        and isinstance(item.get("start_time_seconds"), (int, float))
         and isinstance(item.get("end_time_seconds"), (int, float))
     }
     route_anchors: dict[str, list[dict[str, Any]]] = {}
-    used_boundaries: set[tuple[str, str]] = set()
+    used_anchor_bindings: set[tuple[str, str]] = set()
+    duration_node = objective.timeline.get("duration_resolution")
+    frame_count = (
+        duration_node.get("frame_count") if isinstance(duration_node, dict) else None
+    )
+    duration_seconds = (
+        duration_node.get("resolved_duration_seconds")
+        if isinstance(duration_node, dict)
+        else objective.timeline.get("duration_seconds")
+    )
+    frame_step = (
+        float(duration_seconds) / float(frame_count)
+        if isinstance(duration_seconds, (int, float))
+        and isinstance(frame_count, int)
+        and frame_count > 0
+        else 1.0 / 24.0
+    )
     for relation in relations:
         event_id = relation.get("timeline_event_id")
         if (
             relation.get("kind") != "proximity"
-            or relation.get("temporal_mode") != "at_end"
-            or event_id not in event_ends
+            or event_id not in event_ids
         ):
             continue
-        anchor_time = event_ends[event_id]
-        participants = {relation["subject_id"], relation["reference_id"]}
-        exact_candidates = [
-            (phase_ranges[phase["phase_id"]][1], phase)
-            for phase in phases
-            if phase.get("kind") == "path_move"
-            and phase.get("subject_id") in participants
-            and phase.get("timeline_event_id") == event_id
-            and phase["phase_id"] in phase_ranges
-        ]
-        candidates = exact_candidates or [
-            (phase_ranges[phase["phase_id"]][1], phase)
-            for phase in phases
-            if phase.get("kind") == "path_move"
-            and phase.get("subject_id") in participants
-            and phase["phase_id"] in phase_ranges
-            and abs(phase_ranges[phase["phase_id"]][1] - anchor_time) <= 1e-6
-        ]
-        if not candidates:
-            continue
-        _, phase = max(candidates, key=lambda item: item[0])
-        boundary = (phase["phase_id"], "at_end")
-        if boundary in used_boundaries:
-            continue
-        used_boundaries.add(boundary)
-        subject_id = str(phase["subject_id"])
-        route_anchors.setdefault(subject_id, []).append(
-            {
-                "anchor_id": f"route_anchor_{relation['relation_id']}",
-                "phase_id": phase["phase_id"],
-                "boundary": "at_end",
-                "relation_id": relation["relation_id"],
-            }
+        anchor_time = route_anchor_time_seconds(
+            objective,
+            SkeletonRelation.model_validate(relation),
+            float(duration_seconds),
+            frame_step,
         )
+        participants = {relation["subject_id"], relation["reference_id"]}
+        for subject_id in sorted(participants):
+            exact_candidates = [
+                phase
+                for phase in phases
+                if phase.get("kind") == "path_move"
+                and phase.get("subject_id") == subject_id
+                and phase.get("timeline_event_id") == event_id
+                and phase["phase_id"] in phase_ranges
+                and phase_ranges[phase["phase_id"]][0] - 1e-6
+                <= anchor_time
+                <= phase_ranges[phase["phase_id"]][1] + 1e-6
+            ]
+            candidates = exact_candidates or [
+                phase
+                for phase in phases
+                if phase.get("kind") == "path_move"
+                and phase.get("subject_id") == subject_id
+                and phase["phase_id"] in phase_ranges
+                and phase_ranges[phase["phase_id"]][0] - 1e-6
+                <= anchor_time
+                <= phase_ranges[phase["phase_id"]][1] + 1e-6
+            ]
+            if not candidates:
+                continue
+            phase = min(
+                candidates,
+                key=lambda item: (
+                    phase_ranges[item["phase_id"]][1]
+                    - phase_ranges[item["phase_id"]][0],
+                    phase_ranges[item["phase_id"]][0],
+                    item["phase_id"],
+                ),
+            )
+            slot = (phase["phase_id"], relation["relation_id"])
+            if slot in used_anchor_bindings:
+                continue
+            used_anchor_bindings.add(slot)
+            route_anchors.setdefault(subject_id, []).append(
+                {
+                    "anchor_id": (
+                        f"route_anchor_{relation['relation_id']}_{subject_id}"
+                    ),
+                    "phase_id": phase["phase_id"],
+                    "relation_id": relation["relation_id"],
+                }
+            )
     route_intents = [
         {
             "route_id": f"route_{subject_id}",

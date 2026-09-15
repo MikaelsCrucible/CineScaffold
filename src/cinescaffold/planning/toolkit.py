@@ -21,6 +21,8 @@ from cinescaffold.planning.design import (
     SceneSkeleton,
     build_design_candidate,
     design_option_id,
+    route_anchor_phase_time_range,
+    route_anchor_time_seconds,
     skeleton_hash,
     task_capability_slice,
     validate_scene_skeleton,
@@ -68,7 +70,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 from cinescaffold.relationships import classify_relationship
 
-TOOLKIT_VERSION = "0.43"
+TOOLKIT_VERSION = "0.44"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -240,11 +242,89 @@ def _route_anchor_failures(
         for route in skeleton.route_intents
         for anchor in route.anchors
     }
+    anchored_constraint_ids.update(
+        f"route_anchor_{anchor.anchor_id}"
+        for route in skeleton.route_intents
+        for anchor in route.anchors
+    )
     return [
         item
         for item in report.violations
         if item.constraint_id in anchored_constraint_ids
     ]
+
+
+def _route_anchor_motion_violations(
+    skeleton: SceneSkeleton,
+    state: CandidateState,
+    objective: ObjectivePlanningBrief,
+    profile: PlanningProfile,
+) -> list[Violation]:
+    """Require an interior event waypoint to remain part of real motion."""
+
+    relations = {item.relation_id: item for item in skeleton.relations}
+    phases = {item.phase_id: item for item in skeleton.motion_phases}
+    frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
+    duration = state.timeline.duration_seconds
+    tolerance = max(profile.numeric_tolerance * 10.0, 1e-7)
+    violations: list[Violation] = []
+    for route in skeleton.route_intents:
+        for anchor in route.anchors:
+            phase = phases[anchor.phase_id]
+            relation = relations[anchor.relation_id]
+            anchor_time = route_anchor_time_seconds(
+                objective,
+                relation,
+                duration,
+                frame_step,
+                phase=phase,
+            )
+            phase_start, phase_end = route_anchor_phase_time_range(
+                objective,
+                phase,
+                duration,
+            )
+            phase_sample_end = max(
+                phase_start,
+                min(phase_end - frame_step, duration - frame_step),
+            )
+            anchor_position = _WorldTransformResolver(
+                state,
+                anchor_time,
+                profile,
+            ).entity(route.subject_id).translation_m
+            sides: list[tuple[str, float]] = []
+            if anchor_time > phase_start + 1e-9:
+                sides.append(("before", max(phase_start, anchor_time - frame_step)))
+            if anchor_time < phase_sample_end - 1e-9:
+                sides.append(("after", min(phase_sample_end, anchor_time + frame_step)))
+            for side, sample_time in sides:
+                sample_position = _WorldTransformResolver(
+                    state,
+                    sample_time,
+                    profile,
+                ).entity(route.subject_id).translation_m
+                displacement = length(subtract(sample_position, anchor_position))
+                if displacement > tolerance:
+                    continue
+                violations.append(
+                    _violation(
+                        "ROUTE_ANCHOR_MOTION_DISCONTINUITY",
+                        "事件路径点位于持续移动阶段内部，但相邻采样没有实际位移："
+                        f"{anchor.anchor_id} / {side}",
+                        constraint_id=f"route_anchor_{anchor.anchor_id}",
+                        entity_ids=[route.subject_id],
+                        time_range_seconds=(sample_time, anchor_time)
+                        if side == "before"
+                        else (anchor_time, sample_time),
+                        expected={"movement_around_event": True, "side": side},
+                        actual={"displacement_m": displacement},
+                        adjustable_variables=[
+                            f"motion_tracks.{route.subject_id}.transform"
+                        ],
+                    )
+                )
+    return violations
 
 
 def _duplicate_camera_track_ids(tracks: dict[str, TrackSpec]) -> dict[str, list[str]]:
@@ -2838,6 +2918,15 @@ class ScenePlanningToolkit:
             violations.extend(
                 _orbit_entity_intersection_violations(state, self.profile)
             )
+            if self._scene_skeleton is not None:
+                violations.extend(
+                    _route_anchor_motion_violations(
+                        self._scene_skeleton,
+                        state,
+                        self.objective_brief,
+                        self.profile,
+                    )
+                )
         if "motion" in checks:
             violations.extend(
                 _nested_orbit_readability_violations(
