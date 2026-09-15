@@ -24,6 +24,7 @@
 
 ### Changed
 
+- Core 0.8.32 / Semantic Parser v0.15 / Toolkit v0.45 将多解释语句拆成“各解释共有的类型化事实”与“真正欠定的方向、路径、先后或精确时间”；局部关系必须使用独立点事件或较短区间，不得因存在歧义而整条遗漏，也不得扩张为完整动作。Route Anchor 现在只接受类型化空间关系或类型化容纳后置状态，Planning 不能再从动作自由文本补造关系。单个局部双移动 proximity 会获得确定性的相对运动；持续整段的并肩关系和多次关系保持原拓扑决策。持续区间的相遇会物化事件首、中、末三个线性路径点，在满足接近与碰撞净空的同时不再因内部 smooth keyframe 产生瞬时停顿；Validator 会拒绝局部事件前后相对位置恒定的共同平移。
 - Core 0.8.31 / Toolkit v0.44 删除 Route Anchor 的动作边界字段，改由所引用 Relation 的 timeline event 与 `temporal_mode` 唯一确定路径点时刻；旧 Skeleton 不做兼容迁移。单个 Semantic Motion 现在可在同一连续 Track 内包含多个事件路径点。确定性 Skeleton 会为同一 proximity 事件里所有正在移动的参与者生成 Anchor，Design 联合求出接近且不碰撞的位置并消除实体顺序依赖；Validator 会拒绝动作内部 Anchor 前后应继续运动却停滞的轨迹。Planning Prompt 只说明这项通用事件路径能力，不增加故事专用动作、关系或语言关键词规则。
 - Core 0.8.30 / Semantic Parser v0.14 将 Semantic Prompt 重写为通用严格契约：固定区分视频片段、场景实体、动作阶段、摄影机、光学属性与画面构图，删除故事案例、动词打表、数值量化表和下游实现细节；时间事件继续支持片段内任意数值区间，未新增 `crossing`、`pass_by` 或其他场景专用语义。每次解析现在固定使用初稿与一次独立审查/完整重写两次 Provider 请求；首轮 Schema 或语义契约诊断会送入审查，第二轮仍非法就失败且不再追加请求。两次 usage、请求序号和费用分别记录并累计。转换层不再用类型多数、时间关系改名、`scene_dynamics` 改写或远景层任选参照实体来隐藏初稿错误。
 - Core 0.8.29 / Semantic Parser v0.13 / Toolkit v0.43 移除 Semantic 关系层的 `ground_support`、`orbit_around` 与 `carried_by` 重复协议，以及规范关系已能完整表达含义后仍可能产生冲突的自由文本 `strength`；`distance + strength`、中文关系别名等旧输入不再兼容或自动改写，非规范关系直接失败。Semantic 来源状态也不再暴露仅供 Planning 决策使用的 `agent_selected`。普通人物/车辆接地由 Toolkit 按环境、代理类型与类型化动作确定性建立，公转与载运分别只保留运动层的相对闭合路径和 `carried + carrier_id`。关系 `throughout` 现在明确表示所引用任意数值事件区间，而不是全镜头或三个固定时间点；Planning 继续以类型字段为权威，但允许用动作原文审计上游遗漏并显式失败，禁止静默关键词重解析。

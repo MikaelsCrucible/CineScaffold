@@ -1,3 +1,3 @@
 """CineScaffold 研究管线。"""
 
-__version__ = "0.8.31"
+__version__ = "0.8.32"

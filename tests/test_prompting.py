@@ -47,8 +47,19 @@ class PromptingTest(unittest.TestCase):
         self.assertIn("不得按动作数量机械等分时间", rules)
         self.assertIn("不得发明某个故事专用动作类型或关系类型", rules)
         self.assertIn("不得由情绪词自行推导摄影机位置", rules)
+        self.assertIn("各解释共有的可验证事实", rules)
+        self.assertIn("点事件并配合 `at_start/at_end`", rules)
+        self.assertIn("关系描述的是需要验证的语义事实", rules)
         self.assertNotIn("接到人后", rules)
         self.assertNotIn("等待→上车", rules)
+
+        planning_prompt = (
+            ROOT / "src/cinescaffold/resources/prompts/scene_planner/system.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "不得引用 `action.value/source_text`、实体名称或其他自由文本来补造关系",
+            planning_prompt,
+        )
 
     def test_revision_prompt_contains_source_draft_and_diagnostics(self) -> None:
         bundle = build_revision_prompt(

@@ -18,6 +18,8 @@ from cinescaffold.motion_semantics import planning_motion_shape
 from cinescaffold.planning.design import (
     DesignOption,
     EntitySizeRequest,
+    SkeletonMotionPhase,
+    SkeletonRouteAnchor,
     SceneSkeleton,
     build_design_candidate,
     design_option_id,
@@ -70,7 +72,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 from cinescaffold.relationships import classify_relationship
 
-TOOLKIT_VERSION = "0.44"
+TOOLKIT_VERSION = "0.45"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -268,10 +270,17 @@ def _route_anchor_motion_violations(
     duration = state.timeline.duration_seconds
     tolerance = max(profile.numeric_tolerance * 10.0, 1e-7)
     violations: list[Violation] = []
+    anchors_by_relation: dict[
+        str,
+        dict[str, tuple[SkeletonMotionPhase, SkeletonRouteAnchor]],
+    ] = {}
     for route in skeleton.route_intents:
         for anchor in route.anchors:
             phase = phases[anchor.phase_id]
             relation = relations[anchor.relation_id]
+            anchors_by_relation.setdefault(anchor.relation_id, {})[
+                route.subject_id
+            ] = (phase, anchor)
             anchor_time = route_anchor_time_seconds(
                 objective,
                 relation,
@@ -324,6 +333,110 @@ def _route_anchor_motion_violations(
                         ],
                     )
                 )
+
+    event_ranges = {
+        str(item.get("id")): (
+            float(item["start_time_seconds"]),
+            float(item["end_time_seconds"]),
+        )
+        for item in objective.timeline.get("events", [])
+        if isinstance(item, dict)
+        and item.get("id") is not None
+        and isinstance(item.get("start_time_seconds"), (int, float))
+        and isinstance(item.get("end_time_seconds"), (int, float))
+    }
+    pair_counts: dict[tuple[str, str], int] = {}
+    for relation_id, relation_bindings in anchors_by_relation.items():
+        relation = relations[relation_id]
+        participants = tuple(sorted((relation.subject_id, relation.reference_id)))
+        if (
+            relation.kind == "proximity"
+            and set(relation_bindings) == set(participants)
+        ):
+            pair_counts[participants] = pair_counts.get(participants, 0) + 1
+    for relation_id, relation_bindings in anchors_by_relation.items():
+        relation = relations[relation_id]
+        participant_pair = tuple(
+            sorted((relation.subject_id, relation.reference_id))
+        )
+        participants = set(participant_pair)
+        if (
+            relation.kind != "proximity"
+            or set(relation_bindings) != participants
+            or relation.timeline_event_id not in event_ranges
+            or pair_counts.get(participant_pair) != 1
+        ):
+            continue
+        first_id, second_id = sorted(participants)
+        first_phase, _ = relation_bindings[first_id]
+        second_phase, _ = relation_bindings[second_id]
+        first_range = route_anchor_phase_time_range(
+            objective,
+            first_phase,
+            duration,
+        )
+        second_range = route_anchor_phase_time_range(
+            objective,
+            second_phase,
+            duration,
+        )
+        common_start = max(first_range[0], second_range[0])
+        common_end = min(first_range[1], second_range[1])
+        event_start, event_end = event_ranges[relation.timeline_event_id]
+        if relation.temporal_mode == "at_start":
+            event_end = event_start
+        elif relation.temporal_mode == "at_end":
+            event_start = event_end
+        anchor_time = route_anchor_time_seconds(
+            objective,
+            relation,
+            duration,
+            frame_step,
+            phase=first_phase,
+        )
+        anchor_resolver = _WorldTransformResolver(state, anchor_time, profile)
+        anchor_relative = subtract(
+            anchor_resolver.entity(first_id).translation_m,
+            anchor_resolver.entity(second_id).translation_m,
+        )
+        relative_samples: list[tuple[str, float]] = []
+        if event_start > common_start + frame_step:
+            relative_samples.append(
+                ("before", (common_start + event_start) * 0.5)
+            )
+        if event_end < common_end - frame_step:
+            relative_samples.append(("after", (event_end + common_end) * 0.5))
+        relative_tolerance = max(profile.numeric_tolerance * 10.0, 0.05)
+        for side, sample_time in relative_samples:
+            sample_resolver = _WorldTransformResolver(state, sample_time, profile)
+            sample_relative = subtract(
+                sample_resolver.entity(first_id).translation_m,
+                sample_resolver.entity(second_id).translation_m,
+            )
+            relative_change = length(subtract(sample_relative, anchor_relative))
+            if relative_change > relative_tolerance:
+                continue
+            violations.append(
+                _violation(
+                    "ROUTE_ANCHOR_RELATIVE_MOTION_MISSING",
+                    "局部双实体接近事件没有形成相对运动，双方轨迹会表现为共同平移："
+                    f"{relation_id} / {side}",
+                    constraint_id=f"skeleton_{relation_id}",
+                    entity_ids=[first_id, second_id],
+                    time_range_seconds=(sample_time, anchor_time)
+                    if side == "before"
+                    else (anchor_time, sample_time),
+                    expected={
+                        "relative_motion_around_local_event": True,
+                        "side": side,
+                    },
+                    actual={"relative_change_m": relative_change},
+                    adjustable_variables=[
+                        f"motion_tracks.{first_id}.transform",
+                        f"motion_tracks.{second_id}.transform",
+                    ],
+                )
+            )
     return violations
 
 

@@ -2259,6 +2259,128 @@ class PlanningDesignTest(unittest.TestCase):
             solved_positions.append((first.translation_m, second.translation_m))
         self.assertEqual(solved_positions[0], solved_positions[1])
 
+        candidate = candidates[0]
+        frame_step = 1 / 24
+        before = _WorldTransformResolver(
+            candidate,
+            2.5 - frame_step,
+            toolkit.profile,
+        )
+        after = _WorldTransformResolver(
+            candidate,
+            2.5 + frame_step,
+            toolkit.profile,
+        )
+        for entity_id in ("actor_a", "actor_b"):
+            self.assertGreater(
+                math.dist(
+                    before.entity(entity_id).translation_m,
+                    after.entity(entity_id).translation_m,
+                ),
+                0.01,
+            )
+        event_start = _WorldTransformResolver(candidate, 2.0, toolkit.profile)
+        event_end = _WorldTransformResolver(
+            candidate,
+            3.0 - frame_step,
+            toolkit.profile,
+        )
+        self.assertLess(
+            event_start.entity("actor_a").translation_m[0],
+            event_start.entity("actor_b").translation_m[0],
+        )
+        self.assertGreater(
+            event_end.entity("actor_a").translation_m[0],
+            event_end.entity("actor_b").translation_m[0],
+        )
+        for entity_id in ("actor_a", "actor_b"):
+            self.assertTrue(
+                all(
+                    keyframe.interpolation in {"linear", "step"}
+                    for keyframe in candidate.motion_tracks[
+                        f"design_motion_{entity_id}"
+                    ].keyframes
+                )
+            )
+
+    def test_route_anchor_rejects_relation_invented_from_action_text(self) -> None:
+        toolkit, skeleton = _paired_mover_route_case(two_events=False)
+        skeleton["relations"][0]["source_ref"] = "content.subject_motion[0].action"
+
+        result = toolkit.submit_scene_skeleton(skeleton)
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn(
+            "Route Anchor Relation 必须绑定类型化空间关系",
+            result["warnings"][0],
+        )
+
+    def test_validator_rejects_local_proximity_with_constant_relative_motion(
+        self,
+    ) -> None:
+        toolkit, skeleton = _paired_mover_route_case(two_events=False)
+        toolkit.submit_scene_skeleton(skeleton)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
+        candidate = next(iter(toolkit._design_options.values())).candidate.model_copy(
+            deep=True
+        )
+        first_track = candidate.motion_tracks["design_motion_actor_a"]
+        second_track = candidate.motion_tracks["design_motion_actor_b"]
+        second_track.keyframes = [
+            keyframe.model_copy(
+                update={
+                    "value": keyframe.value.model_copy(
+                        update={
+                            "translation_m": (
+                                keyframe.value.translation_m[0],
+                                keyframe.value.translation_m[1] + 0.845,
+                                keyframe.value.translation_m[2],
+                            )
+                        }
+                    )
+                }
+            )
+            for keyframe in first_track.keyframes
+        ]
+
+        report = toolkit._validate(candidate, ["motion"])
+
+        self.assertIn(
+            "ROUTE_ANCHOR_RELATIVE_MOTION_MISSING",
+            {item.code for item in report.violations},
+        )
+        self.assertFalse(report.hard_pass)
+
+    def test_full_phase_proximity_allows_two_entities_to_move_together(self) -> None:
+        toolkit, skeleton = _paired_mover_route_case(two_events=False)
+        event = next(
+            item
+            for item in toolkit.objective_brief.timeline["events"]
+            if item["id"] == "near_event_1"
+        )
+        event["start_time_seconds"] = 0.0
+        event["end_time_seconds"] = 6.0
+
+        accepted = toolkit.submit_scene_skeleton(skeleton)
+        self.assertEqual(accepted["status"], "ok", accepted)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
+        candidate = next(iter(toolkit._design_options.values())).candidate
+        start = _WorldTransformResolver(candidate, 0.0, toolkit.profile)
+        end = _WorldTransformResolver(candidate, 5.0, toolkit.profile)
+
+        start_delta = (
+            start.entity("actor_a").translation_m[0]
+            - start.entity("actor_b").translation_m[0]
+        )
+        end_delta = (
+            end.entity("actor_a").translation_m[0]
+            - end.entity("actor_b").translation_m[0]
+        )
+        self.assertAlmostEqual(start_delta, end_delta)
+        self.assertTrue(toolkit._validate(candidate, ["motion"]).hard_pass)
+
     def test_validator_rejects_stalled_motion_before_an_internal_anchor(self) -> None:
         toolkit, skeleton = _paired_mover_route_case(two_events=False)
         toolkit.submit_scene_skeleton(skeleton)

@@ -924,8 +924,24 @@ def _validate_typed_source_bindings(
         "relative_position": "relative_position",
         "scale_dominance": "scale_dominance",
     }
+    anchored_relation_ids = {
+        anchor.relation_id
+        for route in skeleton.route_intents
+        for anchor in route.anchors
+    }
     for relation in skeleton.relations:
         if not relation.source_ref.startswith(relationship_prefix):
+            if (
+                relation.relation_id in anchored_relation_ids
+                and not _is_typed_containment_transition_relation(
+                    objective,
+                    relation,
+                )
+            ):
+                raise ValueError(
+                    "Route Anchor Relation 必须绑定类型化空间关系或容纳后置状态："
+                    f"{relation.relation_id}"
+                )
             continue
         try:
             index = int(
@@ -1083,6 +1099,47 @@ def _validate_typed_source_bindings(
             raise ValueError(
                 f"Motion Phase 与 source_ref 的路径族不一致：{phase.phase_id}"
             )
+
+
+def _is_typed_containment_transition_relation(
+    objective: ObjectivePlanningBrief,
+    relation: SkeletonRelation,
+) -> bool:
+    """Recognize the one typed motion fact that deterministically implies contact."""
+
+    motion_prefix = "content.subject_motion["
+    motion_suffix = "].motion_semantics"
+    if (
+        relation.kind != "proximity"
+        or relation.temporal_mode != "at_end"
+        or not relation.source_ref.startswith(motion_prefix)
+        or not relation.source_ref.endswith(motion_suffix)
+    ):
+        return False
+    try:
+        index_text = relation.source_ref[
+            len(motion_prefix) : -len(motion_suffix)
+        ]
+        motion = objective.subject_motion[int(index_text)]
+    except (IndexError, TypeError, ValueError):
+        return False
+    if not isinstance(motion, dict):
+        return False
+    semantics = motion.get("motion_semantics")
+    if not isinstance(semantics, dict):
+        return False
+    postconditions = semantics.get("postconditions")
+    if not isinstance(postconditions, dict):
+        return False
+    contained_by_id = postconditions.get("contained_by_id")
+    subject_id = motion.get("subject_id")
+    return (
+        isinstance(contained_by_id, str)
+        and isinstance(subject_id, str)
+        and {relation.subject_id, relation.reference_id}
+        == {contained_by_id, subject_id}
+        and relation.timeline_event_id == semantics.get("timeline_event_id")
+    )
 
 
 def skeleton_hash(value: SceneSkeleton) -> str:
@@ -2072,11 +2129,25 @@ def _build_motion(
         skeleton,
         candidate,
     )
+    route_directions = _separate_joint_proximity_route_directions(
+        objective,
+        skeleton,
+        candidate,
+        route_directions,
+    )
     joint_route_positions = _joint_proximity_route_positions(
         skeleton,
         candidate,
         route_anchor_schedules,
         route_directions,
+    )
+    joint_route_window_positions = _joint_proximity_route_window_positions(
+        objective,
+        skeleton,
+        candidate,
+        route_anchor_schedules,
+        route_directions,
+        joint_route_positions,
     )
 
     grouped_items = _motion_group_build_order(
@@ -2253,6 +2324,7 @@ def _build_motion(
                     subject_id
                 ].solved_transform.model_copy(update={"translation_m": tuple(position)})
             keyframes: list[TrackKeyframe] = []
+            continuous_route = bool(route is not None and route.anchors)
             previous_direction = route_direction
             positional_phases = [
                 item
@@ -2340,7 +2412,18 @@ def _build_motion(
                         anchor_time,
                         joint_route_positions,
                     )
-                    phase_points.append((anchor_time, waypoint, anchor))
+                    window_points = joint_route_window_positions.get(
+                        (subject_id, anchor.anchor_id)
+                    )
+                    if window_points is None:
+                        phase_points.append((anchor_time, waypoint, anchor))
+                    else:
+                        phase_points.extend(
+                            (point_time, point_position, anchor)
+                            for point_time, point_position in window_points
+                            if point_time > start + 1e-9
+                        )
+                phase_points.sort(key=lambda item: item[0])
                 if not math.isclose(
                     phase_points[-1][0],
                     sample_end,
@@ -2380,7 +2463,9 @@ def _build_motion(
                                 value=TransformValue(
                                     translation_m=point_position
                                 ),
-                                interpolation="smooth",
+                                interpolation=(
+                                    "linear" if continuous_route else "smooth"
+                                ),
                             )
                         )
                         continue
@@ -2405,7 +2490,9 @@ def _build_motion(
                             TrackKeyframe(
                                 time_seconds=midpoint_time,
                                 value=TransformValue(translation_m=midpoint),
-                                interpolation="smooth",
+                                interpolation=(
+                                    "linear" if continuous_route else "smooth"
+                                ),
                             )
                         )
                     delta_x = point_position[0] - previous_position[0]
@@ -2440,7 +2527,9 @@ def _build_motion(
                                     sample_end,
                                     abs_tol=1e-9,
                                 )
-                                else "smooth"
+                                else (
+                                    "linear" if continuous_route else "smooth"
+                                )
                             ),
                         )
                     )
@@ -2451,7 +2540,7 @@ def _build_motion(
                 type="transform",
                 time_range_seconds=(keyframes[0].time_seconds, duration),
                 keyframes=_deduplicate_keyframes(keyframes),
-                interpolation="smooth",
+                interpolation="linear" if continuous_route else "smooth",
                 source_ref=moving[0].source_ref,
                 source_refs=sorted(
                     {
@@ -4312,6 +4401,99 @@ def _route_anchor_schedules(
     return schedules
 
 
+def _separate_joint_proximity_route_directions(
+    objective: ObjectivePlanningBrief,
+    skeleton: SceneSkeleton,
+    candidate: CandidateState,
+    route_directions: dict[str, tuple[float, float]],
+) -> dict[str, tuple[float, float]]:
+    """Give under-specified co-movers relative motion at a shared event."""
+
+    resolved = dict(route_directions)
+    phases = {item.phase_id: item for item in skeleton.motion_phases}
+    events = {
+        str(item.get("id")): item
+        for item in objective.timeline.get("events", [])
+        if isinstance(item, dict) and item.get("id") is not None
+    }
+    bindings: dict[str, dict[str, SkeletonMotionPhase]] = {}
+    for route in skeleton.route_intents:
+        for anchor in route.anchors:
+            phase = phases[anchor.phase_id]
+            bindings.setdefault(anchor.relation_id, {})[route.subject_id] = phase
+
+    joint_relations: list[tuple[SkeletonRelation, tuple[str, str]]] = []
+    pair_counts: dict[tuple[str, str], int] = {}
+    for relation in skeleton.relations:
+        participants = tuple(sorted((relation.subject_id, relation.reference_id)))
+        relation_bindings = bindings.get(relation.relation_id, {})
+        if (
+            relation.kind != "proximity"
+            or set(relation_bindings) != set(participants)
+        ):
+            continue
+        joint_relations.append((relation, participants))
+        pair_counts[participants] = pair_counts.get(participants, 0) + 1
+
+    for relation, participants in sorted(
+        joint_relations,
+        key=lambda item: item[0].relation_id,
+    ):
+        # A single encounter between two under-specified movers needs relative
+        # motion. Multiple encounters may instead require overtaking or turns,
+        # so their topology remains an explicit route-design decision.
+        if pair_counts[participants] != 1:
+            continue
+        relation_bindings = bindings[relation.relation_id]
+        event = events.get(relation.timeline_event_id or "")
+        if event is None:
+            continue
+        event_start = event.get("start_time_seconds")
+        event_end = event.get("end_time_seconds")
+        if not isinstance(event_start, (int, float)) or not isinstance(
+            event_end,
+            (int, float),
+        ):
+            continue
+        if relation.temporal_mode == "at_start":
+            event_end = event_start
+        elif relation.temporal_mode == "at_end":
+            event_start = event_end
+        common_start = max(
+            _phase_range(objective, phase, candidate.timeline.duration_seconds)[0]
+            for phase in relation_bindings.values()
+        )
+        common_end = min(
+            _phase_range(objective, phase, candidate.timeline.duration_seconds)[1]
+            for phase in relation_bindings.values()
+        )
+        if (
+            float(event_start) <= common_start + 1e-9
+            and float(event_end) >= common_end - 1e-9
+        ):
+            continue
+        first_id, second_id = participants
+        first_direction = resolved.get(first_id)
+        second_direction = resolved.get(second_id)
+        if first_direction is None or second_direction is None:
+            continue
+        dot_product = (
+            first_direction[0] * second_direction[0]
+            + first_direction[1] * second_direction[1]
+        )
+        if dot_product < 1.0 - 1e-9:
+            continue
+        first_unspecified = relation_bindings[first_id].direction_mode == "none"
+        second_unspecified = relation_bindings[second_id].direction_mode == "none"
+        if not first_unspecified and not second_unspecified:
+            continue
+        if second_unspecified:
+            resolved[second_id] = (-first_direction[0], -first_direction[1])
+        else:
+            resolved[first_id] = (-second_direction[0], -second_direction[1])
+    return resolved
+
+
 def _joint_proximity_route_positions(
     skeleton: SceneSkeleton,
     candidate: CandidateState,
@@ -4344,8 +4526,9 @@ def _joint_proximity_route_positions(
         if set(by_subject) != participants:
             continue
 
-        subject = candidate.entities[relation.subject_id]
-        reference = candidate.entities[relation.reference_id]
+        first_id, second_id = sorted(participants)
+        subject = candidate.entities[first_id]
+        reference = candidate.entities[second_id]
         subject_position = subject.solved_transform.translation_m or (
             0.0,
             0.0,
@@ -4358,7 +4541,7 @@ def _joint_proximity_route_positions(
         )
         center_x = (subject_position[0] + reference_position[0]) * 0.5
         center_y = (subject_position[1] + reference_position[1]) * 0.5
-        route_direction = route_directions.get(relation.subject_id, (1.0, 0.0))
+        route_direction = route_directions.get(first_id, (1.0, 0.0))
         event_time = sum(item[0] for item in by_subject.values()) / len(by_subject)
         route_progress = 8.0 * event_time / candidate.timeline.duration_seconds
         center_x += route_direction[0] * route_progress
@@ -4371,19 +4554,115 @@ def _joint_proximity_route_positions(
             + 0.25,
         )
         half_clearance = clearance * 0.5
-        subject_anchor = by_subject[relation.subject_id][1]
-        reference_anchor = by_subject[relation.reference_id][1]
-        solved[(relation.subject_id, subject_anchor.anchor_id)] = (
+        subject_anchor = by_subject[first_id][1]
+        reference_anchor = by_subject[second_id][1]
+        solved[(first_id, subject_anchor.anchor_id)] = (
             center_x - lateral[0] * half_clearance,
             center_y - lateral[1] * half_clearance,
             subject_position[2],
         )
-        solved[(relation.reference_id, reference_anchor.anchor_id)] = (
+        solved[(second_id, reference_anchor.anchor_id)] = (
             center_x + lateral[0] * half_clearance,
             center_y + lateral[1] * half_clearance,
             reference_position[2],
         )
     return solved
+
+
+def _joint_proximity_route_window_positions(
+    objective: ObjectivePlanningBrief,
+    skeleton: SceneSkeleton,
+    candidate: CandidateState,
+    schedules: dict[str, list[tuple[float, SkeletonRouteAnchor]]],
+    route_directions: dict[str, tuple[float, float]],
+    joint_positions: dict[tuple[str, str], tuple[float, float, float]],
+) -> dict[
+    tuple[str, str],
+    list[tuple[float, tuple[float, float, float]]],
+]:
+    """Materialize a bounded proximity interval without stopping at its midpoint."""
+
+    relations = {item.relation_id: item for item in skeleton.relations}
+    events = {
+        str(item.get("id")): item
+        for item in objective.timeline.get("events", [])
+        if isinstance(item, dict) and item.get("id") is not None
+    }
+    anchors_by_relation: dict[
+        str,
+        dict[str, tuple[float, SkeletonRouteAnchor]],
+    ] = {}
+    for subject_id, scheduled in schedules.items():
+        for anchor_time, anchor in scheduled:
+            anchors_by_relation.setdefault(anchor.relation_id, {})[
+                subject_id
+            ] = (anchor_time, anchor)
+    frame_step = (
+        candidate.timeline.fps_denominator / candidate.timeline.fps_numerator
+    )
+    result: dict[
+        tuple[str, str],
+        list[tuple[float, tuple[float, float, float]]],
+    ] = {}
+    for relation_id, by_subject in anchors_by_relation.items():
+        relation = relations[relation_id]
+        participants = tuple(sorted((relation.subject_id, relation.reference_id)))
+        if (
+            relation.kind != "proximity"
+            or relation.temporal_mode != "throughout"
+            or set(by_subject) != set(participants)
+            or relation.timeline_event_id not in events
+        ):
+            continue
+        first_direction = route_directions.get(participants[0])
+        second_direction = route_directions.get(participants[1])
+        if first_direction is None or second_direction is None:
+            continue
+        if (
+            first_direction[0] * second_direction[0]
+            + first_direction[1] * second_direction[1]
+            > -1.0 + 1e-9
+        ):
+            continue
+        event = events[relation.timeline_event_id]
+        start = event.get("start_time_seconds")
+        end = event.get("end_time_seconds")
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            continue
+        start = float(start)
+        end = min(
+            float(end) - frame_step,
+            candidate.timeline.duration_seconds - frame_step,
+        )
+        if end <= start + 1e-9:
+            continue
+        longitudinal_half_span = 0.25
+        for subject_id in participants:
+            anchor_time, anchor = by_subject[subject_id]
+            anchor_position = joint_positions.get((subject_id, anchor.anchor_id))
+            direction = route_directions[subject_id]
+            if anchor_position is None:
+                continue
+            result[(subject_id, anchor.anchor_id)] = [
+                (
+                    start,
+                    (
+                        anchor_position[0] - direction[0] * longitudinal_half_span,
+                        anchor_position[1] - direction[1] * longitudinal_half_span,
+                        anchor_position[2],
+                    ),
+                ),
+                (anchor_time, anchor_position),
+                (
+                    end,
+                    (
+                        anchor_position[0] + direction[0] * longitudinal_half_span,
+                        anchor_position[1] + direction[1] * longitudinal_half_span,
+                        anchor_position[2],
+                    ),
+                ),
+            ]
+    return result
 
 
 def _reference_route_direction(entity: EntitySpec) -> tuple[float, float]:
