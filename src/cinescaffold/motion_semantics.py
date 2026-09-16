@@ -12,6 +12,8 @@ PlanningMotionKind = Literal[
 PlanningDirectionMode = Literal[
     "none",
     "world_forward",
+    "world_left",
+    "world_right",
     "toward_target",
     "away_from_target",
     "world_left",
@@ -86,6 +88,8 @@ def planning_motion_shape(semantics: dict[str, Any]) -> PlanningMotionShape:
     if direction_mode not in {
         "none",
         "world_forward",
+        "world_left",
+        "world_right",
         "toward_target",
         "away_from_target",
     }:
@@ -94,7 +98,7 @@ def planning_motion_shape(semantics: dict[str, Any]) -> PlanningMotionShape:
         target_id, str
     ):
         raise ValueError(f"{direction_mode} 必须提供 target_id")
-    if direction_mode in {"none", "world_forward"}:
+    if direction_mode in {"none", "world_forward", "world_left", "world_right"}:
         target_id = None
 
     path_family = {

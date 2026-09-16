@@ -11,7 +11,10 @@ from cinescaffold.relationships import (
     CANONICAL_RELATIONSHIP_TYPES,
     normalize_scene_relationships,
 )
-from cinescaffold.semantic_rules import objective_translation_parameters
+from cinescaffold.semantic_rules import (
+    objective_translation_parameters,
+    validate_supported_semantic_fields,
+)
 
 OBJECTIVE_CONTENT_FIELDS = (
     "subjects",
@@ -52,7 +55,7 @@ class IgnoredSubjectiveField(_StrictModel):
 
 
 class ObjectivePlanningBrief(_StrictModel):
-    schema_version: Literal["0.7"]
+    schema_version: Literal["0.8"]
     source_brief_sha256: str
     subjects: list[dict[str, Any]]
     subject_motion: list[dict[str, Any]]
@@ -94,20 +97,21 @@ def has_subject_spatial_motion(objective: ObjectivePlanningBrief) -> bool:
 def project_objective_brief(brief: dict[str, Any]) -> ObjectiveProjection:
     """在模型调用前剥离主观维度和原始提示词。"""
     schema_version = brief.get("schema_version")
-    if schema_version != "0.7":
-        raise ValueError("Agent 1 仅支持当前 Cinematic Brief v0.7")
+    if schema_version != "0.8":
+        raise ValueError("Agent 1 仅支持当前 Cinematic Brief v0.8")
     content = brief.get("content")
     provenance = brief.get("provenance")
     if not isinstance(content, dict) or not isinstance(provenance, dict):
         raise ValueError("Cinematic Brief 缺少 content 或 provenance")
     translation_parameters = brief.get("translation_parameters")
     if not isinstance(translation_parameters, dict):
-        raise ValueError("Cinematic Brief v0.7 缺少 translation_parameters")
+        raise ValueError("Cinematic Brief v0.8 缺少 translation_parameters")
     if not _optional_string(provenance.get("translation_rules_sha256")):
-        raise ValueError("Cinematic Brief v0.7 缺少 translation_rules_sha256")
+        raise ValueError("Cinematic Brief v0.8 缺少 translation_rules_sha256")
     missing = [name for name in OBJECTIVE_CONTENT_FIELDS if name not in content]
     if missing:
         raise ValueError(f"Cinematic Brief 缺少客观字段：{', '.join(missing)}")
+    validate_supported_semantic_fields(content)
 
     source_metadata = BriefSourceMetadata(
         provider=_required_string(provenance, "provider"),
@@ -177,19 +181,19 @@ def _validate_canonical_relationships(content: dict[str, Any]) -> None:
     }
     for index, relationship in enumerate(relationships):
         if not isinstance(relationship, dict):
-            raise ValueError(f"v0.7 relationship[{index}] 必须是对象")
+            raise ValueError(f"v0.8 relationship[{index}] 必须是对象")
         relation_type = relationship.get("type")
         if relation_type not in CANONICAL_RELATIONSHIP_TYPES:
             raise ValueError(
-                f"v0.7 relationship[{index}] 使用了 Toolkit 不支持的类型："
+                f"v0.8 relationship[{index}] 使用了 Toolkit 不支持的类型："
                 f"{relation_type}"
             )
         subject_id = relationship.get("subject_id")
         reference_id = relationship.get("reference_id")
         if subject_id not in subject_ids or reference_id not in subject_ids:
-            raise ValueError(f"v0.7 relationship[{index}] 必须引用两个已声明实体")
+            raise ValueError(f"v0.8 relationship[{index}] 必须引用两个已声明实体")
         if subject_id == reference_id:
-            raise ValueError(f"v0.7 relationship[{index}] 不得自引用")
+            raise ValueError(f"v0.8 relationship[{index}] 不得自引用")
 
 
 def _collect_explicit_requirements(

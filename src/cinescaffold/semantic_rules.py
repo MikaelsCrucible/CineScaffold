@@ -7,7 +7,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from cinescaffold.camera_semantics import classify_camera_movement
+from cinescaffold.camera_semantics import (
+    camera_lens_focal_length,
+    classify_camera_movement,
+)
 from cinescaffold.motion_semantics import planning_motion_shape
 from cinescaffold.relationships import normalize_scene_relationships
 
@@ -34,8 +37,10 @@ def apply_translation_rules(
     _validate_rule_table(rules)
     content = deepcopy(model_content)
     _apply_semantic_defaults(content, rules)
+    _validate_uncertainties(content)
     normalize_scene_relationships(content)
     _normalize_motion_metadata(content)
+    validate_supported_semantic_fields(content)
     _apply_scene_dynamics(content)
     _apply_timeline_rules(content, rules, source_prompt)
 
@@ -52,6 +57,7 @@ def apply_translation_rules(
         float(content["timeline"]["duration_seconds"]),
     )
     _apply_emotion_semantics(content, resolved_profile, emotion)
+    validate_supported_semantic_fields(content)
     _normalize_camera_movement(content)
     subjects = _subject_parameters(content, rules)
     motions = _motion_parameters(content, rules)
@@ -125,11 +131,6 @@ def _apply_emotion_semantics(
         "speed",
         _annotated(_camera_speed_text(camera_profile), status, source_text),
     )
-    _set_unless_explicit(
-        movement,
-        "trajectory",
-        _annotated(_camera_trajectory(camera_profile["movement"]), status, source_text),
-    )
     movement_kind = classify_camera_movement(_value(movement.get("type")))
     if (
         _status(movement.get("type")) != "explicit"
@@ -147,23 +148,7 @@ def _apply_emotion_semantics(
 
     composition_profile = profile["composition"]
     composition = content["composition"]
-    composition["patterns"] = _keep_explicit(composition.get("patterns", [])) + [
-        _statement(
-            f"主体占画幅 {_percent_range(composition_profile['subject_frame_ratio'])}",
-            status,
-            source_text,
-        ),
-        _statement(
-            f"负空间占比 {_percent_range(composition_profile['negative_space_ratio'])}",
-            status,
-            source_text,
-        ),
-        _statement(
-            f"主要物体占画幅 {_percent_range(composition_profile['major_object_frame_ratio'])}",
-            status,
-            source_text,
-        ),
-    ]
+    composition["patterns"] = []
     primary_id = _primary_subject_id(content)
     if primary_id:
         composition["screen_placements"] = _keep_explicit(
@@ -370,6 +355,7 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
                     "target_id": None,
                     "carrier_id": None,
                     "path_type": "stationary",
+                    "local_components": [],
                     "timeline_event_id": None,
                     "narrative_required": False,
                     "postconditions": {
@@ -409,6 +395,12 @@ def _apply_timeline_rules(
     if len(event_ids) != len(set(event_ids)):
         raise ValueError("timeline.events 的 id 必须唯一")
 
+    subject_ids = {
+        str(item["id"])
+        for item in content.get("subjects", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+
     for event in events:
         start = event.get("start_time_seconds")
         end = event.get("end_time_seconds")
@@ -416,6 +408,18 @@ def _apply_timeline_rules(
             raise ValueError("timeline event 必须给出关键时间范围")
         if not 0.0 <= float(start) < float(end) <= duration:
             raise ValueError(f"timeline event 时间范围无效：{event.get('id')}")
+        reference_ids = event.get("reference_ids")
+        if not isinstance(reference_ids, list) or len(reference_ids) != len(
+            set(reference_ids)
+        ):
+            raise ValueError(
+                f"timeline event reference_ids 必须是无重复数组：{event.get('id')}"
+            )
+        unknown_ids = sorted(set(reference_ids) - subject_ids)
+        if unknown_ids:
+            raise ValueError(
+                f"timeline event 引用未知场景实体：{event.get('id')} -> {unknown_ids}"
+            )
 
     _validate_relationship_timing(content, set(event_ids))
 
@@ -433,7 +437,7 @@ def _apply_timeline_rules(
             raise ValueError("自然语言包含先后关系，但模型没有给出 temporal relation")
 
     _validate_temporal_relations(timeline.get("relations", []), events)
-    _validate_motion_ranges(content.get("subject_motion", []), duration)
+    _validate_motion_ranges(content.get("subject_motion", []), duration, events)
 
 
 def _validate_relationship_timing(
@@ -571,6 +575,157 @@ def _normalize_motion_metadata(content: dict[str, Any]) -> None:
         seen.add(motion_id)
 
 
+def _validate_uncertainties(content: dict[str, Any]) -> None:
+    seen: set[str] = set()
+    for index, item in enumerate(content.get("uncertainties", [])):
+        if not isinstance(item, dict):
+            continue
+        field = item.get("field")
+        if not isinstance(field, str) or not field or field in seen:
+            raise ValueError("uncertainties.field 必须非空且唯一")
+        seen.add(field)
+        resolution = item.get("resolution")
+        selected_value = item.get("selected_value")
+        if resolution == "unresolved" and selected_value is not None:
+            raise ValueError(
+                f"uncertainties[{index}] unresolved 时 selected_value 必须为 null"
+            )
+        if resolution in {"use_default", "use_inference"} and selected_value is None:
+            raise ValueError(
+                f"uncertainties[{index}] {resolution} 时必须记录 selected_value"
+            )
+        if field == "scene_dynamics.mode" and selected_value is not None:
+            declared = content.get("scene_dynamics", {}).get("mode")
+            if str(selected_value) != str(declared):
+                raise ValueError(
+                    "uncertainties.scene_dynamics.mode 与已选择的 mode 矛盾"
+                )
+
+
+def validate_supported_semantic_fields(content: dict[str, Any]) -> None:
+    """Fail closed when the current Planning contract cannot execute a field."""
+
+    unsupported: list[str] = []
+    for index, motion in enumerate(content.get("subject_motion", [])):
+        for field in ("secondary_motion",):
+            value = motion.get(field) if isinstance(motion, dict) else None
+            if value:
+                unsupported.append(f"subject_motion[{index}].{field}")
+
+    composition = content.get("composition", {})
+    for field in ("shot_size",):
+        node = composition.get(field) if isinstance(composition, dict) else None
+        if _value(node) is not None:
+            unsupported.append(f"composition.{field}")
+    if isinstance(composition, dict) and composition.get("patterns"):
+        unsupported.append("composition.patterns")
+    if isinstance(composition, dict):
+        for index, placement in enumerate(composition.get("screen_placements", [])):
+            if not isinstance(placement, dict):
+                continue
+            for field, allowed in (
+                ("horizontal", {"left", "center", "right"}),
+                ("vertical", {"top", "center", "bottom"}),
+            ):
+                node = placement.get(field)
+                value = _value(node)
+                if (
+                    value is not None
+                    and value not in allowed
+                ):
+                    raise ValueError(
+                        f"composition.screen_placements[{index}].{field} "
+                        f"必须使用 {sorted(allowed)}"
+                    )
+        for index, item in enumerate(composition.get("visual_scales", [])):
+            scale = item.get("scale") if isinstance(item, dict) else None
+            if _value(scale) is None:
+                continue
+            match = re.fullmatch(
+                r"\s*(\d+(?:\.\d+)?)\s*%"
+                r"(?:\s*-\s*(\d+(?:\.\d+)?)\s*%)?\s*",
+                str(_value(scale)),
+            )
+            percentages = (
+                [float(value) for value in match.groups() if value is not None]
+                if match is not None
+                else []
+            )
+            if not percentages or not all(
+                0.0 <= value <= 100.0 for value in percentages
+            ) or (len(percentages) == 2 and percentages[0] > percentages[1]):
+                raise ValueError(
+                    f"composition.visual_scales[{index}].scale 必须是百分比或百分比范围"
+                )
+        for index, item in enumerate(
+            composition.get("visibility_requirements", [])
+        ):
+            requirement = item.get("requirement") if isinstance(item, dict) else None
+            if (
+                _value(requirement) is not None
+                and _value(requirement) != "keep_in_frame"
+            ):
+                raise ValueError(
+                    f"composition.visibility_requirements[{index}].requirement "
+                    "当前只支持 keep_in_frame"
+                )
+
+    camera = content.get("camera", {})
+    shot_type = camera.get("shot_type") if isinstance(camera, dict) else None
+    if _value(shot_type) is not None:
+        unsupported.append("camera.shot_type")
+    view_angle = camera.get("view_angle") if isinstance(camera, dict) else None
+    if _value(view_angle) is not None and _value(view_angle) not in {
+        "eye_level",
+        "high_angle",
+        "low_angle",
+        "top_down",
+    }:
+        raise ValueError(
+            "camera.view_angle 仅支持 eye_level/high_angle/low_angle/top_down"
+        )
+    camera_height = camera.get("camera_height") if isinstance(camera, dict) else None
+    if (
+        _value(camera_height) is not None
+        and re.fullmatch(r"\s*\d+(?:\.\d+)?\s*(?:m|米)\s*", str(_value(camera_height)).lower())
+        is None
+    ):
+        raise ValueError("camera.camera_height 必须使用明确的米制数值，例如 1.6 m")
+    lens = camera.get("lens_intent") if isinstance(camera, dict) else None
+    if (
+        _value(lens) is not None
+        and camera_lens_focal_length(_value(lens)) is None
+    ):
+        raise ValueError(
+            "camera.lens_intent 必须是毫米焦距或 wide/normal/telephoto"
+        )
+    movement = camera.get("movement", {}) if isinstance(camera, dict) else {}
+    movement_type = _value(movement.get("type")) if isinstance(movement, dict) else None
+    if movement_type is not None and movement_type not in {
+        "static",
+        "pan",
+        "orbit",
+        "push_in",
+        "pull_out",
+        "follow",
+        "lateral",
+    }:
+        raise ValueError(
+            "camera.movement.type 必须使用 static/pan/orbit/push_in/"
+            "pull_out/follow/lateral"
+        )
+    for field in ("direction", "trajectory", "easing"):
+        node = movement.get(field) if isinstance(movement, dict) else None
+        if _value(node) is not None:
+            unsupported.append(f"camera.movement.{field}")
+
+    if unsupported:
+        raise ValueError(
+            "当前 Planning 没有这些字段的类型化执行接口："
+            + ", ".join(unsupported)
+        )
+
+
 def _normalize_camera_movement(content: dict[str, Any]) -> None:
     """Validate camera-only timing without conflating focus and movement target."""
 
@@ -598,7 +753,8 @@ def _normalize_camera_movement(content: dict[str, Any]) -> None:
     kind = classify_camera_movement(_value(movement.get("type")))
     if kind in {"pan", "follow", "orbit"} and target_id is None:
         raise ValueError(f"camera.movement.type={kind} 缺少独立 target_id")
-
+    if kind not in {"pan", "follow", "orbit"} and target_id is not None:
+        raise ValueError(f"camera.movement.type={kind} 不接受 target_id")
 
 def _apply_scene_dynamics(content: dict[str, Any]) -> None:
     # scene_dynamics is deliberately subject-scoped.  Environmental effects
@@ -612,7 +768,8 @@ def _apply_scene_dynamics(content: dict[str, Any]) -> None:
         postconditions = semantics.get("postconditions")
         changes_state = isinstance(postconditions, dict) and (
             postconditions.get("contained_by_id") is not None
-            or postconditions.get("external_visibility") in {"visible", "hidden"}
+            or postconditions.get("external_visibility")
+            in {"becomes_visible", "becomes_hidden"}
         )
         if semantics.get("motion_mode") != "stationary" or changes_state:
             dynamic = True
@@ -631,7 +788,19 @@ def _apply_scene_dynamics(content: dict[str, Any]) -> None:
 def _validate_motion_ranges(
     motions: list[dict[str, Any]],
     duration: float,
+    events: list[dict[str, Any]],
 ) -> None:
+    event_ranges = {
+        str(event["id"]): (
+            float(event["start_time_seconds"]),
+            float(event["end_time_seconds"]),
+        )
+        for event in events
+        if isinstance(event, dict)
+        and isinstance(event.get("id"), str)
+        and _is_number(event.get("start_time_seconds"))
+        and _is_number(event.get("end_time_seconds"))
+    }
     for index, motion in enumerate(motions):
         start = motion.get("start_time_seconds")
         end = motion.get("end_time_seconds")
@@ -639,6 +808,25 @@ def _validate_motion_ranges(
             raise ValueError(f"subject_motion[{index}] 必须给出关键时间范围")
         if not 0.0 <= float(start) < float(end) <= duration:
             raise ValueError(f"subject_motion[{index}] 的关键时间范围无效")
+        semantics = motion.get("motion_semantics")
+        event_id = (
+            semantics.get("timeline_event_id")
+            if isinstance(semantics, dict)
+            else None
+        )
+        if event_id is not None:
+            event_range = event_ranges.get(str(event_id))
+            if event_range is None:
+                raise ValueError(
+                    f"subject_motion[{index}] 的 timeline_event_id 未引用有效事件"
+                )
+            if (
+                abs(float(start) - event_range[0]) > 1e-6
+                or abs(float(end) - event_range[1]) > 1e-6
+            ):
+                raise ValueError(
+                    f"subject_motion[{index}] 与 timeline_event_id 的数值范围不一致"
+                )
 
 
 def _classify_emotion(content: dict[str, Any], rules: dict[str, Any]) -> dict[str, Any]:
@@ -751,11 +939,13 @@ def _motion_parameters(
                 "motion_mode": semantics["motion_mode"],
                 "speed_range_mps": speed_range,
                 "direction_mode": direction_mode,
-                "direction_vector_world": (
-                    deepcopy(rules["coordinate_system"]["forward_vector"])
-                    if direction_mode == "world_forward"
-                    else None
-                ),
+                "direction_vector_world": {
+                    "world_forward": deepcopy(
+                        rules["coordinate_system"]["forward_vector"]
+                    ),
+                    "world_left": [-1.0, 0.0, 0.0],
+                    "world_right": [1.0, 0.0, 0.0],
+                }.get(direction_mode),
                 "target_id": semantics["target_id"],
                 "carrier_id": semantics["carrier_id"],
                 "path_type": semantics["path_type"],
@@ -818,6 +1008,22 @@ def _validated_motion_semantics(
     }:
         raise ValueError(f"subject_motion[{index}] 的自主运动类型不一致")
 
+    local_components = semantics.get("local_components")
+    if not isinstance(local_components, list):
+        raise ValueError(f"subject_motion[{index}] 缺少 local_components")
+    if len(local_components) != len(set(local_components)) or any(
+        item not in {"rotation", "scale"} for item in local_components
+    ):
+        raise ValueError(f"subject_motion[{index}] 的 local_components 无效")
+    if motion_mode == "local_interaction" and not local_components:
+        raise ValueError(
+            f"subject_motion[{index}] 的 local_interaction 必须声明 rotation/scale"
+        )
+    if motion_mode != "local_interaction" and local_components:
+        raise ValueError(
+            f"subject_motion[{index}] 仅 local_interaction 可声明 local_components"
+        )
+
     target_id = semantics.get("target_id")
     direction_mode = semantics.get("direction_mode")
     if (
@@ -830,7 +1036,12 @@ def _validated_motion_semantics(
         and target_id not in subject_ids
     ):
         raise ValueError(f"subject_motion[{index}] 的相对方向缺少有效 target_id")
-    if direction_mode in {"none", "world_forward"} and target_id is not None:
+    if direction_mode in {
+        "none",
+        "world_forward",
+        "world_left",
+        "world_right",
+    } and target_id is not None:
         raise ValueError(
             f"subject_motion[{index}] 的 direction_mode={direction_mode} "
             "不得设置 target_id"
@@ -1032,16 +1243,6 @@ def _camera_profile_for_explicit_movement(
         resolved["speed_mps"] = 0.0
         resolved["end_distance_m"] = resolved["start_distance_m"]
     return resolved
-
-
-def _camera_trajectory(movement: str) -> str:
-    if movement == "pan":
-        return "固定位置旋转"
-    if movement == "orbit":
-        return "圆形环绕"
-    if movement == "static":
-        return "静止"
-    return "直线"
 
 
 def _percent_range(values: list[float]) -> str:

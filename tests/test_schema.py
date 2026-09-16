@@ -41,6 +41,7 @@ class SchemaTest(unittest.TestCase):
                     "target_id": None,
                     "carrier_id": None,
                     "path_type": "linear",
+                    "local_components": [],
                     "timeline_event_id": None,
                     "narrative_required": True,
                     "postconditions": {
@@ -120,6 +121,28 @@ class SchemaTest(unittest.TestCase):
                 "source_text": "二者非常近",
                 "timeline_event_id": None,
                 "temporal_mode": "throughout",
+            }
+        ]
+
+        with self.assertRaises(SchemaValidationError):
+            validate_model_output(value, self.schema)
+
+    def test_non_executable_camera_fields_are_closed_in_schema(self) -> None:
+        for field in ("direction", "trajectory", "easing"):
+            with self.subTest(field=field):
+                value = valid_model_output()
+                value["camera"]["movement"][field] = _annotated("自由文本")
+
+                with self.assertRaises(SchemaValidationError):
+                    validate_model_output(value, self.schema)
+
+    def test_executable_composition_fields_reject_synonyms(self) -> None:
+        value = valid_model_output()
+        value["composition"]["screen_placements"] = [
+            {
+                "subject_id": "subject",
+                "horizontal": _annotated("画面左边"),
+                "vertical": _annotated("center"),
             }
         ]
 

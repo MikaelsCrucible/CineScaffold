@@ -431,6 +431,9 @@ class InterpreterRunner:
                                 self.config, attempt
                             ),
                         )
+                        deps.required_next_tool = recovery_context.get(
+                            "required_next_tool"
+                        )
                         trace.record(
                             "planning_recovery_requested",
                             attempt=attempt,
@@ -495,6 +498,9 @@ class InterpreterRunner:
                             if status == "commit_rejected" and commit_result
                             else None
                         ),
+                    )
+                    deps.required_next_tool = recovery_context.get(
+                        "required_next_tool"
                     )
                     trace.record(
                         "planning_recovery_requested",
@@ -915,6 +921,11 @@ def _recovery_context(
                 "narrative_required": semantics.get("narrative_required", False),
             }
         )
+    required_next_tool = (
+        "apply_candidate_patch"
+        if toolkit.has_unrepairable_hard_violations
+        else None
+    )
     context = {
         "repair_packet_version": "0.1",
         "stage": stage,
@@ -942,15 +953,21 @@ def _recovery_context(
         "capability_gaps": validation["capability_gaps"],
         "repair_search_exhausted": toolkit.has_exhausted_repair_search,
         "attempts_remaining": attempts_remaining,
-        "allowed_recovery_actions": [
-            "inspect_current_or_historical_candidate",
-            "apply_restricted_patch_immediately_for_unrepairable_hard_violation",
-            "use_deterministic_repair_for_supported_quality_violations",
-            "restore_best_revision",
-            "solve_and_validate",
-            "request_full_fidelity_commit",
-            "allow_deterministic_simplified_delivery",
-        ],
+        "allowed_recovery_actions": (
+            ["apply_candidate_patch"]
+            if required_next_tool is not None
+            else [
+                "inspect_candidate",
+                "apply_candidate_patch",
+                "suggest_repairs",
+                "apply_repair",
+                "restore_candidate",
+                "solve_candidate",
+                "validate_candidate",
+                "CommitRequest",
+            ]
+        ),
+        "required_next_tool": required_next_tool,
     }
     return compact_agent_payload(
         context,

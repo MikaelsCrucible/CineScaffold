@@ -262,6 +262,7 @@ class PlanningGeometryTest(unittest.TestCase):
                 "type": "path_follow",
                 "time_range_seconds": [0.0, 6.0],
                 "path": {
+                    "representation": "polyline",
                     "space": "target_relative",
                     "target_id": "earth",
                     "control_points": [
@@ -291,6 +292,7 @@ class PlanningGeometryTest(unittest.TestCase):
                     "type": "path_follow",
                     "time_range_seconds": [0.0, 6.0],
                     "path": {
+                        "representation": "polyline",
                         "control_points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
                         "cycle_count": 2.0,
                     },

@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Core 0.8.36 / Semantic Parser 0.18 / Toolkit 0.48 将 Cinematic Brief 提升到 v0.8，并把 Semantic Schema、两轮 Prompt、确定性规则与 Planning Objective 收敛为同一关闭契约：`external_visibility` 只表达显隐转变，局部动作明确列出旋转/尺度通道，摄影机类型与构图值使用代码可执行枚举，关系两端、世界/屏幕空间、物理尺寸/投影尺寸的含义不再混用；尚无执行接口的字段显式拒绝。旧 v0.7 产物不迁移，必须从原始输入重新生成。
+- Planning repair 进入显式的 required-next-tool 状态：`begin_design_repair` 返回完整可编辑基线、base revision 和 `required_next_tool=apply_candidate_patch`，下一轮只暴露并只接受该原子工具。模型侧不再注册四个旧分项 Patch，也不再为缺少路径类型的旧 Track 默补 `polyline`。
+- `scale_dominance` 只表示最终画面投影大小关系，物理“巨大”只影响实体物理尺度；该投影约束不再制造任意 20 倍上限。
 - Core 0.8.35 / Semantic Parser 0.17 将用户完全未指定的视频时长从 15 秒调整为 10 秒；用户给出的明确时长或范围仍保持原有优先级。
 - 空间关系新增通用 `at_midpoint` 时间模式，表示关系只在所引用任意事件区间的中央可渲染采样成立。Semantic 初稿与修正 Prompt 都要求把没有持续含义的关键时刻、最近点或状态切换表达为独立事件加 `at_midpoint`，不再误用 `throughout`。
 - 未指定焦点的默认静态镜头会围绕带类型关系的关键事件构图：在事件采样及有限前后语境内让双方保持清楚入画，并确定性后移镜头直至满足投影可读性；不会擅自加入跟拍或平移。

@@ -72,7 +72,7 @@ class SemanticParserTest(unittest.TestCase):
         config = self._config()
         result = parse_cinematic_brief("测试自然语言", provider, config)
 
-        self.assertEqual(result["schema_version"], "0.7")
+        self.assertEqual(result["schema_version"], "0.8")
         self.assertEqual(
             result["content"]["camera"]["view_relation_to_motion"],
             {
@@ -87,7 +87,7 @@ class SemanticParserTest(unittest.TestCase):
         self.assertRegex(result["provenance"]["textual_six_sha256"], r"^sha256:[0-9a-f]{64}$")
         self.assertIsNone(result["provenance"]["provider_usage"])
         review = result["provenance"]["semantic_review"]
-        self.assertEqual(review["catalog_version"], "semantic-review-rules-v0.1")
+        self.assertEqual(review["catalog_version"], "semantic-review-rules-v0.2")
         self.assertEqual(
             review["selection_policy"],
             "attention_only_no_semantic_inference",

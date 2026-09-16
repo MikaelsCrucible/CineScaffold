@@ -1,5 +1,5 @@
 {
-  "version": "semantic-review-rules-v0.1",
+  "version": "semantic-review-rules-v0.2",
   "max_selected_rules": 5,
   "rules": [
     {
@@ -170,7 +170,24 @@
       "emphasis": "分别核对自主位移、被承载的世界运动、动作结束后的容纳状态和外部可见性；这些事实互不替代。",
       "audit_questions": [
         "发生接近或进入过程的实体是否仍具有独立动作阶段？",
-        "carrier_id、contained_by_id 与 external_visibility 是否只在原文有证据时填写并保持一致？"
+        "carrier_id、contained_by_id 与 external_visibility 是否只在原文有证据时填写并保持一致？",
+        "external_visibility 是否描述真实的 becomes_visible/becomes_hidden 转变，而不是静态可见状态？"
+      ]
+    },
+    {
+      "id": "RELATION.OPERAND_AND_SPACE",
+      "title": "空间关系主语与参考系",
+      "priority": 85,
+      "always": false,
+      "diagnostic_codes": ["semantic_relationship_contract_failed"],
+      "diagnostic_path_prefixes": ["scene_design.relationships"],
+      "text_cues": ["远处", "前景", "后景", "巨大", "画面中", "far away", "foreground", "background", "huge", "in frame"],
+      "structural_signals": ["event_scoped_relationship"],
+      "emphasis": "逐条按 subject_id 满足谓词、reference_id 提供参照来复核，并区分规范世界关系、摄影机纵深和画面投影；物理尺寸形容词不自动产生投影尺度关系。",
+      "audit_questions": [
+        "far_from 的 subject_id 是否真的是更远的实体，而不是近处参照实体？",
+        "scale_dominance 是否来自明确的画面投影比较，而不是单个实体的物理大小描述？",
+        "左右前后上下描述的是世界空间还是屏幕构图？"
       ]
     },
     {

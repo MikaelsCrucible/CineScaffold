@@ -291,7 +291,7 @@ class ValidationGeneralityTest(unittest.TestCase):
             end_x=8.5,
             direction_mode="none",
             contained_by_id="locker",
-            external_visibility="hidden",
+            external_visibility="becomes_hidden",
         )
         toolkit.apply_motion_patch(
             [
@@ -461,7 +461,7 @@ def _typed_motion_toolkit(
         "end_time_seconds": 6.0,
     }
     objective = ObjectivePlanningBrief(
-        schema_version="0.7",
+        schema_version="0.8",
         source_brief_sha256="sha256:generality-audit",
         subjects=[{"id": subject_id}, {"id": target_id}],
         subject_motion=[motion],

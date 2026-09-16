@@ -135,7 +135,7 @@
             "contained_by_id": {"type": ["string", "null"]},
             "external_visibility": {
               "type": "string",
-              "enum": ["unchanged", "visible", "hidden"]
+              "enum": ["unchanged", "becomes_visible", "becomes_hidden"]
             }
           },
           "required": ["contained_by_id", "external_visibility"],

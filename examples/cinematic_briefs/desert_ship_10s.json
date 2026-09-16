@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.7",
+  "schema_version": "0.8",
   "content": {
     "summary": "一个男人站在荒漠里，远处有巨大的飞船，整体孤独而压迫，镜头缓慢推近。",
     "subjects": [
@@ -66,6 +66,7 @@
           "target_id": null,
           "carrier_id": null,
           "path_type": "stationary",
+          "local_components": [],
           "timeline_event_id": null,
           "narrative_required": false,
           "postconditions": {
@@ -110,6 +111,7 @@
           "target_id": null,
           "carrier_id": null,
           "path_type": "stationary",
+          "local_components": [],
           "timeline_event_id": null,
           "narrative_required": false,
           "postconditions": {
@@ -240,37 +242,13 @@
     },
     "composition": {
       "shot_size": {
-        "value": "远景",
-        "source_status": "inferred",
-        "source_text": "一个男人站在荒漠里，远处有巨大的飞船"
+        "value": null,
+        "source_status": "unknown",
+        "source_text": null
       },
-      "patterns": [
-        {
-          "value": "主体占画幅 1%-5%",
-          "source_status": "inferred",
-          "source_text": "感觉很孤独"
-        },
-        {
-          "value": "负空间占比 70%-100%",
-          "source_status": "inferred",
-          "source_text": "感觉很孤独"
-        },
-        {
-          "value": "主要物体占画幅 10%-30%",
-          "source_status": "inferred",
-          "source_text": "感觉很孤独"
-        }
-      ],
+      "patterns": [],
       "screen_placements": [],
       "visual_scales": [
-        {
-          "subject_id": "ship_01",
-          "scale": {
-            "value": "相对男人巨大",
-            "source_status": "explicit",
-            "source_text": "巨大的飞船"
-          }
-        },
         {
           "subject_id": "man_01",
           "scale": {
@@ -284,12 +262,12 @@
     },
     "camera": {
       "shot_type": {
-        "value": "远景",
-        "source_status": "inferred",
-        "source_text": "一个男人站在荒漠里，远处有巨大的飞船"
+        "value": null,
+        "source_status": "unknown",
+        "source_text": null
       },
       "view_angle": {
-        "value": "低角度仰视",
+        "value": "low_angle",
         "source_status": "inferred",
         "source_text": "巨大的飞船"
       },
@@ -310,14 +288,14 @@
       },
       "movement": {
         "type": {
-          "value": "推近",
+          "value": "push_in",
           "source_status": "explicit",
           "source_text": "镜头慢慢推近"
         },
         "direction": {
-          "value": "向男人推进",
-          "source_status": "inferred",
-          "source_text": "镜头慢慢推近"
+          "value": null,
+          "source_status": "unknown",
+          "source_text": null
         },
         "speed": {
           "value": "缓慢",
@@ -325,9 +303,9 @@
           "source_text": "镜头慢慢推近"
         },
         "trajectory": {
-          "value": "直线",
-          "source_status": "inferred",
-          "source_text": "感觉很孤独"
+          "value": null,
+          "source_status": "unknown",
+          "source_text": null
         },
         "easing": {
           "value": null,
@@ -605,8 +583,7 @@
     },
     "explicit_override_paths": [
       "camera.movement.type",
-      "camera.movement.speed",
-      "composition.visual_scales[0].scale"
+      "camera.movement.speed"
     ],
     "precedence": [
       "explicit",

@@ -585,6 +585,7 @@ class PlanningDeps:
     last_failure_signature: str | None = None
     failure_repeat_count: int = 0
     pending_design_stall: dict[str, Any] | None = None
+    required_next_tool: str | None = None
 
     def call_tool(
         self, name: str, arguments: dict[str, Any], operation
@@ -635,6 +636,20 @@ class PlanningDeps:
             )
             raise
         current_revision_after = self.toolkit.store.current_revision
+        if (
+            name == "begin_design_repair"
+            and result.get("status") == "ok"
+            and isinstance(result.get("data"), dict)
+        ):
+            next_tool = result["data"].get("next_tool")
+            self.required_next_tool = (
+                str(next_tool) if isinstance(next_tool, str) else None
+            )
+        elif (
+            self.required_next_tool == name
+            and current_revision_after != revision_before
+        ):
+            self.required_next_tool = None
         self.trace.record(
             "tool_call_completed",
             tool_name=name,
@@ -681,14 +696,6 @@ class PlanningDeps:
                 authoritative_revision=current_revision_after,
             )
         return agent_result
-
-    def _observe_design_search(self, result: dict[str, Any]) -> None:
-        """Compatibility wrapper for callers predating generic failure stalls."""
-
-        revision = self.toolkit.store.current_revision
-        self._observe_failed_tool_call(
-            "request_design_options", result, revision, revision
-        )
 
     def _observe_failed_tool_call(
         self,
@@ -739,6 +746,12 @@ class PlanningDeps:
         arguments: dict[str, Any],
         revision: int,
     ) -> dict[str, Any] | None:
+        if self.required_next_tool is not None and name != self.required_next_tool:
+            return _protocol_rejected(
+                revision,
+                f"当前协议要求下一步调用 {self.required_next_tool}",
+                [f"调用 {self.required_next_tool}"],
+            )
         if name == "get_capabilities" and self.capabilities_read:
             return _protocol_rejected(
                 revision,
@@ -746,7 +759,7 @@ class PlanningDeps:
                 ["使用已有能力结果继续构造或提交"],
             )
         if name == "get_capabilities":
-            # 仅保留给兼容测试和显式低层诊断；正常 Agent 工具表不会暴露。
+            # 仅供显式低层诊断；正常 Agent 工具表不注册此入口。
             return None
         if not self.capabilities_read and not self.toolkit.design_option_applied:
             if not self.toolkit.has_scene_skeleton and name != "submit_scene_skeleton":
@@ -851,15 +864,6 @@ def _protocol_rejected(
     }
 
 
-async def _prepare_capabilities_tool(
-    ctx: RunContext[PlanningDeps],
-    tool_definition: ToolDefinition,
-) -> ToolDefinition | None:
-    # 正常流程由 Design Options 返回任务相关能力，不再付费读取整本手册。
-    del ctx, tool_definition
-    return None
-
-
 async def _prepare_scene_skeleton_tool(
     ctx: RunContext[PlanningDeps],
     tool_definition: ToolDefinition,
@@ -937,22 +941,16 @@ async def _prepare_candidate_tool(
     tool_definition: ToolDefinition,
 ) -> ToolDefinition | None:
     # 首次能力读取前只暴露能力工具；可提交后只允许结构化终止。
+    if (
+        ctx.deps.required_next_tool is not None
+        and tool_definition.name != ctx.deps.required_next_tool
+    ):
+        return None
     if not (ctx.deps.capabilities_read or ctx.deps.toolkit.design_option_applied):
         return None
     if ctx.deps.toolkit.commit_ready:
         return None
     return tool_definition
-
-
-async def _prepare_manual_mutation_tool(
-    ctx: RunContext[PlanningDeps],
-    tool_definition: ToolDefinition,
-) -> ToolDefinition | None:
-    # Component mutations remain registered for compatibility and direct
-    # diagnostics. The normal Agent receives one atomic Candidate repair tool so
-    # coupled fixes do not require unsafe intermediate revisions.
-    del ctx, tool_definition
-    return None
 
 
 async def _prepare_escalated_candidate_tool(
@@ -996,6 +994,8 @@ async def _prepare_repair_suggestion_tool(
 ) -> ToolDefinition | None:
     prepared = await _prepare_candidate_tool(ctx, tool_definition)
     if prepared is None:
+        return None
+    if ctx.deps.toolkit.has_unrepairable_hard_violations:
         return None
     if ctx.deps.toolkit.has_current_repair_suggestions:
         return None
@@ -1105,36 +1105,6 @@ def create_planning_agent(
             lambda: ctx.deps.toolkit.apply_design_option(**arguments),
         )
 
-    @agent.tool(sequential=True, prepare=_prepare_capabilities_tool)
-    async def get_capabilities(
-        ctx: RunContext[PlanningDeps],
-        sections: list[
-            Literal[
-                "entities",
-                "constraints",
-                "tracks",
-                "camera",
-                "validators",
-                "limits",
-                "timeline",
-                "profiles",
-                "constraint_types",
-                "resources",
-                "mcp",
-                "blender",
-                "executor",
-                "scene_ir",
-                "render",
-            ]
-        ],
-    ) -> dict[str, Any]:
-        """读取版本化能力、约束、轨道、验证器和当前资源状态。"""
-        return ctx.deps.call_tool(
-            "get_capabilities",
-            {"sections": sections},
-            lambda: ctx.deps.toolkit.get_capabilities(sections),
-        )
-
     @agent.tool(sequential=True, prepare=_prepare_candidate_tool)
     async def inspect_candidate(
         ctx: RunContext[PlanningDeps],
@@ -1169,83 +1139,6 @@ def create_planning_agent(
             "inspect_candidate",
             arguments,
             lambda: ctx.deps.toolkit.inspect_candidate(**arguments),
-        )
-
-    @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
-    async def apply_entity_patch(
-        ctx: RunContext[PlanningDeps],
-        upserts: list[EntityPatchInput],
-        remove_ids: list[str],
-    ) -> dict[str, Any]:
-        """原子创建、更新或删除实体；更新时保留 Agent 不可见的已求解 Transform。"""
-        # The Agent is intentionally not allowed to author solved coordinates.
-        # Omitting this hidden field lets Toolkit preserve it for existing entities
-        # while keeping it unresolved for genuinely new entities.
-        payload = [item.model_dump(mode="json", exclude_unset=True) for item in upserts]
-        arguments = {"upserts": payload, "remove_ids": remove_ids}
-        return ctx.deps.call_tool(
-            "apply_entity_patch",
-            arguments,
-            lambda: ctx.deps.toolkit.apply_entity_patch(**arguments),
-        )
-
-    @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
-    async def apply_constraint_patch(
-        ctx: RunContext[PlanningDeps],
-        upserts: list[ConstraintPatchInput],
-        remove_ids: list[str],
-    ) -> dict[str, Any]:
-        """原子新增、更新或删除声明式客观约束。"""
-        arguments = {
-            "upserts": [item.model_dump(mode="json") for item in upserts],
-            "remove_ids": remove_ids,
-        }
-        return ctx.deps.call_tool(
-            "apply_constraint_patch",
-            arguments,
-            lambda: ctx.deps.toolkit.apply_constraint_patch(**arguments),
-        )
-
-    @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
-    async def apply_motion_patch(
-        ctx: RunContext[PlanningDeps],
-        upserts: list[TrackPatchInput],
-        remove_ids: list[str],
-    ) -> dict[str, Any]:
-        """原子创建、更新或删除实体运动与可见性轨道。"""
-        arguments = {
-            "upserts": [item.to_domain_payload() for item in upserts],
-            "remove_ids": remove_ids,
-        }
-        return ctx.deps.call_tool(
-            "apply_motion_patch",
-            arguments,
-            lambda: ctx.deps.toolkit.apply_motion_patch(**arguments),
-        )
-
-    @agent.tool(sequential=True, prepare=_prepare_manual_mutation_tool)
-    async def apply_camera_patch(
-        ctx: RunContext[PlanningDeps],
-        camera_id: str,
-        projection: Literal["perspective"],
-        active: bool,
-        static: CameraStatic,
-        tracks: list[TrackPatchInput],
-        remove_track_ids: list[str],
-    ) -> dict[str, Any]:
-        """创建或修改活动透视摄影机及其运动、观察和焦距轨道。"""
-        arguments = {
-            "camera_id": camera_id,
-            "projection": projection,
-            "active": active,
-            "static": static.model_dump(mode="json", exclude_unset=True),
-            "tracks": [item.to_domain_payload() for item in tracks],
-            "remove_track_ids": remove_track_ids,
-        }
-        return ctx.deps.call_tool(
-            "apply_camera_patch",
-            arguments,
-            lambda: ctx.deps.toolkit.apply_camera_patch(**arguments),
         )
 
     @agent.tool(sequential=True, prepare=_prepare_candidate_patch_tool)

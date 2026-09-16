@@ -1876,16 +1876,23 @@
           "type": "number"
         },
         "maximum_ratio": {
-          "exclusiveMinimum": 0,
-          "title": "Maximum Ratio",
-          "type": "number"
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Ratio"
         }
       },
       "required": [
         "numerator_entity_id",
         "denominator_entity_id",
-        "minimum_ratio",
-        "maximum_ratio"
+        "minimum_ratio"
       ],
       "title": "ProjectedScaleRatioParameters",
       "type": "object"

@@ -343,7 +343,9 @@ def build_deterministic_scene_skeleton(
                 "direction_mode": direction_mode,
                 "path_family": path_family,
                 "local_components": (
-                    ["rotation", "scale"] if kind == "local_transform" else []
+                    list(semantics.get("local_components") or [])
+                    if kind == "local_transform"
+                    else []
                 ),
                 "speed_intent": speed_intent,
                 "speed_source_status": (
@@ -404,7 +406,11 @@ def build_deterministic_scene_skeleton(
                 )
         if isinstance(postconditions, dict) and postconditions.get(
             "external_visibility"
-        ) in {"visible", "hidden"}:
+        ) in {"becomes_visible", "becomes_hidden"}:
+            visibility_state = {
+                "becomes_visible": "visible",
+                "becomes_hidden": "hidden",
+            }[postconditions["external_visibility"]]
             phases.append(
                 {
                     "phase_id": f"motion_{index + 1:02d}_visibility",
@@ -419,7 +425,7 @@ def build_deterministic_scene_skeleton(
                     "speed_intent": "unspecified",
                     "speed_source_status": None,
                     "speed_source_ref": None,
-                    "visibility_state": postconditions["external_visibility"],
+                    "visibility_state": visibility_state,
                     "transition_at": "at_end",
                     "source_status": phase_source_status,
                     "source_ref": phase_source_ref,

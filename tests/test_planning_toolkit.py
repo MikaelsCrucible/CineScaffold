@@ -559,7 +559,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         toolkit = _toolkit()
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
             update={
-                "schema_version": "0.7",
+                "schema_version": "0.8",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -746,7 +746,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         toolkit = _toolkit()
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
             update={
-                "schema_version": "0.7",
+                "schema_version": "0.8",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -769,7 +769,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                             "narrative_required": True,
                             "postconditions": {
                                 "contained_by_id": "ship_01",
-                                "external_visibility": "hidden",
+                                "external_visibility": "becomes_hidden",
                             },
                             "source_status": "inferred",
                             "source_text": "被飞船接走",
@@ -852,7 +852,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
         toolkit = _toolkit()
         toolkit.objective_brief = toolkit.objective_brief.model_copy(
             update={
-                "schema_version": "0.7",
+                "schema_version": "0.8",
                 "subject_motion": [
                     {
                         "motion_id": "man_circle",
@@ -3106,6 +3106,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     "type": "path_follow",
                     "time_range_seconds": [0.0, 6.0],
                     "path": {
+                        "representation": "polyline",
                         "space": "camera",
                         "control_points": [[0.0, 0.0, -5.0], [0.0, 0.0, -5.0]],
                     },
@@ -3230,6 +3231,7 @@ class ScenePlanningToolkitTest(unittest.TestCase):
                     "type": "path_follow",
                     "time_range_seconds": [0.0, 6.0],
                     "path": {
+                        "representation": "polyline",
                         "space": "camera",
                         "control_points": [[0.0, 0.0, -5.0], [0.0, 0.0, -5.0]],
                     },

@@ -432,7 +432,7 @@ class PlanningDesignTest(unittest.TestCase):
         objective = project_objective_brief(valid_planning_brief()).objective_brief
         objective = objective.model_copy(
             update={
-                "schema_version": "0.7",
+                "schema_version": "0.8",
                 "subject_motion": [
                     {
                         "motion_id": "required_hold",
@@ -489,7 +489,7 @@ class PlanningDesignTest(unittest.TestCase):
         objective = project_objective_brief(valid_planning_brief()).objective_brief
         objective = objective.model_copy(
             update={
-                "schema_version": "0.7",
+                "schema_version": "0.8",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -504,6 +504,7 @@ class PlanningDesignTest(unittest.TestCase):
                         "motion_semantics": {
                             "motion_mode": "local_interaction",
                             "path_type": "stationary",
+                            "local_components": ["rotation"],
                             "narrative_required": True,
                         },
                     }
@@ -549,7 +550,7 @@ class PlanningDesignTest(unittest.TestCase):
         source = _desert_toolkit()
         objective = source.objective_brief.model_copy(
             update={
-                "schema_version": "0.7",
+                "schema_version": "0.8",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -573,6 +574,7 @@ class PlanningDesignTest(unittest.TestCase):
                             "target_id": None,
                             "carrier_id": None,
                             "path_type": "stationary",
+                            "local_components": ["rotation"],
                             "timeline_event_id": None,
                             "source_status": "inferred",
                             "narrative_required": True,
@@ -736,12 +738,69 @@ class PlanningDesignTest(unittest.TestCase):
         )
         self.assertEqual(begun["status"], "ok", begun)
         self.assertEqual(begun["data"]["next_tool"], "apply_candidate_patch")
+        self.assertEqual(
+            begun["data"]["required_next_tool"], "apply_candidate_patch"
+        )
+        self.assertEqual(
+            begun["data"]["patch_contract"]["base_revision"],
+            begun["revision_after"],
+        )
+        self.assertIn("entities", begun["data"]["editable_candidate"])
         self.assertTrue(toolkit.store.get().entities)
+
+    def test_projected_dominance_has_no_invented_upper_bound(self) -> None:
+        brief = valid_planning_brief()
+        brief["content"]["scene_design"]["relationships"].append(
+            {
+                "type": "scale_dominance",
+                "subject_id": "ship_01",
+                "reference_id": "man_01",
+                "timeline_event_id": None,
+                "temporal_mode": "throughout",
+                "source_status": "explicit",
+                "source_text": "飞船在画面中显著大于男人",
+            }
+        )
+        objective = project_objective_brief(brief).objective_brief
+        resolution = freeze_brief_duration(
+            objective.timeline,
+            fps_numerator=24,
+            fps_denominator=1,
+        )
+        objective = attach_duration_resolution(objective, resolution)
+        toolkit = ScenePlanningToolkit(objective)
+        skeleton = _desert_skeleton()
+        skeleton["relations"].append(
+            {
+                "relation_id": "ship_dominates_man",
+                "kind": "scale_dominance",
+                "subject_id": "ship_01",
+                "reference_id": "man_01",
+                "source_status": "explicit",
+                "source_ref": "content.scene_design.relationships[1]",
+            }
+        )
+        toolkit.submit_scene_skeleton(skeleton)
+
+        result = toolkit.request_design_options(max_options=1)
+        candidates = [item.candidate for item in toolkit._design_options.values()]
+        candidates.extend(
+            item.candidate for item in toolkit._design_repair_baselines.values()
+        )
+
+        self.assertTrue(candidates, result)
+        ratio = next(
+            constraint
+            for constraint in candidates[0].constraints.values()
+            if constraint.type == "projected_scale_ratio"
+        )
+        self.assertEqual(ratio.parameters.minimum_ratio, 2.0)
+        self.assertIsNone(ratio.parameters.maximum_ratio)
 
     def test_explicit_overhead_view_changes_actual_camera_pitch(self) -> None:
         brief = valid_planning_brief()
         brief["content"]["camera"]["view_angle"] = {
-            "value": "垂直俯拍",
+            "value": "top_down",
             "source_status": "explicit",
             "source_text": "从正上方俯拍",
         }
@@ -827,7 +886,7 @@ class PlanningDesignTest(unittest.TestCase):
         source = _desert_toolkit()
         objective = source.objective_brief.model_copy(
             update={
-                "schema_version": "0.7",
+                "schema_version": "0.8",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -904,7 +963,7 @@ class PlanningDesignTest(unittest.TestCase):
         source = _desert_toolkit()
         objective = source.objective_brief.model_copy(
             update={
-                "schema_version": "0.7",
+                "schema_version": "0.8",
                 "scene_dynamics": {
                     "mode": "dynamic",
                     "source_status": "inferred",
@@ -940,7 +999,7 @@ class PlanningDesignTest(unittest.TestCase):
                     "movement": source.objective_brief.camera["movement"]
                     | {
                         "type": {
-                            "value": "固定机位，不平移，只旋转跟随人物",
+                            "value": "pan",
                             "source_status": "explicit",
                             "source_text": "先固定，之后只旋转跟随人物",
                         },
@@ -957,7 +1016,7 @@ class PlanningDesignTest(unittest.TestCase):
                 "explicit_requirements": [
                     ObjectiveRequirement(
                         path="content.camera.movement.type",
-                        value="固定机位，不平移，只旋转跟随人物",
+                        value="pan",
                     ),
                     ObjectiveRequirement(
                         path="content.camera.movement.speed",
@@ -1833,7 +1892,7 @@ class PlanningDesignTest(unittest.TestCase):
         )
         toolkit.objective_brief.subject_motion[2]["motion_semantics"][
             "postconditions"
-        ]["external_visibility"] = "hidden"
+        ]["external_visibility"] = "becomes_hidden"
         toolkit.submit_scene_skeleton(skeleton)
 
         result = toolkit.request_design_options(max_options=1)
@@ -2007,11 +2066,12 @@ class PlanningDesignTest(unittest.TestCase):
                 "target_id": "man" if index == 1 else "car",
                 "carrier_id": None,
                 "path_type": "linear" if index == 1 else "stationary",
+                "local_components": ["rotation", "scale"] if index == 2 else [],
                 "timeline_event_id": "arrival_and_boarding",
                 "narrative_required": True,
                 "postconditions": {
                     "contained_by_id": "car" if index == 2 else None,
-                    "external_visibility": "hidden" if index == 2 else "unchanged",
+                    "external_visibility": "becomes_hidden" if index == 2 else "unchanged",
                 },
                 "source_status": "inferred",
             }
@@ -2125,6 +2185,7 @@ class PlanningDesignTest(unittest.TestCase):
                 "target_id": None,
                 "carrier_id": None,
                 "path_type": "linear",
+                "local_components": [],
                 "timeline_event_id": "wait_and_arrive",
                 "postconditions": {
                     "contained_by_id": None,
@@ -2140,10 +2201,11 @@ class PlanningDesignTest(unittest.TestCase):
                 "target_id": "car",
                 "carrier_id": None,
                 "path_type": "linear",
+                "local_components": [],
                 "timeline_event_id": "boarding",
                 "postconditions": {
                     "contained_by_id": "car",
-                    "external_visibility": "hidden",
+                    "external_visibility": "becomes_hidden",
                 },
                 "source_status": "inferred",
             },
@@ -2155,6 +2217,7 @@ class PlanningDesignTest(unittest.TestCase):
                 "target_id": None,
                 "carrier_id": None,
                 "path_type": "linear",
+                "local_components": [],
                 "timeline_event_id": "departure",
                 "postconditions": {
                     "contained_by_id": None,
@@ -2170,10 +2233,11 @@ class PlanningDesignTest(unittest.TestCase):
                 "target_id": None,
                 "carrier_id": "car",
                 "path_type": "linear",
+                "local_components": [],
                 "timeline_event_id": "departure",
                 "postconditions": {
                     "contained_by_id": "car",
-                    "external_visibility": "hidden",
+                    "external_visibility": "becomes_hidden",
                 },
                 "source_status": "inferred",
             },
@@ -2657,7 +2721,7 @@ class PlanningDesignTest(unittest.TestCase):
             "narrative_required": True,
             "postconditions": {
                 "contained_by_id": "car",
-                "external_visibility": "hidden",
+                "external_visibility": "becomes_hidden",
             },
             "source_status": "explicit",
         }
@@ -2903,7 +2967,7 @@ def _typed_solar_toolkit() -> ScenePlanningToolkit:
         )
     objective = source.objective_brief.model_copy(
         update={
-            "schema_version": "0.7",
+            "schema_version": "0.8",
             "scene_dynamics": {
                 "mode": "dynamic",
                 "source_status": "inferred",

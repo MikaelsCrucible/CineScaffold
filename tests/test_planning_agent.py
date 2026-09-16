@@ -7,6 +7,7 @@ import time
 import unittest
 from pathlib import Path
 
+from pydantic import ValidationError
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -34,7 +35,6 @@ from cinescaffold.planning.agent import (
     _prepare_escalated_candidate_tool,
     _prepare_design_apply_tool,
     _prepare_design_options_tool,
-    _prepare_manual_mutation_tool,
     _prepare_repair_apply_tool,
     _prepare_repair_suggestion_tool,
     _prepare_scene_skeleton_tool,
@@ -59,6 +59,18 @@ from tests.test_planning_toolkit import (
 
 
 class PlanningProtocolTest(unittest.TestCase):
+    def test_current_path_contract_rejects_missing_representation(self) -> None:
+        with self.assertRaises(ValidationError):
+            TrackSpec.model_validate(
+                {
+                    "track_id": "route",
+                    "target_entity_id": "actor",
+                    "type": "path_follow",
+                    "time_range_seconds": [0.0, 1.0],
+                    "path": {"points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]},
+                }
+            )
+
     def test_agent_patch_schemas_are_compact_but_domain_validation_stays_strict(
         self,
     ) -> None:
@@ -207,8 +219,12 @@ class PlanningProtocolTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory:
             deps = _deps(Path(directory), _toolkit())
-            deps._observe_design_search(failure)
-            deps._observe_design_search(failure)
+            deps._observe_failed_tool_call(
+                "request_design_options", failure, 0, 0
+            )
+            deps._observe_failed_tool_call(
+                "request_design_options", failure, 0, 0
+            )
 
             with self.assertRaises(DesignSearchStalled) as raised:
                 _compact_tool_call_history(_context(deps), [])
@@ -236,8 +252,12 @@ class PlanningProtocolTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory:
             deps = _deps(Path(directory), _toolkit())
-            deps._observe_design_search(failure)
-            deps._observe_design_search(duplicate)
+            deps._observe_failed_tool_call(
+                "request_design_options", failure, 0, 0
+            )
+            deps._observe_failed_tool_call(
+                "request_design_options", duplicate, 0, 0
+            )
 
             with self.assertRaises(DesignSearchStalled):
                 _compact_tool_call_history(_context(deps), [])
@@ -593,7 +613,7 @@ class PlanningProtocolTest(unittest.TestCase):
         self.assertIsNone(suggestion_after_search)
         self.assertIs(apply_ready, sentinel)
 
-    def test_manual_mutation_reopens_after_deterministic_repair_is_exhausted(
+    def test_atomic_candidate_patch_opens_after_deterministic_repair_is_exhausted(
         self,
     ) -> None:
         toolkit = _projected_motion_toolkit(
@@ -606,9 +626,6 @@ class PlanningProtocolTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             context = _context(_deps(Path(directory), toolkit))
 
-            legacy_prepared = asyncio.run(
-                _prepare_manual_mutation_tool(context, sentinel)
-            )
             prepared = asyncio.run(_prepare_escalated_candidate_tool(context, sentinel))
             repair_tool = ToolDefinition(
                 name="apply_candidate_patch",
@@ -618,7 +635,6 @@ class PlanningProtocolTest(unittest.TestCase):
                 _prepare_candidate_patch_tool(context, repair_tool)
             )
 
-        self.assertIsNone(legacy_prepared)
         self.assertIs(prepared, sentinel)
         self.assertIsNotNone(candidate_patch)
         assert candidate_patch is not None
@@ -662,6 +678,79 @@ class PlanningProtocolTest(unittest.TestCase):
 
         self.assertIs(prepared, sentinel)
         self.assertFalse(toolkit.has_exhausted_repair_search)
+
+    def test_required_patch_hides_and_rejects_every_other_candidate_tool(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(0.0, 0.0, 0.9),
+            camera_position=(0.0, -10.0, 1.5),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            deps = _deps(Path(directory), toolkit)
+            _read_capabilities(deps)
+            deps.required_next_tool = "apply_candidate_patch"
+            context = _context(deps)
+            inspect_tool = ToolDefinition(
+                name="inspect_candidate", description="read candidate"
+            )
+            patch_tool = ToolDefinition(
+                name="apply_candidate_patch", description="repair candidate"
+            )
+
+            self.assertIsNone(
+                asyncio.run(_prepare_candidate_tool(context, inspect_tool))
+            )
+            self.assertIsNotNone(
+                asyncio.run(_prepare_candidate_patch_tool(context, patch_tool))
+            )
+            rejected = deps.call_tool(
+                "inspect_candidate",
+                {"view": "summary", "revision": None},
+                lambda: toolkit.inspect_candidate(view="summary"),
+            )
+
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertIn("apply_candidate_patch", rejected["warnings"][0])
+
+    def test_unrepairable_hard_error_suppresses_deterministic_repair_search(self) -> None:
+        toolkit = _projected_motion_toolkit(
+            end_position=(0.0, 0.0, 0.9),
+            camera_position=(0.0, -10.0, 1.5),
+        )
+        revision = toolkit.store.current_revision
+        toolkit.store.save_validation(
+            ValidationReport(
+                revision=revision,
+                hard_pass=False,
+                soft_score=1.0,
+                checks=["motion"],
+                violations=[
+                    Violation(
+                        id="unrepairable_motion",
+                        code="MOTION_DIRECTION_SEMANTICS_UNMET",
+                        severity="hard",
+                        entity_ids=["man_01"],
+                        message="typed direction missing",
+                    ),
+                    Violation(
+                        id="repairable_camera",
+                        code="PROJECTED_MOTION_UNREADABLE",
+                        severity="hard",
+                        entity_ids=["man_01"],
+                        message="projection unclear",
+                    ),
+                ],
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(_deps(Path(directory), toolkit))
+            suggestion_tool = ToolDefinition(
+                name="suggest_repairs", description="search repairs"
+            )
+            prepared = asyncio.run(
+                _prepare_repair_suggestion_tool(context, suggestion_tool)
+            )
+
+        self.assertIsNone(prepared)
 
 
 def _deps(

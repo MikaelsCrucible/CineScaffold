@@ -37,7 +37,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
     def test_explicit_objective_requirements_keep_source_paths(self) -> None:
         brief = _valid_brief()
         brief["content"]["camera"]["movement"]["type"] = {
-            "value": "缓慢推近",
+            "value": "push_in",
             "source_status": "explicit",
             "source_text": "镜头慢慢推近",
         }
@@ -46,7 +46,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
 
         requirement = result.objective_brief.explicit_requirements[0]
         self.assertEqual(requirement.path, "content.camera.movement.type")
-        self.assertEqual(requirement.value, "缓慢推近")
+        self.assertEqual(requirement.value, "push_in")
 
     def test_rejects_incomplete_brief(self) -> None:
         brief = _valid_brief()
@@ -109,7 +109,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
                 / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
             ),
         )
-        brief["schema_version"] = "0.7"
+        brief["schema_version"] = "0.8"
         brief["content"] = normalized
         brief["translation_parameters"] = parameters
         brief["provenance"]["translation_rules_sha256"] = "1" * 64
@@ -117,7 +117,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
         result = project_objective_brief(brief)
         objective = result.objective_brief
 
-        self.assertEqual(objective.schema_version, "0.7")
+        self.assertEqual(objective.schema_version, "0.8")
         self.assertEqual(objective.translation_parameters["camera"]["height_m"], 1.2)
         self.assertNotIn("lighting", objective.translation_parameters)
         self.assertNotIn("emotion_class", objective.translation_parameters)
@@ -127,7 +127,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
         brief = _valid_brief()
         brief["schema_version"] = "0.6"
 
-        with self.assertRaisesRegex(ValueError, "仅支持当前 Cinematic Brief v0.7"):
+        with self.assertRaisesRegex(ValueError, "仅支持当前 Cinematic Brief v0.8"):
             project_objective_brief(brief)
 
     def test_objective_missing_current_scene_dynamics_is_rejected(self) -> None:
@@ -143,7 +143,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
     ) -> None:
         brief = _valid_brief()
         brief["content"]["camera"]["movement"]["type"] = {
-            "value": "缓慢推近",
+            "value": "push_in",
             "source_status": "explicit",
             "source_text": "镜头慢慢推近",
         }
@@ -161,7 +161,7 @@ class ObjectiveProjectionTest(unittest.TestCase):
             end_distance_m=15.0,
             source_status="default",
         )
-        brief["schema_version"] = "0.7"
+        brief["schema_version"] = "0.8"
         brief["content"] = normalized
         brief["translation_parameters"] = parameters
         brief["provenance"]["translation_rules_sha256"] = "1" * 64
@@ -185,7 +185,7 @@ def _valid_brief() -> dict:
         ),
     )
     return {
-        "schema_version": "0.7",
+        "schema_version": "0.8",
         "content": content,
         "translation_parameters": parameters,
         "provenance": {

@@ -292,14 +292,6 @@ class TrackSpec(StrictModel):
         description="同一轨道同时实现的其他 Brief 来源；source_ref 保留主来源",
     )
 
-    @field_validator("path", mode="before")
-    @classmethod
-    def preserve_legacy_polyline_default(cls, value: Any) -> Any:
-        if isinstance(value, dict) and "representation" not in value:
-            # v0.10 以前的 Path 省略类型时固定解释为 polyline。
-            return value | {"representation": "polyline"}
-        return value
-
     @model_validator(mode="after")
     def validate_track_shape(self) -> TrackSpec:
         start, end = self.time_range_seconds
@@ -616,7 +608,7 @@ class ProjectedScaleRatioParameters(StrictModel):
     denominator_entity_id: str
     measurement: Literal["height", "width", "diameter"] = "height"
     minimum_ratio: float = Field(ge=0)
-    maximum_ratio: float = Field(gt=0)
+    maximum_ratio: float | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def validate_ratio_range(self) -> ProjectedScaleRatioParameters:
@@ -624,11 +616,14 @@ class ProjectedScaleRatioParameters(StrictModel):
             (self.numerator_entity_id, self.denominator_entity_id),
             "projected_scale_ratio entity ids",
         )
-        _validate_finite_ordered_range(
-            self.minimum_ratio,
-            self.maximum_ratio,
-            "projected_scale_ratio",
-        )
+        if not math.isfinite(self.minimum_ratio):
+            raise ValueError("projected_scale_ratio 下限必须是有限数")
+        if self.maximum_ratio is not None:
+            _validate_finite_ordered_range(
+                self.minimum_ratio,
+                self.maximum_ratio,
+                "projected_scale_ratio",
+            )
         return self
 
 

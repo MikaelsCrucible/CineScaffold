@@ -72,7 +72,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 from cinescaffold.relationships import classify_relationship
 
-TOOLKIT_VERSION = "0.47"
+TOOLKIT_VERSION = "0.48"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -1011,9 +1011,8 @@ class ScenePlanningToolkit:
                         "numerator_entity_id",
                         "denominator_entity_id",
                         "minimum_ratio",
-                        "maximum_ratio",
                     ],
-                    "optional": ["measurement"],
+                    "optional": ["maximum_ratio", "measurement"],
                     "allowed_values": {"measurement": ["height", "width", "diameter"]},
                     "defaults": {"measurement": "height"},
                 },
@@ -1479,6 +1478,21 @@ class ScenePlanningToolkit:
                 "strategy": baseline.strategy,
                 "validation": _design_report_summary(report, self.profile),
                 "next_tool": "apply_candidate_patch",
+                "required_next_tool": "apply_candidate_patch",
+                "editable_candidate": self.store.get().model_dump(
+                    mode="json", exclude={"validation"}
+                ),
+                "patch_contract": {
+                    "base_revision": mutation.revision_after,
+                    "merge_semantics": (
+                        "existing entity fields omitted from an upsert keep their current values; "
+                        "remove lists are explicit deletions"
+                    ),
+                    "minimum_action": (
+                        "submit one apply_candidate_patch that changes at least one field named "
+                        "by a hard violation or its adjustable_variables"
+                    ),
+                },
             },
             violations=[item.model_dump(mode="json") for item in report.violations],
         )
@@ -4462,7 +4476,7 @@ def _typed_motion_semantic_violations(
     profile: PlanningProfile,
 ) -> list[Violation]:
     """逐阶段复验类型化运动语义，不依赖动作文本或场景身份。"""
-    if objective_brief.schema_version != "0.7":
+    if objective_brief.schema_version != "0.8":
         return []
     frame_step = state.timeline.fps_denominator / state.timeline.fps_numerator
     last_frame_time = state.timeline.duration_seconds - frame_step
@@ -4619,10 +4633,10 @@ def _typed_motion_semantic_violations(
             if isinstance(postconditions, dict)
             else "unchanged"
         )
-        if visibility_after in {"hidden", "visible"}:
+        if visibility_after in {"becomes_hidden", "becomes_visible"}:
             sample_time = min(max(end, 0.0), last_frame_time)
             actual_visible = _entity_visibility_at(state, subject_id, sample_time)
-            expected_visible = visibility_after == "visible"
+            expected_visible = visibility_after == "becomes_visible"
             if actual_visible != expected_visible:
                 violations.append(
                     _violation(
@@ -4636,7 +4650,9 @@ def _typed_motion_semantic_violations(
                         },
                         actual={
                             "external_visibility": (
-                                "visible" if actual_visible else "hidden"
+                                "becomes_visible"
+                                if actual_visible
+                                else "becomes_hidden"
                             )
                         },
                         adjustable_variables=[f"motion_tracks.{subject_id}.visibility"],
@@ -4674,7 +4690,7 @@ def _typed_motion_semantic_violations(
                 subtract(subject_position, container_position.translation_m)
             )
             represented_by_hidden_carriage = (
-                visibility_after == "hidden"
+                visibility_after == "becomes_hidden"
                 and _has_semantic_carrier_successor(
                     objective_brief,
                     subject_id,
@@ -4757,7 +4773,7 @@ def _relative_target_is_carried_by_actor(
     start: float,
     end: float,
 ) -> bool:
-    """识别旧 Brief 中载体相对自身乘员运动的矛盾方向。"""
+    """识别载体相对自身乘员运动的当前契约矛盾。"""
 
     if semantics.get("direction_mode") not in {"toward_target", "away_from_target"}:
         return False
@@ -7225,7 +7241,7 @@ def _required_constraint_types(
         if not has_entity_pair:
             return set()
         required = {"distance_range"}
-        if objective_brief.schema_version == "0.7" and not (
+        if objective_brief.schema_version == "0.8" and not (
             _relationship_allows_containment_overlap(
                 objective_brief,
                 relationship,
@@ -7815,7 +7831,11 @@ def _constraint_violation(
             if not _within_range(
                 ratio,
                 float(params.get("minimum_ratio", 0.0)),
-                float(params.get("maximum_ratio", math.inf)),
+                (
+                    float(params["maximum_ratio"])
+                    if params.get("maximum_ratio") is not None
+                    else math.inf
+                ),
                 profile.numeric_tolerance,
             ):
                 return _constraint_error(

@@ -59,7 +59,7 @@ def valid_planning_brief() -> dict[str, Any]:
             "source_text": "感觉很孤独",
         }
     ]
-    content["camera"]["movement"]["type"] = _annotated("缓慢推近", "镜头慢慢推近")
+    content["camera"]["movement"]["type"] = _annotated("push_in", "镜头慢慢推近")
     rules_path = (
         ROOT
         / "src/cinescaffold/resources/prompts/semantic_parser/translation_rules.json"
@@ -69,7 +69,7 @@ def valid_planning_brief() -> dict[str, Any]:
         load_translation_rules(rules_path),
     )
     return {
-        "schema_version": "0.7",
+        "schema_version": "0.8",
         "content": normalized,
         "translation_parameters": parameters,
         "provenance": {

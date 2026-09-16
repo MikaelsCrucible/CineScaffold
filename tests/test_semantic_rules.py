@@ -101,6 +101,42 @@ class SemanticRulesTest(unittest.TestCase):
         )
         self.assertFalse(parameters["lighting"]["applied_to_blender_preview"])
 
+    def test_camera_only_push_keeps_subject_scene_static(self) -> None:
+        content = valid_model_output()
+        content["camera"]["movement"].update(
+            {
+                "type": self._annotated("push_in", "镜头缓慢推近"),
+                "speed": self._annotated("缓慢", "缓慢"),
+                "start_time_seconds": 0.0,
+                "end_time_seconds": 10.0,
+            }
+        )
+
+        normalized, _ = apply_translation_rules(content, self.rules)
+
+        self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
+        self.assertTrue(
+            all(
+                item["motion_semantics"]["postconditions"]["external_visibility"]
+                == "unchanged"
+                for item in normalized["subject_motion"]
+            )
+        )
+
+    def test_unresolved_uncertainty_cannot_claim_a_selected_value(self) -> None:
+        content = valid_model_output()
+        content["uncertainties"] = [
+            {
+                "field": "scene_dynamics.mode",
+                "reason": "仍未决定",
+                "resolution": "unresolved",
+                "selected_value": "dynamic",
+            }
+        ]
+
+        with self.assertRaisesRegex(ValueError, "selected_value 必须为 null"):
+            apply_translation_rules(content, self.rules)
+
     def test_radial_camera_speed_uses_actual_duration(self) -> None:
         cases = (
             ("孤独", 15.0, 10.0 / 15.0),
@@ -154,14 +190,16 @@ class SemanticRulesTest(unittest.TestCase):
 
     def test_explicit_camera_is_recorded_as_override(self) -> None:
         content = valid_model_output()
-        content["camera"]["view_angle"] = self._annotated("俯拍", "使用俯拍")
+        content["camera"]["view_angle"] = self._annotated(
+            "high_angle", "使用俯拍"
+        )
         content["mood"]["emotional_tones"] = [self._statement("孤独", "感觉孤独")]
 
         _, parameters = apply_translation_rules(content, self.rules)
 
         self.assertIn("camera.view_angle", parameters["explicit_override_paths"])
         normalized, _ = apply_translation_rules(content, self.rules)
-        self.assertEqual(normalized["camera"]["view_angle"]["value"], "俯拍")
+        self.assertEqual(normalized["camera"]["view_angle"]["value"], "high_angle")
 
     def test_duration_upper_bound_resolves_to_its_maximum(self) -> None:
         content = valid_model_output()
@@ -544,7 +582,7 @@ class SemanticRulesTest(unittest.TestCase):
     def test_camera_only_motion_remains_static_scene(self) -> None:
         content = valid_model_output()
         content["camera"]["movement"]["type"] = self._annotated(
-            "缓慢推近",
+            "push_in",
             "镜头缓慢推近",
         )
 
@@ -587,7 +625,7 @@ class SemanticRulesTest(unittest.TestCase):
         camera_movement.update(
             {
                 "type": self._annotated(
-                    "固定机位，不平移，只旋转跟车",
+                    "pan",
                     "镜头不平移而是旋转地跟着车",
                 ),
                 "target_id": "car_01",
@@ -603,9 +641,8 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(parameters["camera"]["movement"], "pan")
         self.assertEqual(parameters["camera"]["speed_mps"], 0.0)
         self.assertEqual(normalized["camera"]["movement"]["target_id"], "car_01")
-        self.assertEqual(
-            normalized["camera"]["movement"]["trajectory"]["value"],
-            "固定位置旋转",
+        self.assertIsNone(
+            normalized["camera"]["movement"]["trajectory"]["value"]
         )
 
     def test_environmental_motion_cannot_override_scene_entity_dynamics(self) -> None:
@@ -623,7 +660,7 @@ class SemanticRulesTest(unittest.TestCase):
     def test_explicit_push_in_overrides_neutral_static_numeric_profile(self) -> None:
         content = valid_model_output()
         content["camera"]["movement"]["type"] = self._annotated(
-            "缓慢推近",
+            "push_in",
             "镜头慢慢推近",
         )
         content["timeline"].update(
@@ -637,8 +674,8 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(camera["source_status"], "explicit")
         self.assertLess(camera["end_distance_m"], camera["start_distance_m"])
         self.assertGreater(camera["speed_mps"], 0.0)
-        self.assertEqual(
-            normalized["camera"]["movement"]["trajectory"]["value"], "直线"
+        self.assertIsNone(
+            normalized["camera"]["movement"]["trajectory"]["value"]
         )
 
     def test_overlapping_before_relation_is_rejected_for_revision(self) -> None:
@@ -772,7 +809,7 @@ class SemanticRulesTest(unittest.TestCase):
                 carrier_id="car",
                 path_type="stationary",
                 contained_by_id="car",
-                external_visibility="hidden",
+                external_visibility="becomes_hidden",
             )
         ]
         content["scene_dynamics"]["mode"] = "dynamic"
@@ -787,7 +824,9 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(motion["direction_mode"], "none")
         self.assertIsNone(motion["target_id"])
         self.assertEqual(motion["speed_range_mps"], [0.0, 0.0])
-        self.assertEqual(motion["postconditions"]["external_visibility"], "hidden")
+        self.assertEqual(
+            motion["postconditions"]["external_visibility"], "becomes_hidden"
+        )
 
     def test_redundant_carried_semantics_are_rejected_for_revision(
         self,
@@ -832,7 +871,7 @@ class SemanticRulesTest(unittest.TestCase):
     ) -> None:
         content = valid_model_output()
         content["camera"]["movement"]["type"] = self._annotated(
-            "固定机位旋转跟随车辆",
+            "pan",
             "镜头不平移而是旋转地跟着车",
         )
         content["camera"]["movement"]["target_id"] = "person_01"
@@ -1119,6 +1158,7 @@ class SemanticRulesTest(unittest.TestCase):
         timeline_event_id: str | None = None,
         contained_by_id: str | None = None,
         external_visibility: str = "unchanged",
+        local_components: list[str] | None = None,
     ) -> dict:
         return {
             "motion_id": f"{subject_id}_{action_kind}",
@@ -1132,6 +1172,11 @@ class SemanticRulesTest(unittest.TestCase):
                 "target_id": target_id,
                 "carrier_id": carrier_id,
                 "path_type": path_type,
+                "local_components": (
+                    local_components
+                    if local_components is not None
+                    else (["rotation"] if motion_mode == "local_interaction" else [])
+                ),
                 "timeline_event_id": timeline_event_id,
                 "narrative_required": True,
                 "postconditions": {
@@ -1161,7 +1206,7 @@ class SemanticRulesTest(unittest.TestCase):
             "description": description,
             "start_time_seconds": 0.0,
             "end_time_seconds": duration,
-            "reference_ids": [subject_id],
+            "reference_ids": ["person_01"] if subject_id == "person" else [],
             "source_status": "explicit",
             "source_text": description,
         }

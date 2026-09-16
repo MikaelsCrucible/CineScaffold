@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cinescaffold.local/schemas/cinematic_brief_model_output.schema.json",
-  "title": "Cinematic Brief Model Output v0.7",
+  "title": "Cinematic Brief Model Output v0.8",
   "type": "object",
   "properties": {
     "summary": {"type": "string"},
@@ -46,6 +46,102 @@
       "type": "object",
       "properties": {
         "value": {"type": ["string", "null"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "annotatedUnknown": {
+      "type": "object",
+      "properties": {
+        "value": {"type": "null"},
+        "source_status": {"type": "string", "const": "unknown"},
+        "source_text": {"type": "null"}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "annotatedScreenHorizontal": {
+      "type": "object",
+      "properties": {
+        "value": {"type": ["string", "null"], "enum": [null, "left", "center", "right"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "annotatedScreenVertical": {
+      "type": "object",
+      "properties": {
+        "value": {"type": ["string", "null"], "enum": [null, "top", "center", "bottom"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "annotatedPercentageRange": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": ["string", "null"],
+          "pattern": "^\\s*\\d+(?:\\.\\d+)?\\s*%(?:\\s*-\\s*\\d+(?:\\.\\d+)?\\s*%)?\\s*$"
+        },
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "annotatedVisibilityRequirement": {
+      "type": "object",
+      "properties": {
+        "value": {"type": ["string", "null"], "enum": [null, "keep_in_frame"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "annotatedCameraViewAngle": {
+      "type": "object",
+      "properties": {
+        "value": {"type": ["string", "null"], "enum": [null, "eye_level", "high_angle", "low_angle", "top_down"]},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "annotatedCameraHeight": {
+      "type": "object",
+      "properties": {
+        "value": {"type": ["string", "null"], "pattern": "^\\s*\\d+(?:\\.\\d+)?\\s*(?:m|米)\\s*$"},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "annotatedLensIntent": {
+      "type": "object",
+      "properties": {
+        "value": {"type": ["string", "null"], "pattern": "^(?:\\s*\\d+(?:\\.\\d+)?\\s*mm\\s*|wide|normal|telephoto)$"},
+        "source_status": {"$ref": "#/$defs/sourceStatus"},
+        "source_text": {"type": ["string", "null"]}
+      },
+      "required": ["value", "source_status", "source_text"],
+      "additionalProperties": false
+    },
+    "annotatedCameraMovement": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": ["string", "null"],
+          "enum": [null, "static", "pan", "orbit", "push_in", "pull_out", "follow", "lateral"]
+        },
         "source_status": {"$ref": "#/$defs/sourceStatus"},
         "source_text": {"type": ["string", "null"]}
       },
@@ -102,6 +198,7 @@
         "end_time_seconds": {"type": "number"},
         "secondary_motion": {
           "type": "array",
+          "maxItems": 0,
           "items": {"$ref": "#/$defs/semanticStatement"}
         }
       },
@@ -142,7 +239,8 @@
           "type": "string",
           "description": "只有明确几何方向才使用非 none；动作参与者和事件参与者不自动成为几何目标。",
           "enum": [
-            "none", "world_forward", "toward_target", "away_from_target",
+            "none", "world_forward", "world_left", "world_right",
+            "toward_target", "away_from_target",
             "relative_to_target"
           ]
         },
@@ -155,6 +253,13 @@
             "figure_eight", "parabolic", "unspecified"
           ]
         },
+        "local_components": {
+          "type": "array",
+          "description": "local_interaction 实际改变的通道；其他 motion_mode 必须为空数组。",
+          "items": {"type": "string", "enum": ["rotation", "scale"]},
+          "uniqueItems": true,
+          "maxItems": 2
+        },
         "timeline_event_id": {"type": ["string", "null"]},
         "narrative_required": {"type": "boolean"},
         "postconditions": {"$ref": "#/$defs/motionPostconditions"},
@@ -163,7 +268,7 @@
       },
       "required": [
         "action_kind", "motion_type", "motion_mode", "direction_mode",
-        "target_id", "carrier_id", "path_type", "timeline_event_id",
+        "target_id", "carrier_id", "path_type", "local_components", "timeline_event_id",
         "narrative_required", "postconditions", "source_status", "source_text"
       ],
       "additionalProperties": false
@@ -174,7 +279,8 @@
         "contained_by_id": {"type": ["string", "null"]},
         "external_visibility": {
           "type": "string",
-          "enum": ["unchanged", "visible", "hidden"]
+          "description": "动作阶段造成的可见性转变，不是阶段结束时的静态可见状态。",
+          "enum": ["unchanged", "becomes_visible", "becomes_hidden"]
         }
       },
       "required": ["contained_by_id", "external_visibility"],
@@ -204,7 +310,7 @@
     },
     "relationship": {
       "type": "object",
-      "description": "只记录不能由单个场景实体动作完整表达的双实体空间关系；围绕目标的路径和载运由 motion_semantics 表达，不在此重复。",
+      "description": "subject_id 始终是满足关系谓词的对象，reference_id 是参照对象。far_from 表示 subject 在摄影机纵深上比 reference 更远且二者有世界空间净空；scale_dominance 只表示 subject 的投影尺寸大于 reference，不表示物理尺寸。其他方向关系使用规范世界坐标，不表示屏幕左右上下。",
       "properties": {
         "type": {
           "type": "string",
@@ -257,28 +363,31 @@
     },
     "screenPlacement": {
       "type": "object",
+      "description": "代码可执行的规范屏幕区域；horizontal 仅用 left/center/right，vertical 仅用 top/center/bottom。",
       "properties": {
         "subject_id": {"type": "string"},
-        "horizontal": {"$ref": "#/$defs/annotatedText"},
-        "vertical": {"$ref": "#/$defs/annotatedText"}
+        "horizontal": {"$ref": "#/$defs/annotatedScreenHorizontal"},
+        "vertical": {"$ref": "#/$defs/annotatedScreenVertical"}
       },
       "required": ["subject_id", "horizontal", "vertical"],
       "additionalProperties": false
     },
     "visualScale": {
       "type": "object",
+      "description": "场景实体投影高度占画面的百分比或百分比范围，例如 20% 或 20%-30%。",
       "properties": {
         "subject_id": {"type": "string"},
-        "scale": {"$ref": "#/$defs/annotatedText"}
+        "scale": {"$ref": "#/$defs/annotatedPercentageRange"}
       },
       "required": ["subject_id", "scale"],
       "additionalProperties": false
     },
     "visibilityRequirement": {
       "type": "object",
+      "description": "当前 requirement 只支持 keep_in_frame。",
       "properties": {
         "subject_id": {"type": "string"},
-        "requirement": {"$ref": "#/$defs/annotatedText"}
+        "requirement": {"$ref": "#/$defs/annotatedVisibilityRequirement"}
       },
       "required": ["subject_id", "requirement"],
       "additionalProperties": false
@@ -286,8 +395,8 @@
     "composition": {
       "type": "object",
       "properties": {
-        "shot_size": {"$ref": "#/$defs/annotatedText"},
-        "patterns": {"type": "array", "items": {"$ref": "#/$defs/semanticStatement"}},
+        "shot_size": {"$ref": "#/$defs/annotatedUnknown"},
+        "patterns": {"type": "array", "maxItems": 0, "items": {"$ref": "#/$defs/semanticStatement"}},
         "screen_placements": {"type": "array", "items": {"$ref": "#/$defs/screenPlacement"}},
         "visual_scales": {"type": "array", "items": {"$ref": "#/$defs/visualScale"}},
         "visibility_requirements": {"type": "array", "items": {"$ref": "#/$defs/visibilityRequirement"}}
@@ -300,17 +409,17 @@
       "description": "只描述摄影机自身的位置、朝向或焦距变化，绝不描述场景实体的运动。",
       "properties": {
         "type": {
-          "$ref": "#/$defs/annotatedText",
-          "description": "摄影机自身运镜；固定位置旋转跟踪使用 pan，不得写成随场景实体平移的 follow。"
+          "$ref": "#/$defs/annotatedCameraMovement",
+          "description": "代码直接执行的封闭运镜类型；固定位置旋转跟踪使用 pan，不得写成随场景实体平移的 follow。"
         },
         "target_id": {
           "type": ["string", "null"],
           "description": "pan/follow/orbit 的摄影机运动目标场景实体 ID；没有目标时为 null。"
         },
-        "direction": {"$ref": "#/$defs/annotatedText"},
+        "direction": {"$ref": "#/$defs/annotatedUnknown"},
         "speed": {"$ref": "#/$defs/annotatedText"},
-        "trajectory": {"$ref": "#/$defs/annotatedText"},
-        "easing": {"$ref": "#/$defs/annotatedText"},
+        "trajectory": {"$ref": "#/$defs/annotatedUnknown"},
+        "easing": {"$ref": "#/$defs/annotatedUnknown"},
         "start_time_seconds": {"type": ["number", "null"]},
         "end_time_seconds": {"type": ["number", "null"]}
       },
@@ -333,11 +442,11 @@
     "camera": {
       "type": "object",
       "properties": {
-        "shot_type": {"$ref": "#/$defs/annotatedText"},
-        "view_angle": {"$ref": "#/$defs/annotatedText"},
+        "shot_type": {"$ref": "#/$defs/annotatedUnknown"},
+        "view_angle": {"$ref": "#/$defs/annotatedCameraViewAngle"},
         "view_relation_to_motion": {"$ref": "#/$defs/cameraViewRelation"},
-        "camera_height": {"$ref": "#/$defs/annotatedText"},
-        "lens_intent": {"$ref": "#/$defs/annotatedText"},
+        "camera_height": {"$ref": "#/$defs/annotatedCameraHeight", "description": "明确值使用米制数值，例如 1.6 m。"},
+        "lens_intent": {"$ref": "#/$defs/annotatedLensIntent", "description": "明确值使用毫米焦距或 wide/normal/telephoto。"},
         "focus_target_id": {"$ref": "#/$defs/annotatedText"},
         "movement": {"$ref": "#/$defs/cameraMovement"}
       },

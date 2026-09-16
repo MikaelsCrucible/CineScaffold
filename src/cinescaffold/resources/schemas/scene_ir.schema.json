@@ -1314,7 +1314,7 @@
       "additionalProperties": false,
       "properties": {
         "cinematic_brief_schema_version": {
-          "const": "0.7",
+          "const": "0.8",
           "title": "Cinematic Brief Schema Version",
           "type": "string"
         },

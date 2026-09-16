@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.7",
+  "schema_version": "0.8",
   "content": {
     "summary": "10秒内，地球绕太阳公转，同时月亮绕地球公转。",
     "subjects": [
@@ -96,6 +96,7 @@
           "target_id": null,
           "carrier_id": null,
           "path_type": "stationary",
+          "local_components": [],
           "timeline_event_id": null,
           "narrative_required": false,
           "postconditions": {
@@ -140,6 +141,7 @@
           "target_id": "sun",
           "carrier_id": null,
           "path_type": "circular",
+          "local_components": [],
           "timeline_event_id": null,
           "narrative_required": true,
           "postconditions": {
@@ -184,6 +186,7 @@
           "target_id": "earth",
           "carrier_id": null,
           "path_type": "circular",
+          "local_components": [],
           "timeline_event_id": null,
           "narrative_required": true,
           "postconditions": {
@@ -244,23 +247,7 @@
         "source_status": "unknown",
         "source_text": null
       },
-      "patterns": [
-        {
-          "value": "主体占画幅 5%-10%",
-          "source_status": "default",
-          "source_text": null
-        },
-        {
-          "value": "负空间占比 60%-70%",
-          "source_status": "default",
-          "source_text": null
-        },
-        {
-          "value": "主要物体占画幅 15%-30%",
-          "source_status": "default",
-          "source_text": null
-        }
-      ],
+      "patterns": [],
       "screen_placements": [],
       "visual_scales": [
         {
@@ -317,8 +304,8 @@
           "source_text": null
         },
         "trajectory": {
-          "value": "静止",
-          "source_status": "default",
+          "value": null,
+          "source_status": "unknown",
           "source_text": null
         },
         "easing": {

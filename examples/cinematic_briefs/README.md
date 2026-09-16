@@ -2,7 +2,7 @@
 
 本目录只保存稳定的 Cinematic Brief（六维输入），不保存 Agent、Scene IR、Blender 或渲染产物。所有新产物继续写入已被 Git Ignore 的 `runs/`。
 
-三个样例均使用当前 Cinematic Brief v0.7。Core 不再加载或迁移旧版 Brief；旧样例需要从原始自然语言重新生成。
+三个样例均使用当前 Cinematic Brief v0.8。Core 不再加载或迁移旧版 Brief；旧样例需要从原始自然语言重新生成。
 
 ## 荒漠飞船（10 秒）
 

@@ -1,4 +1,4 @@
-# Cinematic Brief 语义契约 v0.14
+# Cinematic Brief 语义契约 v0.18
 
 ## 1. 术语与职责
 
@@ -49,8 +49,8 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 
 ### 4.1 动作与驱动方式
 
-- `motion_mode=stationary`：没有整体位移；必须搭配 `action_kind=hold`、`motion_type=static`、`path_type=stationary`。
-- `motion_mode=local_interaction`：只有局部姿态或局部状态变化；必须搭配 `action_kind=interact`、`motion_type=interactive`、`path_type=stationary`。
+- `motion_mode=stationary`：没有整体位移或局部 Transform 变化；必须搭配 `action_kind=hold`、`motion_type=static`、`path_type=stationary`、`local_components=[]`。显隐或容纳转变若确实发生，仍由独立 postcondition 表达并使 `scene_dynamics=dynamic`。
+- `motion_mode=local_interaction`：只有局部姿态或尺度变化；必须搭配 `action_kind=interact`、`motion_type=interactive`、`path_type=stationary`，并在 `local_components` 中准确列出 `rotation` 和/或 `scale`。不得在不知道变化通道时同时猜两个。
 - `motion_mode=self_propelled`：场景实体自主产生整体位移；必须搭配 `action_kind=locomotion`，`motion_type` 从 `walking/running/flying/jumping/moving` 中选择，路径不得为 `stationary`。
 - `motion_mode=carried`：场景实体的世界运动由另一个场景实体承载；必须搭配 `action_kind=locomotion`、`motion_type=carried`、非空 `carrier_id`、`direction_mode=none`、`target_id=null`、`path_type=stationary`。该阶段不重复生成自主世界路径。
 
@@ -59,7 +59,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 ### 4.2 方向、目标与路径
 
 - `direction_mode=none`：原文没有可执行的几何方向；`target_id` 必须为 `null`。
-- `direction_mode=world_forward`：原文明确要求沿世界前方；`target_id` 必须为 `null`。
+- `direction_mode=world_forward/world_left/world_right`：原文明确要求沿规范世界 `-Y/-X/+X`；`target_id` 必须为 `null`。这些值不是屏幕方向。
 - `direction_mode=toward_target`：明确朝某场景实体接近；必须填写该实体的 `target_id`。
 - `direction_mode=away_from_target`：明确背离某场景实体；必须填写该实体的 `target_id`。
 - `direction_mode=relative_to_target`：明确以某场景实体为相对参考执行路径；必须填写该实体的 `target_id`。
@@ -68,7 +68,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 
 `path_type` 只在原文提供足够证据时选用 `linear/circular/elliptical/s_curve/figure_eight/parabolic`；自主位移但路径形状未定时用 `unspecified`。不得发明某个故事专用动作类型或关系类型。
 
-`postconditions` 只描述该动作阶段结束后的容纳状态和外部可见性。`contained_by_id` 是容纳事实，不是方向目标；只有原文明示或必然推出时才填写。
+`postconditions` 只描述该动作阶段造成的容纳结果和外部可见性**转变**。`external_visibility=becomes_visible/becomes_hidden` 表示该阶段确实发生显隐切换；一个场景实体从头到尾可见必须写 `unchanged`，绝不能因为结束时可见就写 `becomes_visible`。`contained_by_id` 是该阶段建立的容纳事实，不是方向目标；只有原文明示或必然推出时才填写。
 
 `timeline_event_id` 引用承载同一动作阶段的事件。`narrative_required=true` 仅表示删除该阶段会丢失用户明确叙事或必然语义；不得借此增添新动作。
 
@@ -77,7 +77,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 - `timeline.duration_seconds` 是整个视频片段的确定时长。原文只给范围时同时保留 `duration_range_seconds`；原文未给时长时使用当前契约的 10 秒结构缺省，标为 `default` 并登记 `use_default`，不得按动作数量推算。
 - `timeline.events` 是可位于视频片段内任意数值起止点的语义事件，不限于开始、中间或结束三个位置。
 - 各场景实体的动作阶段可以不同步、重叠、相接或留有间隔。不得按动作数量机械等分时间，不得因另一个实体开始动作就结束当前状态。
-- 事件和动作阶段的起止时间必须位于总时长内，且开始时间不得晚于结束时间。
+- 事件和动作阶段的起止时间必须位于总时长内，且必须严格满足开始时间早于结束时间。动作若填写 `timeline_event_id`，动作与所引用事件的数值起止时间必须完全一致；`timeline.events[].reference_ids` 只能引用已声明的场景实体，并列出该事件实际涉及的全部实体。
 - 持续动作与发生在其内部的局部条件是两个不同事件。局部条件不得直接复用整个持续动作的时间范围。若关系只描述一个临界点、状态切换点或最近时刻而没有持续含义，使用位于持续动作内部的独立事件并配合 `at_midpoint`；只有原文明示在事件开始或结束边界成立时才分别使用 `at_start/at_end`。若关系确实持续一段时间，才使用严格更短的有界区间与 `throughout`。原文未给精确时刻或区间时，采用上述结构缺省并登记时间不确定性，不得伪装成原文明示时间。
 
 时间关系严格按两个事件的数值区间解释。设 source 为 `S`，target 为 `T`：
@@ -96,12 +96,16 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 
 ## 6. 双实体空间关系
 
-`scene_design.relationships` 只记录不能由单个动作阶段完整表达的双实体空间事实。允许的关系只有：
+`scene_design.relationships` 只记录不能由单个动作阶段完整表达的双实体空间事实。每条都按“`subject_id` 满足谓词，`reference_id` 是参照物”读取。允许的关系只有：
 
-- 距离或尺度：`far_from`、`proximity`、`scale_dominance`
+- `far_from`：subject 在当前摄影机的纵深上比 reference 更远，并与 reference 保有世界空间净空。例如“男人面前远处有飞船”必须是 `subject_id=飞船`、`reference_id=男人`。
+- `proximity`：subject 与 reference 在世界空间接近；该关系对交换两者语义对称，但仍只输出一个规范记录。
+- `scale_dominance`：subject 在**最终画面投影**中显著大于 reference。单纯说某物“巨大/很大”只描述物理尺寸，必须写入该实体的描述或属性，不能据此输出 `scale_dominance`。
 - 水平相对位置：`left_of`、`right_of`
 - 纵深相对位置：`front_of`、`behind`
 - 垂直相对位置：`above`、`below`
+
+`left_of/right_of/front_of/behind/above/below` 使用规范世界坐标，而不是屏幕方向或摄影机视角：左/右是 `-X/+X`，前/后是 `-Y/+Y`，上/下是 `+Z/-Z`。若原文只表达“画面左侧/右侧”，应写入 `composition.screen_placements`，不得写世界关系。
 
 不得增加自由文本强度，不得输出同义或反向重复关系。被承载由 `motion_mode=carried + carrier_id` 表达；围绕目标的路径由 `relative_to_target + target_id + circular/elliptical` 表达；二者均不在空间关系数组中重复。
 
@@ -119,11 +123,13 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 
 `camera` 只描述摄影机，`subject_motion` 只描述场景实体。两者的运动不得互相代填。
 
-- `camera.movement.type` 表示摄影机自身的运动或旋转。固定位置改变朝向属于 `pan`；摄影机位置随目标一起改变属于 `follow`。只有需要目标的运镜才填写 `camera.movement.target_id`。
+- `camera.movement.type` 是代码直接执行的封闭枚举：`static/pan/orbit/push_in/pull_out/follow/lateral`。固定位置改变朝向属于 `pan`；摄影机位置随目标一起改变属于 `follow`。只有 `pan/follow/orbit` 填写 `camera.movement.target_id`，其他类型必须为 `null`。不得输出“缓慢推近”等自由文本类型；速度单独写入 `speed`。
 - `camera.focus_target_id` 表示取景关注对象，不等于运镜目标，也不等于动作目标。
 - `camera.view_relation_to_motion` 只描述摄影机相对于主要线性运动的观察方位：`front/rear/side/three_quarter`。原文没有明确方位时必须用 `unspecified + default`。
 - `camera.lens_intent` 只记录光学意图；不得把景别、画面占比或摄影机路径写入此字段。
-- `composition.shot_size`、`screen_placements`、`visual_scales` 和 `visibility_requirements` 只记录原文明确的画面要求。
+- 当前 `composition.screen_placements` 只接受水平 `left/center/right` 与垂直 `top/center/bottom`；`visual_scales.scale` 只接受百分比或百分比范围（如 `20%`、`20%-30%`）；`visibility_requirements.requirement` 只接受 `keep_in_frame`。这些类型化值由代码直接执行，不得写同义自然语言。
+- `composition.shot_size/patterns`、`camera.shot_type`、`camera.movement.direction/trajectory/easing` 和 `subject_motion.secondary_motion` 尚无百分百对接的执行接口，当前必须保持 unknown/空数组。若原文只提供这些尚不可执行的要求，在 `uncertainties` 中记录结构限制，不能把它们伪装成已实现字段。
+- 明确的 `camera.camera_height` 必须写成米制数值（如 `1.6 m`）；明确的 `camera.lens_intent` 必须是毫米焦距或 `wide/normal/telephoto`；明确的 `camera.view_angle` 必须是 `eye_level/high_angle/low_angle/top_down`。
 - 当前 Schema 的 `camera.movement` 只容纳一个连续主动运镜区间；原文若要求多个互不连续或互相矛盾的运镜阶段，不得静默合并，必须在 `uncertainties` 中说明结构限制。
 
 `mood` 只保留原文的情绪、颜色、照明和氛围意图。不得由情绪词自行推导摄影机位置、运镜、景别或画面占比；应用中的确定性量化会处理允许的缺省映射。
@@ -139,5 +145,6 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 5. 每个非空结论都有准确来源；非必然解释没有冒充事实；每项不确定性都只覆盖真正分歧的字段，没有吞掉合理解释共有的类型化事实。
 6. 局部关系拥有独立的点事件或严格短于其承载动作的区间事件，没有被扩张为整个动作或整个视频片段；`throughout` 只用于确有持续含义的关系。
 7. 没有 Schema 之外字段、枚举、故事专用语义或依赖下游从自由文本重新猜测的缺失类型。
+8. `scene_dynamics=dynamic` 至少对应一个非静止动作、明确的 `local_components`，或 `becomes_visible/becomes_hidden`/新建容纳关系；纯摄影机运动、静态可见和静态构图不能作为 dynamic 理由。
 
 发现问题时直接输出修正后的完整对象。无法由原文决定时保留未知并登记 `uncertainties`，不得猜测。

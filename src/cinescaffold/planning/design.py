@@ -146,7 +146,7 @@ class SkeletonMotionPhase(StrictModel):
     phase_id: str = Field(min_length=1)
     motion_id: str | None = Field(
         default=None,
-        description="Cinematic Brief v0.7 的稳定动作身份，用于叙事完整性校验",
+        description="Cinematic Brief v0.8 的稳定动作身份，用于叙事完整性校验",
     )
     subject_id: str
     kind: Literal[
@@ -710,7 +710,7 @@ def validate_scene_skeleton(
                     f"{first[2]} / {second[2]}"
                 )
 
-    if objective.schema_version == "0.7":
+    if objective.schema_version == "0.8":
         objective_motion_subjects = {
             str(item.get("motion_id")): str(item.get("subject_id"))
             for item in objective.subject_motion
@@ -760,7 +760,7 @@ def validate_scene_skeleton(
         if status == "explicit" and source_ref not in valid_explicit_refs:
             raise ValueError(f"Scene Skeleton explicit source_ref 不存在：{source_ref}")
 
-    if objective.schema_version == "0.7":
+    if objective.schema_version == "0.8":
         _validate_typed_source_bindings(objective, value)
 
     camera = objective.camera
@@ -922,7 +922,7 @@ def _validate_typed_source_bindings(
     objective: ObjectivePlanningBrief,
     skeleton: SceneSkeleton,
 ) -> None:
-    """Keep v0.7 symbolic choices attached to the typed fact they cite."""
+    """Keep v0.8 symbolic choices attached to the typed fact they cite."""
 
     relationship_prefix = "content.scene_design.relationships["
     objective_relationships = objective.scene_design.get("relationships", [])
@@ -1078,7 +1078,11 @@ def _validate_typed_source_bindings(
                 if isinstance(postconditions, dict)
                 else None
             )
-            if phase.visibility_state != expected_visibility:
+            expected_visibility_state = {
+                "becomes_visible": "visible",
+                "becomes_hidden": "hidden",
+            }.get(expected_visibility)
+            if phase.visibility_state != expected_visibility_state:
                 raise ValueError(
                     f"Visibility Phase 与 source_ref 的后置状态不一致：{phase.phase_id}"
                 )
@@ -1933,7 +1937,7 @@ def _build_relation_constraints(
                         "denominator_entity_id": relation.reference_id,
                         "measurement": "height",
                         "minimum_ratio": 2.0,
-                        "maximum_ratio": 20.0,
+                        "maximum_ratio": None,
                     },
                 }
             ]
@@ -4264,12 +4268,9 @@ def _composition_projected_sizes(
     source_status = parameters.get("source_status", "inferred")
     if source_status not in {"explicit", "inferred", "default"}:
         source_status = "inferred"
-    if source_status == "explicit" and not any(
-        requirement.path.startswith("content.composition.shot_size")
-        for requirement in objective.explicit_requirements
-    ):
-        # Do not let an unrelated explicit composition field promote every
-        # emotion-table ratio to an explicit camera instruction.
+    if source_status == "explicit":
+        # Only subject-specific visual_scales can make a projected-size target
+        # explicit; this fallback comes from the emotion/default table.
         source_status = "inferred"
     return [
         (
