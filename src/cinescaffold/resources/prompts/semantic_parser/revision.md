@@ -10,8 +10,11 @@
 6. 逐项展开 `uncertainties`：若多种合理解释仍共享当前 Schema 可表达的实体参与、局部事件或空间关系，必须把共有事实补回类型字段，只保留真正分歧的方向、路径、先后或精确时间。
 7. 局部关系是否误用了整个持续动作的时间范围；精确时刻未知不等于关系持续全程。仅表示临界点、状态切换点或最近时刻且未指定边界的关系应使用动作内部独立事件与 `at_midpoint`；只有原文明示开始或结束边界时才使用 `at_start/at_end`。确有持续含义时才使用更短区间与 `throughout`，并诚实保留时间不确定性。
 8. `scene_dynamics` 是否误把摄影机运动或“保持可见”当成场景实体状态变化；`external_visibility` 只允许表达真实显隐转变。
-9. 每条空间关系是否把满足谓词的实体放在 `subject_id`，尤其检查远景实体是否错误放进了 `reference_id`；物理“巨大”不得冒充投影 `scale_dominance`。
-10. 按 `[SEM-UNCERTAINTY-RESOLUTION]` 逐项检查选择值：`unresolved` 必须配 `selected_value=null`；`use_default/use_inference` 必须配记录实际采用字段值的非空字符串。若字段已被唯一确定，不得仍声明该字段 unresolved，反之亦然。
+9. 按每个场景实体分别检查 `subject_motion` 区间并集是否从 0 连续覆盖到总时长；任何开头、中间或结尾空窗都会被执行层表现为无依据静止且可见，必须改成有证据的明确状态，或让相邻叙事动作覆盖该区间。
+10. 对每个 narrative-required `carried` 阶段，检查 `carrier_id` 对应实体是否在完整重叠区间内具有 `self_propelled` 动作；“接走、运走、带走”等结果不能只让被承载实体 carried 而让载体停止。
+    完整覆盖不等于从头可见：若实体在镜头中途才出现，进入前区间必须明确为 hidden/尚未出现，并在该区间末用 `becomes_visible`；不得把它改成从 0 秒已经可见。
+11. 每条空间关系是否把满足谓词的实体放在 `subject_id`，尤其检查远景实体是否错误放进了 `reference_id`；物理“巨大”不得冒充投影 `scale_dominance`。
+12. 按 `[SEM-UNCERTAINTY-RESOLUTION]` 逐项检查选择值：`unresolved` 必须配 `selected_value=null`；`use_default/use_inference` 必须配记录实际采用字段值的非空字符串。若字段已被唯一确定，不得仍声明该字段 unresolved，反之亦然。
 
 原始输入是语义事实的唯一权威；初稿只是候选，确定性诊断只是已发现问题的有限列表。不得只修诊断而忽略逐句审查。
 

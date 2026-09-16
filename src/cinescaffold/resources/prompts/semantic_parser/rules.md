@@ -1,4 +1,4 @@
-# Cinematic Brief 语义契约 v0.19
+# Cinematic Brief 语义契约 v0.20
 
 ## 1. 术语与职责
 
@@ -15,6 +15,24 @@
 自然语言中的同一个词可能有多种意思，必须按上下文归入上述唯一维度。不得用含义不明的“主体”混指主要对象、施事者或所有对象；不得用含义不明的“镜头”混指视频片段、摄影机、光学属性或画面构图。JSON 字段名保持 Schema 规定，不因此改名。
 
 Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键帧、摄影机矩阵、资产替换或渲染参数。数值缺省和量化由应用中的版本化规则处理，不在这里凭常识估算。
+
+### 1.1 Schema 字段对照
+
+下列字段组就是 Structured Output Schema 提供的完整语义接口；不得把一个组的含义写入另一个组，也不得只填人类摘要而漏掉机器字段：
+
+- 顶层对象只含 `summary/subjects/subject_motion/scene_dynamics/scene_design/mood/composition/camera/timeline/uncertainties`；`summary` 只做人类可读概括，不能代替任一结构字段。
+- `subjects[]`：`id/category/description/narrative_role/attributes[]`；属性使用 `name/value/source_status/source_text`。
+- `subject_motion[]`：`motion_id/subject_id/action/motion_semantics/direction/speed/trajectory/start_time_seconds/end_time_seconds/secondary_motion`；`secondary_motion` 当前必须为空。
+- `motion_semantics`：`action_kind/motion_type/motion_mode/direction_mode/target_id/carrier_id/path_type/local_components/timeline_event_id/narrative_required/postconditions/source_status/source_text`；`postconditions` 只含 `contained_by_id/external_visibility`。
+- `scene_dynamics`：`mode/source_status/reason`。
+- `scene_design`：`environment/spatial_layers/relationships/environmental_motion`；`spatial_layers[]` 使用 `layer/content_ids/source_status/source_text`，`relationships[]` 使用 `type/subject_id/reference_id/timeline_event_id/temporal_mode/source_status/source_text`。
+- `mood`：`emotional_tones/color_intent/lighting_intent/atmosphere`。这些字段只记录主观语义，不得改写主体运动或摄影机几何。
+- `composition`：`shot_size/patterns/screen_placements/visual_scales/visibility_requirements`；画面位置使用 `subject_id/horizontal/vertical`，视觉比例使用 `subject_id/scale`，可见要求使用 `subject_id/requirement`。
+- `camera`：`shot_type/view_angle/view_relation_to_motion/camera_height/lens_intent/focus_target_id/movement`；`movement` 使用 `type/target_id/direction/speed/trajectory/easing/start_time_seconds/end_time_seconds`。
+- `timeline`：`duration_seconds/duration_range_seconds/duration_source_status/events/relations`；事件使用 `id/description/start_time_seconds/end_time_seconds/reference_ids/source_status/source_text`；事件间关系使用 `relation_id/source_event_id/target_event_id/relation/minimum_gap_seconds/maximum_gap_seconds/source_status/source_text`。
+- `uncertainties[]`：`field/reason/resolution/selected_value`。它记录尚不能确定或按规则解决的具体字段，不替代任何已经能够确定的实体、事件或共有语义。
+
+所有 `value/source_status/source_text` 注解对象共享第 2 节的来源规则。字段的类型、枚举、必填性和条件组合以同时发送的 JSON Schema 为准；本契约负责解释这些字段各自代表什么以及跨字段如何组合，二者不允许互相矛盾。
 
 ## 2. 原文证据与不确定性
 
@@ -43,7 +61,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 
 ## 4. 动作阶段与类型字段
 
-每个场景实体独立建立稀疏时间线。一个动作或状态具有独立起止范围时，必须建立独立的 `subject_motion`，并提供唯一 `motion_id`、有效 `subject_id` 和数值起止时间。动作阶段是语义区间，不是逐帧动画关键帧。
+每个场景实体独立建立完整的状态时间线。一个动作或状态具有独立起止范围时，必须建立独立的 `subject_motion`，并提供唯一 `motion_id`、有效 `subject_id` 和数值起止时间。动作阶段是语义区间，不是逐帧动画关键帧。允许不同动作通道重叠，但同一实体所有动作区间的并集必须从 `0` 连续覆盖到 `timeline.duration_seconds`；这里要求的是**状态有解释**，绝不表示实体必须从 0 秒开始可见或运动。中途进入画面的实体应在进入前使用覆盖 `0..进入时刻` 的 hidden/尚未出现状态，并在该阶段末填写 `becomes_visible`；Planning 会据第一个显隐转变反推初始隐藏。没有这种明确状态时，执行层只能把空窗解释成“保持上一位置且继续可见”，会制造无依据停顿。
 
 `action.value` 仅用于人类阅读和原文审计。以下字段共同构成下游唯一使用的机器语义，必须互相一致：
 
@@ -52,7 +70,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 - `motion_mode=stationary`：没有整体位移或局部 Transform 变化；必须搭配 `action_kind=hold`、`motion_type=static`、`path_type=stationary`、`local_components=[]`。显隐或容纳转变若确实发生，仍由独立 postcondition 表达并使 `scene_dynamics=dynamic`。
 - `motion_mode=local_interaction`：只有局部姿态或尺度变化；必须搭配 `action_kind=interact`、`motion_type=interactive`、`path_type=stationary`，并在 `local_components` 中准确列出 `rotation` 和/或 `scale`。不得在不知道变化通道时同时猜两个。
 - `motion_mode=self_propelled`：场景实体自主产生整体位移；必须搭配 `action_kind=locomotion`，`motion_type` 从 `walking/running/flying/jumping/moving` 中选择，路径不得为 `stationary`。
-- `motion_mode=carried`：场景实体的世界运动由另一个场景实体承载；必须搭配 `action_kind=locomotion`、`motion_type=carried`、非空 `carrier_id`、`direction_mode=none`、`target_id=null`、`path_type=stationary`。该阶段不重复生成自主世界路径。
+- `motion_mode=carried`：场景实体的世界运动由另一个场景实体承载；必须搭配 `action_kind=locomotion`、`motion_type=carried`、非空 `carrier_id`、`direction_mode=none`、`target_id=null`、`path_type=stationary`。该阶段不重复生成自主世界路径，但载体必须在 carried 的完整区间内具有 `self_propelled` 世界位移阶段；“被静止物体容纳”不是 carried。
 
 `action_kind=other` 是 Schema 保留值，当前输出不得使用；无法分类时必须在 `uncertainties` 中保留问题，而不是绕过类型字段的一致性。`carrier_id` 仅在 `carried` 时填写，且必须引用另一个已有场景实体。
 
@@ -68,7 +86,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 
 `path_type` 只在原文提供足够证据时选用 `linear/circular/elliptical/s_curve/figure_eight/parabolic`；自主位移但路径形状未定时用 `unspecified`。不得发明某个故事专用动作类型或关系类型。
 
-`postconditions` 只描述该动作阶段造成的容纳结果和外部可见性**转变**。`external_visibility=becomes_visible/becomes_hidden` 表示该阶段确实发生显隐切换；一个场景实体从头到尾可见必须写 `unchanged`，绝不能因为结束时可见就写 `becomes_visible`。`contained_by_id` 是该阶段建立的容纳事实，不是方向目标；只有原文明示或必然推出时才填写。
+`postconditions` 只描述该动作阶段造成的容纳结果和外部可见性**转变**。`external_visibility=becomes_visible/becomes_hidden` 表示切换发生在该阶段末端；第一个转变若为 `becomes_visible`，则该实体在转变前初始隐藏，第一个转变若为 `becomes_hidden`，则转变前初始可见。一个场景实体从头到尾可见必须写 `unchanged`，绝不能因为结束时可见就写 `becomes_visible`。`contained_by_id` 是该阶段建立的容纳事实，不是方向目标；只有原文明示或必然推出时才填写。
 
 `timeline_event_id` 引用承载同一动作阶段的事件。`narrative_required=true` 仅表示删除该阶段会丢失用户明确叙事或必然语义；不得借此增添新动作。
 
@@ -76,7 +94,9 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 
 - `timeline.duration_seconds` 是整个视频片段的确定时长。原文只给范围时同时保留 `duration_range_seconds`；原文未给时长时使用当前契约的 10 秒结构缺省，标为 `default` 并登记 `use_default`，不得按动作数量推算。
 - `timeline.events` 是可位于视频片段内任意数值起止点的语义事件，不限于开始、中间或结束三个位置。
-- 各场景实体的动作阶段可以不同步、重叠、相接或留有间隔。不得按动作数量机械等分时间，不得因另一个实体开始动作就结束当前状态。
+- 各场景实体的动作阶段可以不同步、重叠或相接，但每个实体自身的状态区间并集不得留有间隔。需要等待、停止、尚未出现或已经离场时，必须用与原文证据相符的状态阶段明确覆盖；不得靠省略阶段表达。不得按动作数量机械等分时间，也不得因另一个实体开始动作就结束当前状态。
+- 原文没有表达“稍后、过一会、先停着、随后才出现”等延迟时，不得在第一个叙事动作之前自行制造静止或不可见空窗；第一个叙事动作从视频片段开始。原文没有表达动作提前结束并保持某状态时，最后一个叙事状态持续到视频片段结束。内部事件边界仍可根据事件顺序选择，但必须登记为推断或缺省，不能伪装成原文明示秒数。
+- 复合载运叙事必须逐个列出所有实际改变世界位置的实体。若 B 在区间内 `carried` by A，B 只声明相对 A 不自主运动；A 仍必须拥有覆盖同一区间的 `self_propelled` 动作。不得因为“B 被 A 带走”只写 B 的 carried 而遗漏 A 的离开运动。
 - 事件和动作阶段的起止时间必须位于总时长内，且必须严格满足开始时间早于结束时间。动作若填写 `timeline_event_id`，动作与所引用事件的数值起止时间必须完全一致；`timeline.events[].reference_ids` 只能引用已声明的场景实体，并列出该事件实际涉及的全部实体。
 - 持续动作与发生在其内部的局部条件是两个不同事件。局部条件不得直接复用整个持续动作的时间范围。若关系只描述一个临界点、状态切换点或最近时刻而没有持续含义，使用位于持续动作内部的独立事件并配合 `at_midpoint`；只有原文明示在事件开始或结束边界成立时才分别使用 `at_start/at_end`。若关系确实持续一段时间，才使用严格更短的有界区间与 `throughout`。原文未给精确时刻或区间时，采用上述结构缺省并登记时间不确定性，不得伪装成原文明示时间。
 
@@ -146,6 +166,8 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 6. 局部关系拥有独立的点事件或严格短于其承载动作的区间事件，没有被扩张为整个动作或整个视频片段；`throughout` 只用于确有持续含义的关系。
 7. 没有 Schema 之外字段、枚举、故事专用语义或依赖下游从自由文本重新猜测的缺失类型。
 8. `scene_dynamics=dynamic` 至少对应一个非静止动作、明确的 `local_components`，或 `becomes_visible/becomes_hidden`/新建容纳关系；纯摄影机运动、静态可见和静态构图不能作为 dynamic 理由。
-9. 按 `[SEM-UNCERTAINTY-RESOLUTION]` 逐项检查 `uncertainties`；特别禁止 `use_default/use_inference + selected_value=null` 和 `unresolved + 非空 selected_value`。
+9. 每个场景实体的状态区间并集是否完整覆盖视频片段；是否存在无原文依据的可见静止空窗。
+10. 每个 narrative-required carried 区间是否都有同一时间范围内持续移动的载体；“带走”是否同时为载体建立了离开阶段。
+11. 按 `[SEM-UNCERTAINTY-RESOLUTION]` 逐项检查 `uncertainties`；特别禁止 `use_default/use_inference + selected_value=null` 和 `unresolved + 非空 selected_value`。
 
 发现问题时直接输出修正后的完整对象。无法由原文决定时保留未知并登记 `uncertainties`，不得猜测。

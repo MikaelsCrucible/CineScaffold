@@ -2772,13 +2772,24 @@ def _build_motion(
                 )
             transitions.sort(key=lambda item: item[0])
             source_ref = transitions[0][2]
+            # A transition has two sides. If the first declared transition is
+            # "becomes visible", the subject must be hidden before it; if it
+            # is "becomes hidden", the subject starts visible. Starting every
+            # track at True made mid-scene entrances impossible to express.
+            initial_visible = not transitions[0][1]
             track = TrackSpec(
                 track_id=f"design_visibility_{subject_id}",
                 target_entity_id=subject_id,
                 type="visibility",
                 time_range_seconds=(0.0, duration),
                 keyframes=_deduplicate_keyframes(
-                    [TrackKeyframe(time_seconds=0.0, value=True, interpolation="step")]
+                    [
+                        TrackKeyframe(
+                            time_seconds=0.0,
+                            value=initial_visible,
+                            interpolation="step",
+                        )
+                    ]
                     + [
                         TrackKeyframe(
                             time_seconds=time_seconds,
@@ -4455,7 +4466,6 @@ def _subject_hidden_at(
     duration: float,
     time_seconds: float,
 ) -> bool:
-    hidden = False
     transitions: list[tuple[float, bool]] = []
     for phase in phases:
         if phase.kind != "visibility" or phase.visibility_state is None:
@@ -4463,7 +4473,9 @@ def _subject_hidden_at(
         start, end = _phase_range(objective, phase, duration)
         transition = start if phase.transition_at == "at_start" else end
         transitions.append((transition, phase.visibility_state == "hidden"))
-    for transition, becomes_hidden in sorted(transitions):
+    transitions.sort()
+    hidden = not transitions[0][1] if transitions else False
+    for transition, becomes_hidden in transitions:
         if transition > time_seconds + 1e-9:
             break
         hidden = becomes_hidden

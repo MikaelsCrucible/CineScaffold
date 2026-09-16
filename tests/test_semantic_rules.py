@@ -137,6 +137,57 @@ class SemanticRulesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "selected_value 必须为 null"):
             apply_translation_rules(content, self.rules)
 
+    def test_subject_state_timeline_rejects_an_implicit_visible_hold(self) -> None:
+        content = valid_model_output()
+        content["subject_motion"] = [
+            self._motion(
+                "person_01",
+                "移动",
+                action_kind="locomotion",
+                motion_type="moving",
+                motion_mode="self_propelled",
+                direction_mode="none",
+                path_type="unspecified",
+            )
+        ]
+        content["subject_motion"][0]["start_time_seconds"] = 3.0
+        content["scene_dynamics"]["mode"] = "dynamic"
+
+        with self.assertRaisesRegex(ValueError, "SEM-SUBJECT-STATE-COVERAGE"):
+            apply_translation_rules(content, self.rules)
+
+    def test_narrative_carried_requires_overlapping_carrier_motion(self) -> None:
+        content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": entity_id,
+                "category": self._annotated(label, source),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            }
+            for entity_id, label, source in (
+                ("person_01", "人", "一个人"),
+                ("car", "车", "一辆车"),
+            )
+        ]
+        carried = self._motion(
+            "person_01",
+            "被车带走",
+            action_kind="locomotion",
+            motion_type="carried",
+            motion_mode="carried",
+            direction_mode="none",
+            carrier_id="car",
+            path_type="stationary",
+        )
+        carried["motion_semantics"]["narrative_required"] = True
+        content["subject_motion"] = [carried]
+        content["scene_dynamics"]["mode"] = "dynamic"
+
+        with self.assertRaisesRegex(ValueError, "SEM-CARRIED-CARRIER-MOTION"):
+            apply_translation_rules(content, self.rules)
+
     def test_radial_camera_speed_uses_actual_duration(self) -> None:
         cases = (
             ("孤独", 15.0, 10.0 / 15.0),
@@ -338,7 +389,7 @@ class SemanticRulesTest(unittest.TestCase):
         self.assertEqual(parameters["motions"][0]["action_kind"], "locomotion")
         self.assertEqual(parameters["motions"][0]["direction_mode"], "none")
 
-    def test_dynamic_entity_timelines_preserve_independent_ranges(self) -> None:
+    def test_dynamic_entity_timelines_reject_unexplained_independent_gaps(self) -> None:
         content = valid_model_output()
         content["subjects"] = [
             {
@@ -438,33 +489,12 @@ class SemanticRulesTest(unittest.TestCase):
         content["scene_dynamics"]["mode"] = "dynamic"
 
         validate_model_output(content, self.model_schema)
-        normalized, parameters = apply_translation_rules(
-            content,
-            self.rules,
-            "一个人在路边等待，然后一辆车开了过来把他接走了",
-        )
-
-        events = normalized["timeline"]["events"]
-        self.assertEqual(
-            [(item["start_time_seconds"], item["end_time_seconds"]) for item in events],
-            [(0.0, 7.0), (2.0, 7.0)],
-        )
-        self.assertEqual(
-            [
-                (item["start_time_seconds"], item["end_time_seconds"])
-                for item in normalized["subject_motion"]
-            ],
-            [(0.0, 7.0), (2.0, 7.0)],
-        )
-        self.assertEqual(
-            [
-                (item["start_time_seconds"], item["end_time_seconds"])
-                for item in parameters["motions"]
-            ],
-            [(0.0, 7.0), (2.0, 7.0)],
-        )
-        self.assertEqual(parameters["scene_dynamics"]["mode"], "dynamic")
-        self.assertEqual(len(parameters["temporal_relations"]), 2)
+        with self.assertRaisesRegex(ValueError, "SEM-SUBJECT-STATE-COVERAGE"):
+            apply_translation_rules(
+                content,
+                self.rules,
+                "一个人在路边等待，然后一辆车开了过来把他接走了",
+            )
 
     def test_sequential_events_are_not_mechanically_partitioned(self) -> None:
         content = valid_model_output()
@@ -608,6 +638,15 @@ class SemanticRulesTest(unittest.TestCase):
         content["subject_motion"] = [
             self._motion(
                 "car_01",
+                "保持不动",
+                action_kind="hold",
+                motion_type="static",
+                motion_mode="stationary",
+                direction_mode="none",
+                path_type="stationary",
+            ),
+            self._motion(
+                "car_01",
                 "开远",
                 action_kind="locomotion",
                 motion_type="moving",
@@ -617,6 +656,12 @@ class SemanticRulesTest(unittest.TestCase):
             )
         ]
         content["subject_motion"][0].update(
+            motion_id="car_hold",
+            start_time_seconds=0.0,
+            end_time_seconds=5.0,
+        )
+        content["subject_motion"][1].update(
+            motion_id="car_move",
             start_time_seconds=5.0,
             end_time_seconds=10.0,
         )
@@ -636,7 +681,7 @@ class SemanticRulesTest(unittest.TestCase):
 
         normalized, parameters = apply_translation_rules(content, self.rules)
 
-        semantics = normalized["subject_motion"][0]["motion_semantics"]
+        semantics = normalized["subject_motion"][1]["motion_semantics"]
         self.assertEqual(semantics["motion_mode"], "self_propelled")
         self.assertEqual(parameters["camera"]["movement"], "pan")
         self.assertEqual(parameters["camera"]["speed_mps"], 0.0)
@@ -810,13 +855,24 @@ class SemanticRulesTest(unittest.TestCase):
                 path_type="stationary",
                 contained_by_id="car",
                 external_visibility="becomes_hidden",
-            )
+            ),
+            self._motion(
+                "car",
+                "载着人离开",
+                action_kind="locomotion",
+                motion_type="moving",
+                motion_mode="self_propelled",
+                direction_mode="none",
+                path_type="unspecified",
+            ),
         ]
         content["scene_dynamics"]["mode"] = "dynamic"
 
         _, parameters = apply_translation_rules(content, self.rules)
 
-        motion = parameters["motions"][0]
+        motion = next(
+            item for item in parameters["motions"] if item["subject_id"] == "person"
+        )
         self.assertEqual(motion["motion_type"], "carried")
         self.assertEqual(motion["motion_mode"], "carried")
         self.assertEqual(motion["carrier_id"], "car")

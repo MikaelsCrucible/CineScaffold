@@ -72,7 +72,7 @@ from cinescaffold.planning.objective import (
 from cinescaffold.planning.store import CandidateStore, MutationResult, canonical_hash
 from cinescaffold.relationships import classify_relationship
 
-TOOLKIT_VERSION = "0.48"
+TOOLKIT_VERSION = "0.49"
 CONSTRAINT_CATALOG_VERSION = "0.1"
 SUPPORTED_CONSTRAINTS = {
     "relative_position",
@@ -4735,6 +4735,39 @@ def _typed_motion_semantic_violations(
         carrier_id = semantics.get("carrier_id")
         if not isinstance(carrier_id, str) or carrier_id not in state.entities:
             continue
+        if semantics.get("narrative_required") is True:
+            carrier_positions = [
+                _WorldTransformResolver(state, time_seconds, profile)
+                .entity(carrier_id)
+                .translation_m
+                for time_seconds in sample_times
+            ]
+            carrier_baseline = carrier_positions[0]
+            carrier_movement_extent = max(
+                length(subtract(item, carrier_baseline))
+                for item in carrier_positions
+            )
+            if carrier_movement_extent <= stationary_tolerance:
+                violations.append(
+                    _violation(
+                        "CARRIED_CARRIER_MOTION_MISSING",
+                        "叙事必需的 carried 阶段没有对应的载体世界位移："
+                        f"{subject_id} -> {carrier_id}",
+                        entity_ids=[subject_id, carrier_id],
+                        time_range_seconds=(start, end),
+                        expected={
+                            "carrier_world_displacement_greater_than_m": (
+                                stationary_tolerance
+                            )
+                        },
+                        actual={
+                            "carrier_world_displacement_extent_m": (
+                                carrier_movement_extent
+                            )
+                        },
+                        adjustable_variables=[f"motion_tracks.{carrier_id}"],
+                    )
+                )
         sample_time = min(max(start, 0.0), last_frame_time)
         if not _entity_visibility_at(state, subject_id, sample_time):
             continue

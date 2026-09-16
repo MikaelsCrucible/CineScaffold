@@ -6,6 +6,7 @@ from pathlib import Path
 
 from cinescaffold.errors import PromptTemplateError
 from cinescaffold.prompting import build_prompt, build_revision_prompt
+from cinescaffold.schema import load_schema
 from tests.helpers import ROOT
 
 
@@ -60,6 +61,26 @@ class PromptingTest(unittest.TestCase):
             "不得引用 `action.value/source_text`、实体名称或其他自由文本来补造关系",
             planning_prompt,
         )
+
+    def test_semantic_prompt_names_every_structured_output_field(self) -> None:
+        prompt = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in (
+                "src/cinescaffold/resources/prompts/semantic_parser/system.md",
+                "src/cinescaffold/resources/prompts/semantic_parser/rules.md",
+                "src/cinescaffold/resources/prompts/semantic_parser/revision.md",
+            )
+        )
+        schema = load_schema(
+            ROOT
+            / "src/cinescaffold/resources/schemas/cinematic_brief_model_output.schema.json"
+        )
+
+        schema_nodes = [("root", schema), *schema.get("$defs", {}).items()]
+        for definition, node in schema_nodes:
+            for field_name in node.get("properties", {}):
+                with self.subTest(definition=definition, field=field_name):
+                    self.assertIn(field_name, prompt)
 
     def test_revision_prompt_contains_source_draft_and_diagnostics(self) -> None:
         bundle = build_revision_prompt(

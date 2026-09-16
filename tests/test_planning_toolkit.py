@@ -800,6 +800,29 @@ class ScenePlanningToolkitTest(unittest.TestCase):
             }
         )
         toolkit.apply_entity_patch([_man_entity(), _ship_entity()], [])
+        carrier_motion = toolkit.apply_motion_patch(
+            [
+                {
+                    "track_id": "ship_carrier_motion",
+                    "target_entity_id": "ship_01",
+                    "type": "transform",
+                    "time_range_seconds": [3.0, 6.0],
+                    "keyframes": [
+                        {
+                            "time_seconds": 3.0,
+                            "value": {"translation_m": [0.0, 0.0, 0.0]},
+                        },
+                        {
+                            "time_seconds": 143 / 24,
+                            "value": {"translation_m": [6.0, 0.0, 0.0]},
+                        },
+                    ],
+                    "source_ref": "agent.ship_carrier_motion",
+                }
+            ],
+            [],
+        )
+        self.assertEqual(carrier_motion["status"], "ok", carrier_motion)
 
         missing = toolkit.validate_candidate(checks=["motion"])
 

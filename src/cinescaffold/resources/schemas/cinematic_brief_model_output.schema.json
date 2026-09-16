@@ -221,6 +221,7 @@
     },
     "subjectMotion": {
       "type": "object",
+      "description": "[SEM-TEMPORAL-INTEGRITY][SEM-SUBJECT-STATE-COVERAGE] 动作阶段必须位于总时长内；同一场景实体全部阶段的区间并集必须从 0 连续覆盖到 duration，不能用缺失阶段表示等待、隐藏或停止。完整覆盖不要求实体从头可见：中途出现应以 0..出现时刻的 hidden/尚未出现阶段及末端 becomes_visible 表达。",
       "properties": {
         "motion_id": {"type": "string"},
         "subject_id": {"type": "string"},
@@ -253,7 +254,7 @@
     },
     "motionSemantics": {
       "type": "object",
-      "description": "[SEM-MOTION-COMBINATION] 每个场景实体动作阶段的类型化语义；事件参与者不自动成为几何运动目标。motion_mode 必须与 action_kind、motion_type、path_type、local_components、direction_mode、target_id 和 carrier_id 使用下列合法组合。",
+      "description": "[SEM-MOTION-COMBINATION][SEM-CARRIED-CARRIER-MOTION] 每个场景实体动作阶段的类型化语义；事件参与者不自动成为几何运动目标。motion_mode 必须与 action_kind、motion_type、path_type、local_components、direction_mode、target_id 和 carrier_id 使用下列合法组合。narrative_required carried 的完整区间必须由 carrier_id 对应实体的 self_propelled 阶段覆盖。",
       "allOf": [
         {"$ref": "#/$defs/sourceEvidence"},
         {
@@ -398,7 +399,7 @@
         "contained_by_id": {"type": ["string", "null"]},
         "external_visibility": {
           "type": "string",
-          "description": "动作阶段造成的可见性转变，不是阶段结束时的静态可见状态。",
+          "description": "动作阶段末端造成的可见性转变，不是静态可见状态。第一个转变若为 becomes_visible，转变前初始隐藏；若为 becomes_hidden，转变前初始可见。",
           "enum": ["unchanged", "becomes_visible", "becomes_hidden"]
         }
       },

@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from cinescaffold.planning.compiler import compile_scene_ir
 from cinescaffold.planning.design import (
     SceneSkeleton,
+    SkeletonMotionPhase,
+    _subject_hidden_at,
     skeleton_hash,
     task_capability_slice,
     validate_scene_skeleton,
@@ -43,6 +45,31 @@ from tests.helpers import valid_planning_brief
 
 
 class PlanningDesignTest(unittest.TestCase):
+    def test_first_becomes_visible_transition_starts_subject_hidden(self) -> None:
+        toolkit = _desert_toolkit()
+        objective = toolkit.objective_brief.model_copy(deep=True)
+        objective.subject_motion[0].update(
+            start_time_seconds=0.0,
+            end_time_seconds=3.0,
+        )
+        phase = SkeletonMotionPhase.model_validate(
+            {
+                **_symbolic_phase(
+                    "man_enters",
+                    "man_01",
+                    "visibility",
+                    0,
+                    motion_id=objective.subject_motion[0]["motion_id"],
+                ),
+                "visibility_state": "visible",
+                "transition_at": "at_end",
+            }
+        )
+
+        self.assertTrue(_subject_hidden_at([phase], objective, 6.0, 0.0))
+        self.assertTrue(_subject_hidden_at([phase], objective, 6.0, 2.9))
+        self.assertFalse(_subject_hidden_at([phase], objective, 6.0, 3.0))
+
     def test_general_linear_motion_uses_semantic_speed_and_linear_interpolation(
         self,
     ) -> None:
@@ -412,6 +439,34 @@ class PlanningDesignTest(unittest.TestCase):
             "ENTITY_GROUND_CONTACT_VIOLATED",
             {item.code for item in violations},
         )
+
+    def test_narrative_carried_hard_fails_when_carrier_does_not_move(self) -> None:
+        toolkit = _example_toolkit("roadside_pickup_12s.json")
+        skeleton = build_deterministic_scene_skeleton(toolkit.objective_brief)
+        toolkit.submit_scene_skeleton(skeleton)
+        options = toolkit.request_design_options(max_options=1)
+        self.assertTrue(options["data"]["options"], options)
+        option_id = options["data"]["options"][0]["option_id"]
+        candidate = toolkit._design_options[option_id].candidate.model_copy(deep=True)
+        car_track = candidate.motion_tracks["design_motion_car"]
+        fixed = car_track.keyframes[0].value.translation_m
+        car_track.keyframes = [
+            keyframe.model_copy(
+                update={
+                    "value": keyframe.value.model_copy(
+                        update={"translation_m": fixed}
+                    )
+                }
+            )
+            for keyframe in car_track.keyframes
+        ]
+
+        codes = {
+            item.code
+            for item in toolkit._validate(candidate, ["motion"]).violations
+        }
+
+        self.assertIn("CARRIED_CARRIER_MOTION_MISSING", codes)
 
     def test_scene_skeleton_must_include_every_brief_subject(self) -> None:
         objective = project_objective_brief(valid_planning_brief()).objective_brief
@@ -1901,6 +1956,36 @@ class PlanningDesignTest(unittest.TestCase):
 
         self.assertIn("design_orbit_moon", toolkit.store.get().motion_tracks)
         self.assertIn("design_visibility_moon", toolkit.store.get().motion_tracks)
+
+    def test_first_visible_transition_materializes_hidden_initial_state(self) -> None:
+        toolkit = _example_toolkit("solar_system_10s.json")
+        skeleton = _solar_skeleton()
+        skeleton["motion_phases"].append(
+            {
+                **_symbolic_phase(
+                    "moon_visible",
+                    "moon",
+                    "visibility",
+                    2,
+                    status="explicit",
+                    motion_id="moon_orbit",
+                ),
+                "visibility_state": "visible",
+                "transition_at": "at_end",
+            }
+        )
+        toolkit.objective_brief.subject_motion[2]["motion_semantics"][
+            "postconditions"
+        ]["external_visibility"] = "becomes_visible"
+        toolkit.submit_scene_skeleton(skeleton)
+
+        result = toolkit.request_design_options(max_options=1)
+        option = result["data"]["options"][0]
+        toolkit.apply_design_option(0, option["option_id"])
+        visibility = toolkit.store.get().motion_tracks["design_visibility_moon"]
+
+        self.assertFalse(visibility.keyframes[0].value)
+        self.assertTrue(visibility.keyframes[-1].value)
 
     def test_unspecified_camera_focus_uses_fixed_scene_anchor(self) -> None:
         toolkit = _example_toolkit("solar_system_10s.json")

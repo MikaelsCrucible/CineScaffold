@@ -46,6 +46,20 @@ SEMANTIC_AI_CONTRACTS = (
         "动作引用事件时二者区间必须一致，时间关系枚举必须与数值区间一致。",
     ),
     SemanticAIContract(
+        "SEM-SUBJECT-STATE-COVERAGE",
+        "每个场景实体的 subject_motion 区间并集必须从 0 连续覆盖到 duration，"
+        "不得留下会被执行层解释为无依据静止且可见的开头、中间或结尾空窗；"
+        "覆盖只要求状态有解释，不要求实体从头可见；中途出现必须以进入前 hidden 状态"
+        "及其末端 becomes_visible 明确表达。原文没有等待、延迟出现或提前结束时，"
+        "不得自行插入这类状态。",
+    ),
+    SemanticAIContract(
+        "SEM-CARRIED-CARRIER-MOTION",
+        "narrative_required 的 carried 表示该实体在世界中随载体移动；其完整区间必须由"
+        " carrier_id 对应实体的 self_propelled 动作覆盖。仅建立容纳但载体不移动时，"
+        "不得使用 carried 冒充世界位移。",
+    ),
+    SemanticAIContract(
         "SEM-REFERENCE-INTEGRITY",
         "所有 subject、event、target、carrier、contained_by、focus 和关系引用必须存在、"
         "类型正确且不得非法自引用；所有要求唯一的 ID 和 uncertainty.field 必须唯一。",

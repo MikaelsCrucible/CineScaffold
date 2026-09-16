@@ -48,6 +48,11 @@ from cinescaffold.planning.domain import (
 )
 from cinescaffold.planning.models import create_planning_model
 from cinescaffold.planning.objective import project_objective_brief
+from cinescaffold.planning.prompt_contracts import (
+    planning_tool_contract_names,
+    render_planning_system_prompt,
+    render_planning_tool_contracts,
+)
 from cinescaffold.planning.trace import TraceRecorder
 from tests.helpers import valid_planning_brief
 from tests.test_planning_design import _desert_skeleton
@@ -79,12 +84,19 @@ class PlanningProtocolTest(unittest.TestCase):
                 for decorator in node.decorator_list
             )
         }
-        prompt = (
+        template = (
             root / "src/cinescaffold/resources/prompts/scene_planner/system.md"
         ).read_text(encoding="utf-8")
+        prompt = render_planning_system_prompt(template)
 
         self.assertTrue(registered)
-        self.assertEqual(sorted(name for name in registered if name not in prompt), [])
+        self.assertEqual(registered, set(planning_tool_contract_names()))
+        self.assertNotIn("{{PLANNING_TOOL_CONTRACTS}}", prompt)
+        rendered_contracts = render_planning_tool_contracts()
+        for name in registered:
+            with self.subTest(tool=name):
+                self.assertEqual(rendered_contracts.count(f"`{name}`："), 1)
+                self.assertIn(f"`{name}`：", prompt)
 
     def test_current_path_contract_rejects_missing_representation(self) -> None:
         with self.assertRaises(ValidationError):

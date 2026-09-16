@@ -48,6 +48,7 @@ from cinescaffold.planning.objective import (
     has_subject_spatial_motion,
     project_objective_brief,
 )
+from cinescaffold.planning.prompt_contracts import render_planning_system_prompt
 from cinescaffold.planning.toolkit import (
     EXECUTION_SAFETY_CHECKS,
     FULL_VALIDATION_CHECKS,
@@ -171,7 +172,9 @@ class InterpreterRunner:
         try:
             projection = project_objective_brief(cinematic_brief)
             _write_json(run_dir / "cinematic_brief.json", cinematic_brief)
-            system_prompt = self.config.system_prompt_path.read_text(encoding="utf-8")
+            system_prompt = render_planning_system_prompt(
+                self.config.system_prompt_path.read_text(encoding="utf-8")
+            )
             model_settings = _planning_model_settings(self.config)
             effective_limits = _effective_limits(self.config)
             preserve_thinking_history = _requires_complete_thinking_history(self.config)
@@ -741,16 +744,21 @@ def _route_context_index(objective: ObjectivePlanningBrief) -> dict[str, Any]:
     """Give the planner a compact global motion index before Skeleton design."""
 
     motion_timelines: dict[str, list[dict[str, Any]]] = {}
-    for motion in objective.subject_motion:
+    containment_bindings: list[dict[str, Any]] = []
+    for motion_index, motion in enumerate(objective.subject_motion):
         subject_id = motion.get("subject_id")
         semantics = motion.get("motion_semantics")
         if subject_id is None:
             continue
         if not isinstance(semantics, dict):
             semantics = {}
+        canonical_source_ref = (
+            f"content.subject_motion[{motion_index}].motion_semantics"
+        )
         motion_timelines.setdefault(str(subject_id), []).append(
             {
                 "motion_id": motion.get("motion_id"),
+                "canonical_source_ref": canonical_source_ref,
                 "event_id": semantics.get("timeline_event_id"),
                 "start": motion.get("start_time_seconds"),
                 "end": motion.get("end_time_seconds"),
@@ -762,18 +770,64 @@ def _route_context_index(objective: ObjectivePlanningBrief) -> dict[str, Any]:
                 "postconditions": semantics.get("postconditions"),
             }
         )
-    spatial_relations = [
-        {
+        postconditions = semantics.get("postconditions")
+        contained_by_id = (
+            postconditions.get("contained_by_id")
+            if isinstance(postconditions, dict)
+            else None
+        )
+        event_id = semantics.get("timeline_event_id")
+        if (
+            isinstance(contained_by_id, str)
+            and isinstance(event_id, str)
+            and contained_by_id != subject_id
+        ):
+            containment_bindings.append(
+                {
+                    "binding_id": f"containment_boundary:{motion.get('motion_id')}",
+                    "binding_type": "containment_boundary",
+                    "canonical_source_ref": canonical_source_ref,
+                    "kind": "proximity",
+                    "subject_id": subject_id,
+                    "reference_id": contained_by_id,
+                    "event_id": event_id,
+                    "temporal_mode": "at_end",
+                    "source_status": semantics.get("source_status"),
+                }
+            )
+    spatial_relations: list[dict[str, Any]] = []
+    relationship_bindings: list[dict[str, Any]] = []
+    for relation_index, item in enumerate(
+        objective.scene_design.get("relationships", [])
+    ):
+        if not isinstance(item, dict):
+            continue
+        canonical_source_ref = (
+            f"content.scene_design.relationships[{relation_index}]"
+        )
+        summary = {
             "subject_id": item.get("subject_id"),
             "reference_id": item.get("reference_id"),
             "type": item.get("type"),
             "event_id": item.get("timeline_event_id"),
             "temporal_mode": item.get("temporal_mode", "throughout"),
             "source_status": item.get("source_status"),
+            "canonical_source_ref": canonical_source_ref,
         }
-        for item in objective.scene_design.get("relationships", [])
-        if isinstance(item, dict)
-    ]
+        spatial_relations.append(summary)
+        relationship_bindings.append(
+            {
+                "binding_id": f"semantic_relationship:{relation_index}",
+                "binding_type": "semantic_relationship",
+                "canonical_source_ref": canonical_source_ref,
+                "kind": item.get("type"),
+                "subject_id": item.get("subject_id"),
+                "reference_id": item.get("reference_id"),
+                "event_id": item.get("timeline_event_id"),
+                "temporal_mode": item.get("temporal_mode", "throughout"),
+                "source_status": item.get("source_status"),
+            }
+        )
     shared_events = [
         {
             "event_id": item.get("id"),
@@ -791,6 +845,7 @@ def _route_context_index(objective: ObjectivePlanningBrief) -> dict[str, Any]:
         "camera_motion_is_independent": True,
         "motion_timelines": motion_timelines,
         "spatial_relations": spatial_relations,
+        "relation_bindings": [*relationship_bindings, *containment_bindings],
         "shared_events": shared_events,
         "environment": environment,
     }

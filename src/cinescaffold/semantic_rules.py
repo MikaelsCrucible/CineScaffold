@@ -61,6 +61,7 @@ def apply_translation_rules(
     _normalize_camera_movement(content)
     subjects = _subject_parameters(content, rules)
     motions = _motion_parameters(content, rules)
+    _validate_carried_carrier_motion(content["subject_motion"])
     scene = _scene_parameters(content, rules)
     explicit_overrides = _explicit_override_paths(content)
 
@@ -827,6 +828,102 @@ def _validate_motion_ranges(
                 raise ValueError(
                     f"subject_motion[{index}] 与 timeline_event_id 的数值范围不一致"
                 )
+    _validate_subject_state_coverage(motions, duration)
+
+
+def _validate_subject_state_coverage(
+    motions: list[dict[str, Any]],
+    duration: float,
+) -> None:
+    """Reject implicit visible holds caused by missing per-subject state ranges."""
+
+    ranges_by_subject: dict[str, list[tuple[float, float]]] = {}
+    for motion in motions:
+        if not isinstance(motion, dict):
+            continue
+        subject_id = motion.get("subject_id")
+        start = motion.get("start_time_seconds")
+        end = motion.get("end_time_seconds")
+        if (
+            not isinstance(subject_id, str)
+            or not _is_number(start)
+            or not _is_number(end)
+        ):
+            continue
+        ranges_by_subject.setdefault(subject_id, []).append(
+            (float(start), float(end))
+        )
+
+    tolerance = 1e-6
+    for subject_id, ranges in sorted(ranges_by_subject.items()):
+        ordered = sorted(ranges)
+        if ordered[0][0] > tolerance:
+            raise ValueError(
+                "[SEM-SUBJECT-STATE-COVERAGE] 场景实体时间线开头存在无状态空窗："
+                f"{subject_id} 0.0-{ordered[0][0]:g} 秒"
+            )
+        covered_until = ordered[0][1]
+        for start, end in ordered[1:]:
+            if start > covered_until + tolerance:
+                raise ValueError(
+                    "[SEM-SUBJECT-STATE-COVERAGE] 场景实体时间线中间存在无状态空窗："
+                    f"{subject_id} {covered_until:g}-{start:g} 秒"
+                )
+            covered_until = max(covered_until, end)
+        if covered_until < duration - tolerance:
+            raise ValueError(
+                "[SEM-SUBJECT-STATE-COVERAGE] 场景实体时间线结尾存在无状态空窗："
+                f"{subject_id} {covered_until:g}-{duration:g} 秒"
+            )
+
+
+def _validate_carried_carrier_motion(motions: list[dict[str, Any]]) -> None:
+    """A narrative carried interval is world motion and needs a moving carrier."""
+
+    tolerance = 1e-6
+    for index, motion in enumerate(motions):
+        if not isinstance(motion, dict):
+            continue
+        semantics = motion.get("motion_semantics")
+        if (
+            not isinstance(semantics, dict)
+            or semantics.get("motion_mode") != "carried"
+            or semantics.get("narrative_required") is not True
+        ):
+            continue
+        carrier_id = semantics.get("carrier_id")
+        carried_start = float(motion["start_time_seconds"])
+        carried_end = float(motion["end_time_seconds"])
+        carrier_ranges: list[tuple[float, float]] = []
+        for candidate in motions:
+            if (
+                not isinstance(candidate, dict)
+                or candidate.get("subject_id") != carrier_id
+            ):
+                continue
+            candidate_semantics = candidate.get("motion_semantics")
+            if (
+                not isinstance(candidate_semantics, dict)
+                or candidate_semantics.get("motion_mode") != "self_propelled"
+            ):
+                continue
+            start = max(carried_start, float(candidate["start_time_seconds"]))
+            end = min(carried_end, float(candidate["end_time_seconds"]))
+            if start < end:
+                carrier_ranges.append((start, end))
+
+        covered_until = carried_start
+        for start, end in sorted(carrier_ranges):
+            if start > covered_until + tolerance:
+                break
+            covered_until = max(covered_until, end)
+        if covered_until < carried_end - tolerance:
+            raise ValueError(
+                "[SEM-CARRIED-CARRIER-MOTION] narrative_required carried 的载体"
+                "没有在完整区间内自主移动："
+                f"subject_motion[{index}] carrier_id={carrier_id} "
+                f"{carried_start:g}-{carried_end:g} 秒"
+            )
 
 
 def _classify_emotion(content: dict[str, Any], rules: dict[str, Any]) -> dict[str, Any]:

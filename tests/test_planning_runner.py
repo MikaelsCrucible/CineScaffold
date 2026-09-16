@@ -136,6 +136,25 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertIn("car", context["motion_timelines"])
         self.assertTrue(context["shared_events"])
         self.assertTrue(context["spatial_relations"])
+        self.assertTrue(context["relation_bindings"])
+        containment = next(
+            item
+            for item in context["relation_bindings"]
+            if item["binding_type"] == "containment_boundary"
+        )
+        self.assertEqual(containment["kind"], "proximity")
+        self.assertEqual(containment["temporal_mode"], "at_end")
+        self.assertRegex(
+            containment["canonical_source_ref"],
+            r"^content\.subject_motion\[\d+\]\.motion_semantics$",
+        )
+        self.assertTrue(
+            all(
+                "canonical_source_ref" in motion
+                for motions in context["motion_timelines"].values()
+                for motion in motions
+            )
+        )
         self.assertEqual(context["scene_dynamics"]["mode"], "dynamic")
         self.assertTrue(context["subject_spatial_motion_present"])
         self.assertTrue(context["camera_motion_is_independent"])
@@ -650,7 +669,7 @@ class InterpreterRunnerTest(unittest.TestCase):
         self.assertTrue(any(item["event_type"] == "tool_call_completed" for item in trace))
         self.assertTrue(any(item["event_type"] == "commit_gate_completed" for item in trace))
         run_started = next(item for item in trace if item["event_type"] == "run_started")
-        self.assertEqual(run_started["payload"]["toolkit_version"], "0.48")
+        self.assertEqual(run_started["payload"]["toolkit_version"], "0.49")
         self.assertNotIn("孤独", "\n".join(trace_lines))
         # 普通运行保持精简日志：不记录对话内容，response 只记类型与规模。
         request_started = next(
