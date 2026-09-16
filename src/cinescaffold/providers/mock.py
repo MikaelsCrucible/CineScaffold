@@ -19,12 +19,15 @@ class MockProvider:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
     ) -> ProviderResponse:
         self.calls.append(
             {
                 "system_prompt": system_prompt,
                 "user_prompt": user_prompt,
                 "schema": schema,
+                "timeout_seconds": timeout_seconds,
             }
         )
         return ProviderResponse(

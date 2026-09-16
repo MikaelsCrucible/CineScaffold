@@ -20,5 +20,7 @@ class StructuredOutputProvider(Protocol):
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
     ) -> ProviderResponse:
         ...

@@ -1,4 +1,4 @@
-# Cinematic Brief 语义契约 v0.20
+# Cinematic Brief 语义契约 v0.21
 
 ## 1. 术语与职责
 
@@ -22,7 +22,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 
 - 顶层对象只含 `summary/subjects/subject_motion/scene_dynamics/scene_design/mood/composition/camera/timeline/uncertainties`；`summary` 只做人类可读概括，不能代替任一结构字段。
 - `subjects[]`：`id/category/description/narrative_role/attributes[]`；属性使用 `name/value/source_status/source_text`。
-- `subject_motion[]`：`motion_id/subject_id/action/motion_semantics/direction/speed/trajectory/start_time_seconds/end_time_seconds/secondary_motion`；`secondary_motion` 当前必须为空。
+- `subject_motion[]`：`motion_id/subject_id/action/motion_semantics/direction/speed/trajectory/secondary_motion`；`secondary_motion` 当前必须为空。动作阶段的起止秒数只在 `timeline.events[]` 填写一次，动作通过 `motion_semantics.timeline_event_id` 引用它；Core 会在规范化 Brief 中确定性派生动作的 `start_time_seconds/end_time_seconds`。
 - `motion_semantics`：`action_kind/motion_type/motion_mode/direction_mode/target_id/carrier_id/path_type/local_components/timeline_event_id/narrative_required/postconditions/source_status/source_text`；`postconditions` 只含 `contained_by_id/external_visibility`。
 - `scene_dynamics`：`mode/source_status/reason`。
 - `scene_design`：`environment/spatial_layers/relationships/environmental_motion`；`spatial_layers[]` 使用 `layer/content_ids/source_status/source_text`，`relationships[]` 使用 `type/subject_id/reference_id/timeline_event_id/temporal_mode/source_status/source_text`。
@@ -61,7 +61,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 
 ## 4. 动作阶段与类型字段
 
-每个场景实体独立建立完整的状态时间线。一个动作或状态具有独立起止范围时，必须建立独立的 `subject_motion`，并提供唯一 `motion_id`、有效 `subject_id` 和数值起止时间。动作阶段是语义区间，不是逐帧动画关键帧。允许不同动作通道重叠，但同一实体所有动作区间的并集必须从 `0` 连续覆盖到 `timeline.duration_seconds`；这里要求的是**状态有解释**，绝不表示实体必须从 0 秒开始可见或运动。中途进入画面的实体应在进入前使用覆盖 `0..进入时刻` 的 hidden/尚未出现状态，并在该阶段末填写 `becomes_visible`；Planning 会据第一个显隐转变反推初始隐藏。没有这种明确状态时，执行层只能把空窗解释成“保持上一位置且继续可见”，会制造无依据停顿。
+每个场景实体独立建立完整的状态时间线。一个动作或状态具有独立起止范围时，必须建立独立的 `subject_motion` 和独立的 `timeline.events[]` 事件，并让 `motion_semantics.timeline_event_id` 引用该事件。只在事件上填写数值起止时间；`subject_motion` 不得重复输出起止秒数。动作阶段是语义区间，不是逐帧动画关键帧。允许不同动作通道重叠，但同一实体所有被引用事件区间的并集必须从 `0` 连续覆盖到 `timeline.duration_seconds`；这里要求的是**状态有解释**，绝不表示实体必须从 0 秒开始可见或运动。中途进入画面的实体应在进入前使用覆盖 `0..进入时刻` 的 hidden/尚未出现状态，并在该阶段末填写 `becomes_visible`；Planning 会据第一个显隐转变反推初始隐藏。没有这种明确状态时，执行层只能把空窗解释成“保持上一位置且继续可见”，会制造无依据停顿。
 
 `action.value` 仅用于人类阅读和原文审计。以下字段共同构成下游唯一使用的机器语义，必须互相一致：
 
@@ -88,7 +88,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 
 `postconditions` 只描述该动作阶段造成的容纳结果和外部可见性**转变**。`external_visibility=becomes_visible/becomes_hidden` 表示切换发生在该阶段末端；第一个转变若为 `becomes_visible`，则该实体在转变前初始隐藏，第一个转变若为 `becomes_hidden`，则转变前初始可见。一个场景实体从头到尾可见必须写 `unchanged`，绝不能因为结束时可见就写 `becomes_visible`。`contained_by_id` 是该阶段建立的容纳事实，不是方向目标；只有原文明示或必然推出时才填写。
 
-`timeline_event_id` 引用承载同一动作阶段的事件。`narrative_required=true` 仅表示删除该阶段会丢失用户明确叙事或必然语义；不得借此增添新动作。
+`timeline_event_id` 必须引用承载同一动作阶段的事件，不允许为 `null`。`narrative_required=true` 仅表示删除该阶段会丢失用户明确叙事或必然语义；不得借此增添新动作。
 
 ## 5. 时间轴
 
@@ -97,7 +97,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 - 各场景实体的动作阶段可以不同步、重叠或相接，但每个实体自身的状态区间并集不得留有间隔。需要等待、停止、尚未出现或已经离场时，必须用与原文证据相符的状态阶段明确覆盖；不得靠省略阶段表达。不得按动作数量机械等分时间，也不得因另一个实体开始动作就结束当前状态。
 - 原文没有表达“稍后、过一会、先停着、随后才出现”等延迟时，不得在第一个叙事动作之前自行制造静止或不可见空窗；第一个叙事动作从视频片段开始。原文没有表达动作提前结束并保持某状态时，最后一个叙事状态持续到视频片段结束。内部事件边界仍可根据事件顺序选择，但必须登记为推断或缺省，不能伪装成原文明示秒数。
 - 复合载运叙事必须逐个列出所有实际改变世界位置的实体。若 B 在区间内 `carried` by A，B 只声明相对 A 不自主运动；A 仍必须拥有覆盖同一区间的 `self_propelled` 动作。不得因为“B 被 A 带走”只写 B 的 carried 而遗漏 A 的离开运动。
-- 事件和动作阶段的起止时间必须位于总时长内，且必须严格满足开始时间早于结束时间。动作若填写 `timeline_event_id`，动作与所引用事件的数值起止时间必须完全一致；`timeline.events[].reference_ids` 只能引用已声明的场景实体，并列出该事件实际涉及的全部实体。
+- 事件的起止时间必须位于总时长内，且必须严格满足开始时间早于结束时间。每个动作必须引用一个有效事件，Core 会从该事件派生动作区间；`timeline.events[].reference_ids` 只能引用已声明的场景实体，并列出该事件实际涉及的全部实体。
 - 持续动作与发生在其内部的局部条件是两个不同事件。局部条件不得直接复用整个持续动作的时间范围。若关系只描述一个临界点、状态切换点或最近时刻而没有持续含义，使用位于持续动作内部的独立事件并配合 `at_midpoint`；只有原文明示在事件开始或结束边界成立时才分别使用 `at_start/at_end`。若关系确实持续一段时间，才使用严格更短的有界区间与 `throughout`。原文未给精确时刻或区间时，采用上述结构缺省并登记时间不确定性，不得伪装成原文明示时间。
 
 时间关系严格按两个事件的数值区间解释。设 source 为 `S`，target 为 `T`：

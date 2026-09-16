@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 from copy import deepcopy
+from tempfile import TemporaryDirectory
+from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from cinescaffold.errors import SemanticContractError
 from cinescaffold.providers.base import ProviderResponse
@@ -27,12 +30,20 @@ class _SequenceProvider:
         self.responses = responses
         self.calls: list[dict[str, Any]] = []
 
-    def generate(self, system_prompt, user_prompt, schema):
+    def generate(
+        self,
+        system_prompt,
+        user_prompt,
+        schema,
+        *,
+        timeout_seconds=None,
+    ):
         self.calls.append(
             {
                 "system_prompt": system_prompt,
                 "user_prompt": user_prompt,
                 "schema": schema,
+                "timeout_seconds": timeout_seconds,
             }
         )
         index = len(self.calls) - 1
@@ -123,10 +134,10 @@ class SemanticParserTest(unittest.TestCase):
 
     def test_invalid_mock_response_is_rejected_locally(self) -> None:
         provider = MockProvider({"summary": "不完整"})
-        with self.assertRaises(SemanticContractError):
-            parse_cinematic_brief("测试自然语言", provider, self._config())
-        self.assertEqual(len(provider.calls), 2)
-        self.assertIn("schema_validation_failed", provider.calls[1]["user_prompt"])
+        with patch("cinescaffold.semantic.time.monotonic", side_effect=[0.0, 0.0, 51.0]):
+            with self.assertRaises(SemanticContractError):
+                parse_cinematic_brief("测试自然语言", provider, self._config())
+        self.assertEqual(len(provider.calls), 1)
 
     def test_invalid_draft_can_be_replaced_by_one_revision(self) -> None:
         provider = _SequenceProvider([{"summary": "不完整"}, valid_model_output()])
@@ -139,6 +150,64 @@ class SemanticParserTest(unittest.TestCase):
         self.assertEqual(usage["requests"], 2)
         self.assertEqual(usage["input_tokens"], 201)
         self.assertEqual(usage["output_tokens"], 41)
+
+    def test_revisions_continue_until_a_later_draft_is_valid(self) -> None:
+        provider = _SequenceProvider(
+            [
+                {"summary": "初稿不完整"},
+                {"summary": "第一次修正仍不完整"},
+                {"summary": "第二次修正仍不完整"},
+                valid_model_output(),
+            ]
+        )
+
+        result = parse_cinematic_brief("测试自然语言", provider, self._config())
+
+        self.assertEqual(len(provider.calls), 4)
+        self.assertEqual(result["provenance"]["response_id"], "sequence-4")
+        self.assertIn("schema_validation_failed", provider.calls[2]["user_prompt"])
+        self.assertIn("第一次修正仍不完整", provider.calls[2]["user_prompt"])
+        timeouts = [call["timeout_seconds"] for call in provider.calls]
+        self.assertTrue(all(0.0 < value <= 50.0 for value in timeouts))
+        self.assertEqual(timeouts, sorted(timeouts, reverse=True))
+
+    def test_provider_schema_omits_core_derived_motion_ranges(self) -> None:
+        provider = _SequenceProvider([valid_model_output(), valid_model_output()])
+
+        parse_cinematic_brief("测试自然语言", provider, self._config())
+
+        motion_schema = provider.calls[0]["schema"]["$defs"]["subjectMotion"]
+        self.assertNotIn("start_time_seconds", motion_schema["properties"])
+        self.assertNotIn("end_time_seconds", motion_schema["properties"])
+        self.assertNotIn("start_time_seconds", motion_schema["required"])
+        self.assertNotIn("end_time_seconds", motion_schema["required"])
+
+    def test_every_semantic_draft_is_saved_for_internal_diagnosis(self) -> None:
+        provider = _SequenceProvider(
+            [{"summary": "不完整"}, valid_model_output()]
+        )
+        with TemporaryDirectory() as directory:
+            diagnostics_dir = Path(directory) / "semantic_diagnostics"
+
+            parse_semantic_input(
+                "测试自然语言",
+                provider,
+                self._config(),
+                diagnostics_dir=diagnostics_dir,
+            )
+
+            self.assertTrue((diagnostics_dir / "attempt_001_draft.json").is_file())
+            self.assertTrue(
+                (diagnostics_dir / "attempt_001_diagnostics.json").is_file()
+            )
+            self.assertTrue((diagnostics_dir / "attempt_002_draft.json").is_file())
+            accepted = (diagnostics_dir / "attempt_002_diagnostics.json").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('"status": "accepted"', accepted)
+            self.assertTrue(
+                (diagnostics_dir / "semantic_run_summary.json").is_file()
+            )
 
     def test_semantic_contract_failure_is_sent_to_revision(self) -> None:
         inconsistent = valid_model_output()

@@ -43,6 +43,9 @@ def build_pipeline_run_config(
     semantic_cost_rates = None
     if include_semantic:
         semantic_provider = _semantic_provider(config, paths)
+        semantic_max_seconds = float(
+            resolve_stage_option(config, "semantic", "timeout", None) or 50.0
+        )
         semantic_parser = SemanticParserConfig(
             system_template_path=paths.semantic_system,
             rules_path=paths.semantic_rules,
@@ -52,6 +55,7 @@ def build_pipeline_run_config(
             model_output_schema_path=paths.semantic_schema,
             translation_rules_path=paths.translation_rules,
             translation_parameters_schema_path=paths.translation_schema,
+            max_seconds=semantic_max_seconds,
         )
         semantic_cost_rates = cost_rates_from_config(config, "semantic")
     return PipelineRunConfig(
@@ -78,7 +82,7 @@ def _semantic_provider(config: LoadedConfig, paths: RuntimeResourcePaths) -> Any
         cli_model=None,
         cli_base_url=None,
     )
-    timeout = resolve_stage_option(config, "semantic", "timeout", None) or 60.0
+    timeout = resolve_stage_option(config, "semantic", "timeout", None) or 50.0
     max_tokens = resolve_stage_option(config, "semantic", "max_tokens", None) or 8192
     thinking = resolve_stage_option(config, "semantic", "thinking_mode", None) or "disabled"
     effort = resolve_stage_option(config, "semantic", "reasoning_effort", None)

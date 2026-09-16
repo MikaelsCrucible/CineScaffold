@@ -44,6 +44,7 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertEqual(config.execution.build_timeout_seconds, 240.0)
         self.assertEqual(config.execution.process_mode, "split")
         self.assertTrue(config.semantic_parser.system_template_path.is_file())
+        self.assertEqual(config.semantic_parser.max_seconds, 50.0)
         self.assertTrue(config.planning.system_prompt_path.is_file())
 
     def test_packaged_resource_paths_are_complete(self) -> None:

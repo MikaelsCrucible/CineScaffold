@@ -37,6 +37,7 @@ def apply_translation_rules(
     _validate_rule_table(rules)
     content = deepcopy(model_content)
     _apply_semantic_defaults(content, rules)
+    _derive_motion_ranges_from_events(content)
     _validate_uncertainties(content)
     normalize_scene_relationships(content)
     _normalize_motion_metadata(content)
@@ -338,11 +339,32 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
             )
 
     motions = content.setdefault("subject_motion", [])
+    events = timeline.setdefault("events", [])
+    event_ids = {
+        item.get("id") for item in events if isinstance(item, dict)
+    }
     motion_ids = {item.get("subject_id") for item in motions if isinstance(item, dict)}
     for subject in subjects:
         subject_id = subject.get("id")
         if not isinstance(subject_id, str) or subject_id in motion_ids:
             continue
+        event_id = f"default_hold_{subject_id}"
+        suffix = 2
+        while event_id in event_ids:
+            event_id = f"default_hold_{subject_id}_{suffix}"
+            suffix += 1
+        event_ids.add(event_id)
+        events.append(
+            {
+                "id": event_id,
+                "description": f"{subject_id} 保持静止",
+                "start_time_seconds": 0.0,
+                "end_time_seconds": timeline["duration_seconds"],
+                "reference_ids": [subject_id],
+                "source_status": "default",
+                "source_text": None,
+            }
+        )
         motions.append(
             {
                 "motion_id": f"default_hold_{subject_id}",
@@ -357,7 +379,7 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
                     "carrier_id": None,
                     "path_type": "stationary",
                     "local_components": [],
-                    "timeline_event_id": None,
+                    "timeline_event_id": event_id,
                     "narrative_required": False,
                     "postconditions": {
                         "contained_by_id": None,
@@ -369,8 +391,6 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
                 "direction": _annotated(None, "unknown"),
                 "speed": _annotated("静止", "default"),
                 "trajectory": _annotated(None, "unknown"),
-                "start_time_seconds": 0.0,
-                "end_time_seconds": timeline["duration_seconds"],
                 "secondary_motion": [],
             }
         )
@@ -379,6 +399,41 @@ def _apply_semantic_defaults(content: dict[str, Any], rules: dict[str, Any]) -> 
             f"subject_motion[{subject_id}]",
             defaults["action_label"],
         )
+
+
+def _derive_motion_ranges_from_events(content: dict[str, Any]) -> None:
+    """Materialize downstream motion ranges from the model-owned event timeline."""
+
+    timeline = content.get("timeline")
+    events = timeline.get("events", []) if isinstance(timeline, dict) else []
+    event_ranges = {
+        event.get("id"): (
+            event.get("start_time_seconds"),
+            event.get("end_time_seconds"),
+        )
+        for event in events
+        if isinstance(event, dict) and isinstance(event.get("id"), str)
+    }
+    for index, motion in enumerate(content.get("subject_motion", [])):
+        if not isinstance(motion, dict):
+            continue
+        semantics = motion.get("motion_semantics")
+        event_id = (
+            semantics.get("timeline_event_id")
+            if isinstance(semantics, dict)
+            else None
+        )
+        if not isinstance(event_id, str) or event_id not in event_ranges:
+            raise ValueError(
+                f"subject_motion[{index}] 的 timeline_event_id 未引用有效事件"
+            )
+        start, end = event_ranges[event_id]
+        if not _is_number(start) or not _is_number(end):
+            raise ValueError(
+                f"subject_motion[{index}] 引用的 timeline event 缺少数值时间范围"
+            )
+        motion["start_time_seconds"] = float(start)
+        motion["end_time_seconds"] = float(end)
 
 
 def _apply_timeline_rules(

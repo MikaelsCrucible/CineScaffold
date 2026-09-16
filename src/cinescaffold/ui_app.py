@@ -476,7 +476,7 @@ def _settings_form(ui: Any, controller: UiSessionController, elements: dict[str,
             select("semantic_thinking_mode", "Thinking", THINKING_OPTIONS)
             select("semantic_reasoning_effort", "推理强度", EFFORT_OPTIONS)
             text("semantic_max_tokens", "最大输出 Tokens")
-            text("semantic_timeout", "请求超时（秒）")
+            text("semantic_timeout", "Semantic 总时限（秒）")
             text("semantic_input_cost_per_million", "输入价格 / 1M")
             text("semantic_output_cost_per_million", "输出价格 / 1M")
             text("semantic_cache_read_cost_per_million", "缓存读取价格 / 1M")

@@ -245,6 +245,7 @@ class WorkflowRunner:
                 metered_provider,
                 self.config.semantic_parser,
                 source_kind=("natural_text" if source.kind == "text" else "textual_six"),
+                diagnostics_dir=output_dir / "semantic_diagnostics",
             )
             brief_path = output_dir / "cinematic_brief.json"
             textual_path = output_dir / "textual_six_dimensions.txt"
@@ -295,7 +296,11 @@ class WorkflowRunner:
             owned.append(output_dir / "planning")
         if source_kind in {"text", "textual_six"}:
             owned.extend(
-                [output_dir / "cinematic_brief.json", output_dir / "textual_six_dimensions.txt"]
+                [
+                    output_dir / "cinematic_brief.json",
+                    output_dir / "textual_six_dimensions.txt",
+                    output_dir / "semantic_diagnostics",
+                ]
             )
         conflicts = [path for path in owned if path.exists() or path.is_symlink()]
         if conflicts and not self.config.overwrite:
@@ -385,6 +390,8 @@ class _MeteredProvider:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
     ) -> ProviderResponse:
         if (
             self._max_cost is not None
@@ -403,7 +410,12 @@ class _MeteredProvider:
                 {"stage": "semantic", "request_index": request_index},
             )
         try:
-            response = self._wrapped.generate(system_prompt, user_prompt, schema)
+            response = self._wrapped.generate(
+                system_prompt,
+                user_prompt,
+                schema,
+                timeout_seconds=timeout_seconds,
+            )
         except ProviderHTTPError as error:
             if (
                 self._rates is not None

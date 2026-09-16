@@ -69,7 +69,7 @@ class SemanticRulesTest(unittest.TestCase):
             {"duration_seconds": 10.0, "duration_source_status": "explicit"}
         )
 
-        normalized, parameters = apply_translation_rules(content, self.rules)
+        normalized, parameters = self._apply(content)
 
         validate_model_output(parameters, self.schema)
         self.assertEqual(normalized["timeline"]["duration_seconds"], 10.0)
@@ -112,7 +112,7 @@ class SemanticRulesTest(unittest.TestCase):
             }
         )
 
-        normalized, _ = apply_translation_rules(content, self.rules)
+        normalized, _ = self._apply(content)
 
         self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
         self.assertTrue(
@@ -135,7 +135,7 @@ class SemanticRulesTest(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(ValueError, "selected_value 必须为 null"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_subject_state_timeline_rejects_an_implicit_visible_hold(self) -> None:
         content = valid_model_output()
@@ -154,7 +154,7 @@ class SemanticRulesTest(unittest.TestCase):
         content["scene_dynamics"]["mode"] = "dynamic"
 
         with self.assertRaisesRegex(ValueError, "SEM-SUBJECT-STATE-COVERAGE"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_narrative_carried_requires_overlapping_carrier_motion(self) -> None:
         content = valid_model_output()
@@ -186,7 +186,7 @@ class SemanticRulesTest(unittest.TestCase):
         content["scene_dynamics"]["mode"] = "dynamic"
 
         with self.assertRaisesRegex(ValueError, "SEM-CARRIED-CARRIER-MOTION"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_radial_camera_speed_uses_actual_duration(self) -> None:
         cases = (
@@ -207,7 +207,7 @@ class SemanticRulesTest(unittest.TestCase):
                     }
                 )
 
-                _, parameters = apply_translation_rules(content, self.rules)
+                _, parameters = self._apply(content)
 
                 self.assertAlmostEqual(
                     parameters["camera"]["speed_mps"],
@@ -227,7 +227,7 @@ class SemanticRulesTest(unittest.TestCase):
     def test_missing_slots_use_declared_defaults(self) -> None:
         content = valid_model_output()
 
-        normalized, parameters = apply_translation_rules(content, self.rules)
+        normalized, parameters = self._apply(content)
 
         self.assertEqual(normalized["subjects"][0]["category"]["value"], "人")
         self.assertEqual(normalized["scene_design"]["environment"]["value"], "空白空间")
@@ -246,10 +246,10 @@ class SemanticRulesTest(unittest.TestCase):
         )
         content["mood"]["emotional_tones"] = [self._statement("孤独", "感觉孤独")]
 
-        _, parameters = apply_translation_rules(content, self.rules)
+        _, parameters = self._apply(content)
 
         self.assertIn("camera.view_angle", parameters["explicit_override_paths"])
-        normalized, _ = apply_translation_rules(content, self.rules)
+        normalized, _ = self._apply(content)
         self.assertEqual(normalized["camera"]["view_angle"]["value"], "high_angle")
 
     def test_duration_upper_bound_resolves_to_its_maximum(self) -> None:
@@ -260,7 +260,7 @@ class SemanticRulesTest(unittest.TestCase):
         }
         content["timeline"]["duration_source_status"] = "explicit"
 
-        normalized, _ = apply_translation_rules(content, self.rules)
+        normalized, _ = self._apply(content)
 
         self.assertEqual(normalized["timeline"]["duration_seconds"], 10.0)
         self.assertEqual(normalized["timeline"]["duration_source_status"], "inferred")
@@ -308,7 +308,7 @@ class SemanticRulesTest(unittest.TestCase):
         )
         content["scene_dynamics"]["mode"] = "dynamic"
 
-        _, parameters = apply_translation_rules(content, self.rules)
+        _, parameters = self._apply(content)
 
         motion = parameters["motions"][0]
         self.assertEqual(motion["motion_type"], "walking")
@@ -345,7 +345,7 @@ class SemanticRulesTest(unittest.TestCase):
             }
         ]
 
-        normalized, _ = apply_translation_rules(content, self.rules)
+        normalized, _ = self._apply(content)
 
         self.assertEqual(normalized["scene_design"]["relationships"], [])
 
@@ -380,7 +380,7 @@ class SemanticRulesTest(unittest.TestCase):
         ]
         content["scene_dynamics"]["mode"] = "dynamic"
 
-        normalized, parameters = apply_translation_rules(content, self.rules)
+        normalized, parameters = self._apply(content)
 
         semantics = normalized["subject_motion"][0]["motion_semantics"]
         self.assertEqual(semantics["action_kind"], "locomotion")
@@ -490,9 +490,8 @@ class SemanticRulesTest(unittest.TestCase):
 
         validate_model_output(content, self.model_schema)
         with self.assertRaisesRegex(ValueError, "SEM-SUBJECT-STATE-COVERAGE"):
-            apply_translation_rules(
+            self._apply(
                 content,
-                self.rules,
                 "一个人在路边等待，然后一辆车开了过来把他接走了",
             )
 
@@ -511,7 +510,7 @@ class SemanticRulesTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "不能全部覆盖完整镜头"):
-            apply_translation_rules(content, self.rules, "先等待，然后离开")
+            self._apply(content, "先等待，然后离开")
 
     def test_relationship_throughout_can_target_an_arbitrary_event_interval(
         self,
@@ -556,7 +555,7 @@ class SemanticRulesTest(unittest.TestCase):
             }
         ]
 
-        normalized, _ = apply_translation_rules(content, self.rules)
+        normalized, _ = self._apply(content)
 
         relation = normalized["scene_design"]["relationships"][0]
         self.assertEqual(relation["timeline_event_id"], "temporary_near")
@@ -602,7 +601,7 @@ class SemanticRulesTest(unittest.TestCase):
             }
         ]
 
-        normalized, _ = apply_translation_rules(content, self.rules)
+        normalized, _ = self._apply(content)
 
         self.assertEqual(
             normalized["scene_design"]["relationships"][0]["temporal_mode"],
@@ -616,7 +615,7 @@ class SemanticRulesTest(unittest.TestCase):
             "镜头缓慢推近",
         )
 
-        normalized, parameters = apply_translation_rules(content, self.rules)
+        normalized, parameters = self._apply(content)
 
         self.assertEqual(normalized["scene_dynamics"]["mode"], "static")
         self.assertEqual(parameters["scene_dynamics"]["mode"], "static")
@@ -679,7 +678,7 @@ class SemanticRulesTest(unittest.TestCase):
             }
         )
 
-        normalized, parameters = apply_translation_rules(content, self.rules)
+        normalized, parameters = self._apply(content)
 
         semantics = normalized["subject_motion"][1]["motion_semantics"]
         self.assertEqual(semantics["motion_mode"], "self_propelled")
@@ -700,7 +699,7 @@ class SemanticRulesTest(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "scene_dynamics.mode"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_explicit_push_in_overrides_neutral_static_numeric_profile(self) -> None:
         content = valid_model_output()
@@ -712,7 +711,7 @@ class SemanticRulesTest(unittest.TestCase):
             {"duration_seconds": 10.0, "duration_source_status": "explicit"}
         )
 
-        normalized, parameters = apply_translation_rules(content, self.rules)
+        normalized, parameters = self._apply(content)
 
         camera = parameters["camera"]
         self.assertEqual(camera["movement"], "push_in")
@@ -755,7 +754,7 @@ class SemanticRulesTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "时间不一致"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_inferred_zero_gap_relation_is_rejected_for_revision(self) -> None:
         content = valid_model_output()
@@ -789,7 +788,7 @@ class SemanticRulesTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "时间不一致"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_inconsistent_explicit_temporal_gap_is_rejected(self) -> None:
         content = valid_model_output()
@@ -823,7 +822,7 @@ class SemanticRulesTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "时间不一致"):
-            apply_translation_rules(content, self.rules, "先等待，至少一秒后再离开")
+            self._apply(content, "先等待，至少一秒后再离开")
 
     def test_transport_semantics_are_not_reparsed_as_walking(self) -> None:
         content = valid_model_output()
@@ -868,7 +867,7 @@ class SemanticRulesTest(unittest.TestCase):
         ]
         content["scene_dynamics"]["mode"] = "dynamic"
 
-        _, parameters = apply_translation_rules(content, self.rules)
+        _, parameters = self._apply(content)
 
         motion = next(
             item for item in parameters["motions"] if item["subject_id"] == "person"
@@ -920,7 +919,7 @@ class SemanticRulesTest(unittest.TestCase):
         content["scene_dynamics"]["mode"] = "dynamic"
 
         with self.assertRaisesRegex(ValueError, "motion_mode=carried"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_locomotion_conflict_is_rejected_for_revision(
         self,
@@ -944,7 +943,7 @@ class SemanticRulesTest(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(ValueError, "action_kind=hold"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_hold_motion_type_conflict_is_rejected_for_revision(
         self,
@@ -963,7 +962,7 @@ class SemanticRulesTest(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(ValueError, "motion_type=static"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_tied_motion_evidence_still_fails_closed(self) -> None:
         content = valid_model_output()
@@ -980,7 +979,7 @@ class SemanticRulesTest(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(ValueError, "必须使用 action_kind=hold"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_simultaneous_full_timeline_events_remain_concurrent(self) -> None:
         content = valid_model_output()
@@ -995,36 +994,58 @@ class SemanticRulesTest(unittest.TestCase):
             }
         )
 
-        normalized, _ = apply_translation_rules(
+        normalized, _ = self._apply(
             content,
-            self.rules,
             "地球围绕太阳公转，同时月球围绕地球公转",
         )
 
         self.assertEqual(
-            [
-                (item["start_time_seconds"], item["end_time_seconds"])
+            {
+                item["id"]: (item["start_time_seconds"], item["end_time_seconds"])
                 for item in normalized["timeline"]["events"]
-            ],
-            [(0.0, 10.0), (0.0, 10.0)],
+                if item["id"] in {"earth_orbit", "moon_orbit"}
+            },
+            {"earth_orbit": (0.0, 10.0), "moon_orbit": (0.0, 10.0)},
         )
 
     def test_sequential_prompt_requires_multiple_events(self) -> None:
         content = valid_model_output()
+        content["subjects"] = [
+            {
+                "id": "person_01",
+                "category": self._annotated("人", "一个人"),
+                "description": self._unknown(),
+                "narrative_role": self._unknown(),
+                "attributes": [],
+            }
+        ]
+        content["subject_motion"] = [
+            self._motion(
+                "person_01",
+                "等待然后离开",
+                action_kind="hold",
+                motion_type="static",
+                motion_mode="stationary",
+                direction_mode="none",
+                path_type="stationary",
+                timeline_event_id="combined",
+            )
+        ]
         content["timeline"].update(
             {
                 "duration_seconds": 10.0,
                 "duration_source_status": "explicit",
-                "events": [self._event("combined", "等待然后离开", "person", 10.0)],
+                "events": [
+                    {
+                        **self._event("combined", "等待然后离开", "person", 10.0),
+                        "reference_ids": ["person_01"],
+                    }
+                ],
             }
         )
 
         with self.assertRaisesRegex(ValueError, "没有拆分 timeline.events"):
-            apply_translation_rules(
-                content,
-                self.rules,
-                "一个人先等待，然后离开",
-            )
+            self._apply(content, "一个人先等待，然后离开")
 
     def test_relative_target_linear_path_is_rejected_before_planning(self) -> None:
         content = valid_model_output()
@@ -1059,7 +1080,7 @@ class SemanticRulesTest(unittest.TestCase):
         content["scene_dynamics"]["mode"] = "dynamic"
 
         with self.assertRaisesRegex(ValueError, "relative_to_target"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_closed_target_relative_paths_survive_unknown_direction_annotation(
         self,
@@ -1103,7 +1124,7 @@ class SemanticRulesTest(unittest.TestCase):
         ]
         content["scene_dynamics"]["mode"] = "dynamic"
 
-        normalized, parameters = apply_translation_rules(content, self.rules)
+        normalized, parameters = self._apply(content)
 
         self.assertEqual(
             [
@@ -1152,7 +1173,7 @@ class SemanticRulesTest(unittest.TestCase):
         content["scene_design"]["relationships"] = []
 
         with self.assertRaisesRegex(ValueError, "相对闭合路径缺少有效几何目标"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     def test_orbit_relation_does_not_hide_conflicting_closed_path_direction(
         self,
@@ -1184,7 +1205,7 @@ class SemanticRulesTest(unittest.TestCase):
         content["scene_design"]["relationships"] = []
 
         with self.assertRaisesRegex(ValueError, "相对闭合路径"):
-            apply_translation_rules(content, self.rules)
+            self._apply(content)
 
     @staticmethod
     def _annotated(value: str, source_text: str) -> dict:
@@ -1249,6 +1270,33 @@ class SemanticRulesTest(unittest.TestCase):
             "end_time_seconds": 10.0,
             "secondary_motion": [],
         }
+
+    def _apply(
+        self,
+        content: dict,
+        source_prompt: str | None = None,
+    ) -> tuple[dict, dict]:
+        """Give legacy unit fixtures the event records required by v0.21 input."""
+
+        events = content.setdefault("timeline", {}).setdefault("events", [])
+        for index, motion in enumerate(content.get("subject_motion", [])):
+            semantics = motion["motion_semantics"]
+            if semantics.get("timeline_event_id") is not None:
+                continue
+            event_id = f"test_motion_{index}"
+            semantics["timeline_event_id"] = event_id
+            events.append(
+                {
+                    "id": event_id,
+                    "description": motion["action"]["value"],
+                    "start_time_seconds": motion["start_time_seconds"],
+                    "end_time_seconds": motion["end_time_seconds"],
+                    "reference_ids": [motion["subject_id"]],
+                    "source_status": "inferred",
+                    "source_text": motion["action"]["source_text"],
+                }
+            )
+        return apply_translation_rules(content, self.rules, source_prompt)
 
     @staticmethod
     def _event(

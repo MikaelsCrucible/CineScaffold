@@ -630,7 +630,7 @@ class PlanningDesignTest(unittest.TestCase):
                             "carrier_id": None,
                             "path_type": "stationary",
                             "local_components": ["rotation"],
-                            "timeline_event_id": None,
+                            "timeline_event_id": "default_hold_man_01",
                             "source_status": "inferred",
                             "narrative_required": True,
                         },

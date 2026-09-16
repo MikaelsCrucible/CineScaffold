@@ -165,7 +165,11 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_semantic_arguments(parser: argparse.ArgumentParser) -> None:
     resources = RuntimeResourcePaths.from_package()
-    parser.add_argument("--timeout", type=float)
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        help="Semantic 阶段独立总墙钟时限（秒，缺省 50）",
+    )
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument(
         "--semantic-thinking-mode",
@@ -442,7 +446,7 @@ def _apply_semantic_config(args: argparse.Namespace, config: LoadedConfig) -> No
         "max_tokens",
         args.max_tokens,
     ) or 8192
-    args.timeout = resolve_stage_option(config, "semantic", "timeout", args.timeout) or 60.0
+    args.timeout = resolve_stage_option(config, "semantic", "timeout", args.timeout) or 50.0
 
 
 def _apply_execution_config(args: argparse.Namespace, config: LoadedConfig) -> None:
@@ -560,6 +564,7 @@ def _semantic_parser_config(args: argparse.Namespace) -> SemanticParserConfig:
         model_output_schema_path=args.schema,
         translation_rules_path=args.translation_rules,
         translation_parameters_schema_path=args.translation_schema,
+        max_seconds=args.timeout,
     )
 
 

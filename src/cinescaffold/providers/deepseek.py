@@ -40,6 +40,8 @@ class DeepSeekProvider:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
     ) -> ProviderResponse:
         schema_text = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
         payload = {
@@ -65,7 +67,9 @@ class DeepSeekProvider:
                 "Content-Type": "application/json",
             },
             payload,
-            self.timeout,
+            min(self.timeout, timeout_seconds)
+            if timeout_seconds is not None
+            else self.timeout,
         )
         content = _extract_message_content(response)
         return ProviderResponse(

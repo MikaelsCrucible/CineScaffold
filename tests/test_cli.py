@@ -15,6 +15,14 @@ from tests.helpers import ROOT, valid_planning_brief
 from tests.test_textual_six import TEXTUAL_SIX
 
 
+def _semantic_mock_content() -> dict:
+    content = valid_planning_brief()["content"]
+    for motion in content["subject_motion"]:
+        motion.pop("start_time_seconds")
+        motion.pop("end_time_seconds")
+    return content
+
+
 class _PipelineExecutionRunner:
     def __init__(self, config, *, progress_callback=None) -> None:
         self.config = config
@@ -297,7 +305,7 @@ class CliTest(unittest.TestCase):
             root = Path(directory)
             mock_response = root / "mock_response.json"
             mock_response.write_text(
-                json.dumps(valid_planning_brief()["content"], ensure_ascii=False),
+                json.dumps(_semantic_mock_content(), ensure_ascii=False),
                 encoding="utf-8",
             )
             stdout = io.StringIO()
@@ -341,7 +349,7 @@ class CliTest(unittest.TestCase):
             mock_response = root / "mock_response.json"
             text_six = root / "scene.txt"
             mock_response.write_text(
-                json.dumps(valid_planning_brief()["content"], ensure_ascii=False),
+                json.dumps(_semantic_mock_content(), ensure_ascii=False),
                 encoding="utf-8",
             )
             text_six.write_text(TEXTUAL_SIX, encoding="utf-8")

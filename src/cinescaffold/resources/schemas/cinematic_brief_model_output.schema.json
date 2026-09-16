@@ -221,7 +221,7 @@
     },
     "subjectMotion": {
       "type": "object",
-      "description": "[SEM-TEMPORAL-INTEGRITY][SEM-SUBJECT-STATE-COVERAGE] 动作阶段必须位于总时长内；同一场景实体全部阶段的区间并集必须从 0 连续覆盖到 duration，不能用缺失阶段表示等待、隐藏或停止。完整覆盖不要求实体从头可见：中途出现应以 0..出现时刻的 hidden/尚未出现阶段及末端 becomes_visible 表达。",
+      "description": "[SEM-TEMPORAL-INTEGRITY][SEM-SUBJECT-STATE-COVERAGE] 动作阶段必须位于总时长内；同一场景实体全部阶段的区间并集必须从 0 连续覆盖到 duration。每个阶段只通过 motion_semantics.timeline_event_id 选择时间事件；start_time_seconds/end_time_seconds 是 Core 从该事件派生的规范化字段，不属于 Semantic AI 输出。完整覆盖不要求实体从头可见：中途出现应以 0..出现时刻的 hidden/尚未出现阶段及末端 becomes_visible 表达。",
       "properties": {
         "motion_id": {"type": "string"},
         "subject_id": {"type": "string"},
@@ -380,7 +380,11 @@
           "uniqueItems": true,
           "maxItems": 2
         },
-        "timeline_event_id": {"type": ["string", "null"]},
+        "timeline_event_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "必须引用 timeline.events 中承载该动作阶段的唯一事件；动作本身不重复填写起止秒数。"
+        },
         "narrative_required": {"type": "boolean"},
         "postconditions": {"$ref": "#/$defs/motionPostconditions"},
         "source_status": {"$ref": "#/$defs/sourceStatus"},

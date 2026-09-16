@@ -100,7 +100,14 @@ class _UsageProvider:
         self.content = content
         self.calls = 0
 
-    def generate(self, _system_prompt, _user_prompt, _schema):
+    def generate(
+        self,
+        _system_prompt,
+        _user_prompt,
+        _schema,
+        *,
+        timeout_seconds=None,
+    ):
         self.calls += 1
         return ProviderResponse(
             content=self.content,
@@ -121,7 +128,14 @@ class _RejectedProvider:
     def __init__(self, status_code: int = 402) -> None:
         self.status_code = status_code
 
-    def generate(self, _system_prompt, _user_prompt, _schema):
+    def generate(
+        self,
+        _system_prompt,
+        _user_prompt,
+        _schema,
+        *,
+        timeout_seconds=None,
+    ):
         raise ProviderHTTPError(self.status_code, "provider rejection")
 
 
@@ -172,6 +186,9 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(summary["failure_code"])
             self.assertTrue((root / "run/cinematic_brief.json").is_file())
             self.assertTrue((root / "run/textual_six_dimensions.txt").is_file())
+            self.assertTrue(
+                (root / "run/semantic_diagnostics/attempt_001_draft.json").is_file()
+            )
             self.assertTrue(Path(summary["artifacts"]["video"]).is_file())
             self.assertTrue(Path(summary["artifacts"]["scene_blend"]).is_file())
             self.assertTrue(Path(summary["artifacts"]["glb_preview"]).is_file())
@@ -323,7 +340,7 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["status"], "planning_failed")
         self.assertEqual(summary["failure_code"], "provider_overloaded")
 
-    async def test_semantic_cost_is_emitted_before_invalid_response_is_rejected(self) -> None:
+    async def test_invalid_semantic_revisions_stop_at_cost_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = self._config(root, semantic=True)
@@ -340,7 +357,7 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
                     "semantic_provider": _UsageProvider({"invalid": True}),
                     "semantic_cost_rates": rates,
                     "planning": config.planning.model_copy(update={"cost_rates": rates}),
-                    "max_provider_cost": Decimal("2"),
+                    "max_provider_cost": Decimal("0.0004"),
                     "provider_cost_currency": "CNY",
                 }
             )
@@ -352,7 +369,7 @@ class WorkflowRunnerTest(unittest.IsolatedAsyncioTestCase):
                 execution_runner_type=_ExecutionRunner,
             ).run(PipelineSource(kind="text", text="测试"))
 
-        self.assertEqual(summary["status"], "semantic_failed")
+        self.assertEqual(summary["status"], "cost_limit_exceeded")
         self.assertIn("provider_cost_incurred", events)
         self.assertNotIn("pipeline_planning_started", events)
 
