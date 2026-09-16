@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Core 0.8.37 / Semantic Parser 0.19 将跨字段 Semantic 契约收口为代码注册表，并自动注入初稿与 Revision 两轮 Prompt。Cinematic Brief Schema 现在直接关闭 uncertainty resolution、来源证据、动作组合、关系事件和摄影机目标组合；本地 Validator 实际执行已提交 Schema 使用的 `allOf/oneOf/anyOf`、格式、长度、数组唯一性和数值边界关键字，不再出现“Schema 写了但运行时忽略”。Planning Prompt 补齐已注册的 `restore_candidate`，回归测试自动要求每个 Planning 工具在 Prompt 中有明确说明。最终 Semantic 契约失败使用独立 `semantic_contract_invalid`，不再被宿主误报为动作时间线问题。
 - Core 0.8.36 / Semantic Parser 0.18 / Toolkit 0.48 将 Cinematic Brief 提升到 v0.8，并把 Semantic Schema、两轮 Prompt、确定性规则与 Planning Objective 收敛为同一关闭契约：`external_visibility` 只表达显隐转变，局部动作明确列出旋转/尺度通道，摄影机类型与构图值使用代码可执行枚举，关系两端、世界/屏幕空间、物理尺寸/投影尺寸的含义不再混用；尚无执行接口的字段显式拒绝。旧 v0.7 产物不迁移，必须从原始输入重新生成。
 - Planning repair 进入显式的 required-next-tool 状态：`begin_design_repair` 返回完整可编辑基线、base revision 和 `required_next_tool=apply_candidate_patch`，下一轮只暴露并只接受该原子工具。模型侧不再注册四个旧分项 Patch，也不再为缺少路径类型的旧 Track 默补 `polyline`。
 - `scale_dominance` 只表示最终画面投影大小关系，物理“巨大”只影响实体物理尺度；该投影约束不再制造任意 20 倍上限。

@@ -56,6 +56,7 @@
    - `suggest_repairs` 是只读搜索，返回的具体数值已经过同一 Validator 预测；`apply_repair` 会检查 base revision、重放 hash 并完整复验。出现可处理 violation 时，状态机会暂时收起 `apply_candidate_patch`；建议过期时重新生成，不要手抄旧数值。
    - 只有当前不存在确定性工具无法覆盖的 hard violation 时才使用 `suggest_repairs`。若它对当前 revision 返回 `no_change`，系统会重新开放受 Schema 和 Validator 约束的 `apply_candidate_patch`。只能修改 violation 指向的实体、轨道、约束或摄影机字段；修改后必须再次调用 Validator，不得绕过 Commit Gate。
    - inspect_candidate 的 view 只能使用该工具 Schema 返回的枚举值；同一 revision 不得重复读取相同视图。过滤器只用于其支持的视图，未知 ID、越界时间段或不相容过滤器会明确拒绝，不能假设系统已静默采用。
+   - `restore_candidate` 只用于当前修复明显退化、且已有已验证历史 revision 可恢复时；它会把指定历史 revision 复制成新的当前 revision，不会删除失败历史。必须填写非空 reason，恢复后依据返回的完整复验结果继续，不能把 restore 当作绕过 Validator 或原地改写 revision 的接口。
    - 实体和摄影机的 transform、path_follow、look_at、visibility、focal_length 等各是单一通道；替换通道时在同一次 Patch 中删除旧 Track 并 upsert 新 Track，可以沿用同一 ID。
    - 同一实体的连续多阶段运动应合并进覆盖所需时间域的一条 Track，并用多关键帧表达等待、靠近、停留、离开等阶段；不得为同一通道创建多条 Track。Track 开始前使用实体静态求解状态，开始后持续采用其关键帧状态。
 6. solve_candidate 或 validate_candidate 返回 commit_ready=true 后必须立即返回 CommitRequest，不得继续调用任何工具。只有 hard_pass=true 且 soft_score 达到 Profile 冻结的 minimum_soft_score 时 commit_ready 才为 true；Research Default 把 soft score 作为记录用的质量指标而非阻断条件，因此其阈值为 0。Commit Gate 会独立复验所有 hard 要求并保留 soft violations，不得把未满足的 inferred/default 偏好宣称为任务不可行。

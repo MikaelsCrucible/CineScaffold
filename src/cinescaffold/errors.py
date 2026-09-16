@@ -75,6 +75,12 @@ class SchemaValidationError(CineScaffoldError):
     """结构化输出不符合 Schema。"""
 
 
+class SemanticContractError(CineScaffoldError):
+    """A final Semantic revision still violates the closed contract."""
+
+    failure_code = "semantic_contract_invalid"
+
+
 class PromptTemplateError(CineScaffoldError):
     """提示模板缺少必要占位符。"""
 

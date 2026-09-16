@@ -4,7 +4,7 @@ import unittest
 from copy import deepcopy
 from typing import Any
 
-from cinescaffold.errors import SchemaValidationError
+from cinescaffold.errors import SemanticContractError
 from cinescaffold.providers.base import ProviderResponse
 from cinescaffold.providers.mock import MockProvider
 from cinescaffold.semantic import (
@@ -12,6 +12,8 @@ from cinescaffold.semantic import (
     parse_cinematic_brief,
     parse_semantic_input,
 )
+from cinescaffold.semantic_contracts import semantic_ai_contract_ids
+from cinescaffold.schema import load_schema
 from cinescaffold.textual_six import SECTION_LABELS
 from tests.test_textual_six import TEXTUAL_SIX
 from tests.helpers import ROOT, valid_model_output
@@ -121,7 +123,7 @@ class SemanticParserTest(unittest.TestCase):
 
     def test_invalid_mock_response_is_rejected_locally(self) -> None:
         provider = MockProvider({"summary": "不完整"})
-        with self.assertRaises(SchemaValidationError):
+        with self.assertRaises(SemanticContractError):
             parse_cinematic_brief("测试自然语言", provider, self._config())
         self.assertEqual(len(provider.calls), 2)
         self.assertIn("schema_validation_failed", provider.calls[1]["user_prompt"])
@@ -183,6 +185,18 @@ class SemanticParserTest(unittest.TestCase):
 
         for forbidden in ("crossing", "pass_by", "擦肩而过"):
             self.assertNotIn(forbidden, prompt_text)
+
+    def test_cross_field_contracts_are_visible_to_both_passes_and_schema(self) -> None:
+        provider = _SequenceProvider([valid_model_output(), valid_model_output()])
+
+        parse_cinematic_brief("测试自然语言", provider, self._config())
+
+        schema_text = str(load_schema(self._config().model_output_schema_path))
+        for contract_id in semantic_ai_contract_ids():
+            with self.subTest(contract_id=contract_id):
+                self.assertIn(contract_id, provider.calls[0]["system_prompt"])
+                self.assertIn(contract_id, provider.calls[1]["system_prompt"])
+                self.assertIn(contract_id, schema_text)
 
 
 if __name__ == "__main__":

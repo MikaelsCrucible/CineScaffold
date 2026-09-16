@@ -1,10 +1,47 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from pathlib import Path
 from typing import Any
 
 from cinescaffold.errors import SchemaValidationError
+
+
+SUPPORTED_SCHEMA_KEYWORDS = frozenset(
+    {
+        "$defs",
+        "$id",
+        "$ref",
+        "$schema",
+        "additionalProperties",
+        "allOf",
+        "anyOf",
+        "const",
+        "default",
+        "description",
+        "discriminator",
+        "enum",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "items",
+        "maxItems",
+        "maxLength",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minimum",
+        "oneOf",
+        "pattern",
+        "prefixItems",
+        "properties",
+        "required",
+        "title",
+        "type",
+        "uniqueItems",
+    }
+)
 
 
 def load_schema(path: Path) -> dict[str, Any]:
@@ -24,7 +61,28 @@ def _validate(value: Any, node: dict[str, Any], root: dict[str, Any], path: str)
     if "$ref" in node:
         target = _resolve_local_ref(root, node["$ref"])
         _validate(value, target, root, path)
-        return
+
+    for branch in node.get("allOf", []):
+        _validate(value, branch, root, path)
+
+    if "anyOf" in node:
+        _validate_union(
+            value,
+            node["anyOf"],
+            root,
+            path,
+            require_exactly_one=False,
+            description=node.get("description"),
+        )
+    if "oneOf" in node:
+        _validate_union(
+            value,
+            node["oneOf"],
+            root,
+            path,
+            require_exactly_one=True,
+            description=node.get("description"),
+        )
 
     if "const" in node and value != node["const"]:
         raise SchemaValidationError(f"{path} 必须等于 {node['const']!r}")
@@ -35,6 +93,18 @@ def _validate(value: Any, node: dict[str, Any], root: dict[str, Any], path: str)
 
     if "enum" in node and value not in node["enum"]:
         raise SchemaValidationError(f"{path} 值不在允许范围内")
+
+    if isinstance(value, str):
+        if "minLength" in node and len(value) < int(node["minLength"]):
+            raise SchemaValidationError(f"{path} 长度小于 {node['minLength']}")
+        if "maxLength" in node and len(value) > int(node["maxLength"]):
+            raise SchemaValidationError(f"{path} 长度大于 {node['maxLength']}")
+        pattern = node.get("pattern")
+        if isinstance(pattern, str) and re.search(pattern, value) is None:
+            raise SchemaValidationError(f"{path} 不匹配要求格式")
+
+    if _is_number(value):
+        _validate_number(value, node, path)
 
     if isinstance(value, dict):
         properties = node.get("properties", {})
@@ -49,9 +119,90 @@ def _validate(value: Any, node: dict[str, Any], root: dict[str, Any], path: str)
             if name in properties:
                 _validate(child, properties[name], root, f"{path}.{name}")
 
-    if isinstance(value, list) and "items" in node:
-        for index, item in enumerate(value):
-            _validate(item, node["items"], root, f"{path}[{index}]")
+    if isinstance(value, list):
+        if "minItems" in node and len(value) < int(node["minItems"]):
+            raise SchemaValidationError(f"{path} 项目数小于 {node['minItems']}")
+        if "maxItems" in node and len(value) > int(node["maxItems"]):
+            raise SchemaValidationError(f"{path} 项目数大于 {node['maxItems']}")
+        if node.get("uniqueItems") is True and not _items_are_unique(value):
+            raise SchemaValidationError(f"{path} 含重复项目")
+        for index, child in enumerate(node.get("prefixItems", [])):
+            if index < len(value):
+                _validate(value[index], child, root, f"{path}[{index}]")
+        if "items" in node:
+            for index, item in enumerate(value):
+                _validate(item, node["items"], root, f"{path}[{index}]")
+
+
+def _validate_union(
+    value: Any,
+    branches: Any,
+    root: dict[str, Any],
+    path: str,
+    *,
+    require_exactly_one: bool,
+    description: Any = None,
+) -> None:
+    if not isinstance(branches, list) or not branches:
+        raise SchemaValidationError(f"{path} 的组合 Schema 必须是非空数组")
+    matches = 0
+    first_error: SchemaValidationError | None = None
+    for branch in branches:
+        if not isinstance(branch, dict):
+            raise SchemaValidationError(f"{path} 的组合 Schema 分支必须是对象")
+        try:
+            _validate(value, branch, root, path)
+        except SchemaValidationError as error:
+            if first_error is None:
+                first_error = error
+        else:
+            matches += 1
+    valid = matches == 1 if require_exactly_one else matches >= 1
+    if valid:
+        return
+    kind = "oneOf" if require_exactly_one else "anyOf"
+    detail = f"；首个分支错误：{first_error}" if first_error is not None else ""
+    contract = _contract_prefix(description)
+    raise SchemaValidationError(
+        f"{contract}{path} 不满足 {kind}（匹配 {matches} 个分支）{detail}"
+    )
+
+
+def _validate_number(value: int | float, node: dict[str, Any], path: str) -> None:
+    number = float(value)
+    if not math.isfinite(number):
+        raise SchemaValidationError(f"{path} 必须是有限数值")
+    if "minimum" in node and number < float(node["minimum"]):
+        raise SchemaValidationError(f"{path} 小于最小值 {node['minimum']}")
+    if "maximum" in node and number > float(node["maximum"]):
+        raise SchemaValidationError(f"{path} 大于最大值 {node['maximum']}")
+    if "exclusiveMinimum" in node and number <= float(node["exclusiveMinimum"]):
+        raise SchemaValidationError(
+            f"{path} 必须大于 {node['exclusiveMinimum']}"
+        )
+    if "exclusiveMaximum" in node and number >= float(node["exclusiveMaximum"]):
+        raise SchemaValidationError(
+            f"{path} 必须小于 {node['exclusiveMaximum']}"
+        )
+
+
+def _items_are_unique(value: list[Any]) -> bool:
+    serialized = [
+        json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        for item in value
+    ]
+    return len(serialized) == len(set(serialized))
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _contract_prefix(description: Any) -> str:
+    if not isinstance(description, str):
+        return ""
+    match = re.match(r"(\[SEM-[A-Z-]+\])", description)
+    return f"{match.group(1)} " if match is not None else ""
 
 
 def _resolve_local_ref(root: dict[str, Any], reference: str) -> dict[str, Any]:

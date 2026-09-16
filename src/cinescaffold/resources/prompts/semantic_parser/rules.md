@@ -1,4 +1,4 @@
-# Cinematic Brief 语义契约 v0.18
+# Cinematic Brief 语义契约 v0.19
 
 ## 1. 术语与职责
 
@@ -25,7 +25,7 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 - `default`：本契约或 Schema 明确要求的结构缺省；`source_text` 为 `null`。
 - `unknown`：原文不足以决定；值允许为空时应保持为空，`source_text` 为 `null`。
 
-会影响几何、时间、方向、目标、路径、构图或摄影机行为的多种合理解释，不得擅自选择。将缺失点写入 `uncertainties`：未选择时用 `unresolved`；应用规则明确给出缺省时用 `use_default`；只有必然推断时用 `use_inference`。摘要不得把推断、缺省或未知内容改写成用户原话。
+会影响几何、时间、方向、目标、路径、构图或摄影机行为的多种合理解释，不得擅自选择。将缺失点写入 `uncertainties`，并严格遵守 `[SEM-UNCERTAINTY-RESOLUTION]`：未选择时用 `unresolved + selected_value=null`；应用规则明确给出缺省时用 `use_default + 非空 selected_value`；只有必然推断时用 `use_inference + 非空 selected_value`。后两者的 `selected_value` 必须准确记录实际采用的字段值，不能只写理由或保留 null。摘要不得把推断、缺省或未知内容改写成用户原话。
 
 不确定性必须拆解到真正存在分歧的字段。先列出所有与原文相容的合理解释，再把它们共有且能由当前 Schema 表达的实体参与、动作、局部事件或空间关系写入类型字段；只有方向、先后、路径形状、精确时刻等随解释变化的部分才保持未知。不得因为一个复合表述存在多种实现，就把各解释共有的可验证事实也从 Brief 删除。
 
@@ -146,5 +146,6 @@ Semantic 阶段负责忠实建模语义，不负责生成三维坐标、关键�
 6. 局部关系拥有独立的点事件或严格短于其承载动作的区间事件，没有被扩张为整个动作或整个视频片段；`throughout` 只用于确有持续含义的关系。
 7. 没有 Schema 之外字段、枚举、故事专用语义或依赖下游从自由文本重新猜测的缺失类型。
 8. `scene_dynamics=dynamic` 至少对应一个非静止动作、明确的 `local_components`，或 `becomes_visible/becomes_hidden`/新建容纳关系；纯摄影机运动、静态可见和静态构图不能作为 dynamic 理由。
+9. 按 `[SEM-UNCERTAINTY-RESOLUTION]` 逐项检查 `uncertainties`；特别禁止 `use_default/use_inference + selected_value=null` 和 `unresolved + 非空 selected_value`。
 
 发现问题时直接输出修正后的完整对象。无法由原文决定时保留未知并登记 `uncertainties`，不得猜测。

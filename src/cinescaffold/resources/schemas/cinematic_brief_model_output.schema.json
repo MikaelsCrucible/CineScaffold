@@ -42,8 +42,33 @@
       "type": "string",
       "enum": ["explicit", "inferred", "default", "unknown"]
     },
+    "sourceEvidence": {
+      "description": "[SEM-SOURCE-EVIDENCE] explicit/inferred 必须携带非空最小原文证据；default/unknown 的 source_text 必须为 null；存在 value 时 unknown 还要求 value=null。",
+      "oneOf": [
+        {
+          "properties": {
+            "source_status": {"type": "string", "enum": ["explicit", "inferred"]},
+            "source_text": {"type": "string", "minLength": 1}
+          }
+        },
+        {
+          "properties": {
+            "source_status": {"type": "string", "const": "default"},
+            "source_text": {"type": "null"}
+          }
+        },
+        {
+          "properties": {
+            "source_status": {"type": "string", "const": "unknown"},
+            "source_text": {"type": "null"},
+            "value": {"type": "null"}
+          }
+        }
+      ]
+    },
     "annotatedText": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {"type": ["string", "null"]},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
@@ -64,6 +89,7 @@
     },
     "annotatedScreenHorizontal": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {"type": ["string", "null"], "enum": [null, "left", "center", "right"]},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
@@ -74,6 +100,7 @@
     },
     "annotatedScreenVertical": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {"type": ["string", "null"], "enum": [null, "top", "center", "bottom"]},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
@@ -84,6 +111,7 @@
     },
     "annotatedPercentageRange": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {
           "type": ["string", "null"],
@@ -97,6 +125,7 @@
     },
     "annotatedVisibilityRequirement": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {"type": ["string", "null"], "enum": [null, "keep_in_frame"]},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
@@ -107,6 +136,7 @@
     },
     "annotatedCameraViewAngle": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {"type": ["string", "null"], "enum": [null, "eye_level", "high_angle", "low_angle", "top_down"]},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
@@ -117,6 +147,7 @@
     },
     "annotatedCameraHeight": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {"type": ["string", "null"], "pattern": "^\\s*\\d+(?:\\.\\d+)?\\s*(?:m|米)\\s*$"},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
@@ -127,6 +158,7 @@
     },
     "annotatedLensIntent": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {"type": ["string", "null"], "pattern": "^(?:\\s*\\d+(?:\\.\\d+)?\\s*mm\\s*|wide|normal|telephoto)$"},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
@@ -137,6 +169,7 @@
     },
     "annotatedCameraMovement": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {
           "type": ["string", "null"],
@@ -150,6 +183,7 @@
     },
     "semanticStatement": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {"type": "string"},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
@@ -160,6 +194,7 @@
     },
     "attribute": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "name": {"type": "string"},
         "value": {"type": "string"},
@@ -218,7 +253,91 @@
     },
     "motionSemantics": {
       "type": "object",
-      "description": "每个场景实体动作阶段的类型化语义；事件参与者不自动成为几何运动目标。",
+      "description": "[SEM-MOTION-COMBINATION] 每个场景实体动作阶段的类型化语义；事件参与者不自动成为几何运动目标。motion_mode 必须与 action_kind、motion_type、path_type、local_components、direction_mode、target_id 和 carrier_id 使用下列合法组合。",
+      "allOf": [
+        {"$ref": "#/$defs/sourceEvidence"},
+        {
+          "description": "[SEM-MOTION-COMBINATION] motion_mode 对应的动作、路径、局部通道和载体组合。",
+          "oneOf": [
+            {
+              "properties": {
+                "motion_mode": {"const": "stationary"},
+                "action_kind": {"const": "hold"},
+                "motion_type": {"const": "static"},
+                "path_type": {"const": "stationary"},
+                "local_components": {"type": "array", "maxItems": 0},
+                "carrier_id": {"type": "null"}
+              }
+            },
+            {
+              "properties": {
+                "motion_mode": {"const": "local_interaction"},
+                "action_kind": {"const": "interact"},
+                "motion_type": {"const": "interactive"},
+                "path_type": {"const": "stationary"},
+                "local_components": {"type": "array", "minItems": 1},
+                "carrier_id": {"type": "null"}
+              }
+            },
+            {
+              "properties": {
+                "motion_mode": {"const": "self_propelled"},
+                "action_kind": {"const": "locomotion"},
+                "motion_type": {"enum": ["walking", "running", "flying", "jumping", "moving"]},
+                "path_type": {"enum": ["linear", "circular", "elliptical", "s_curve", "figure_eight", "parabolic", "unspecified"]},
+                "local_components": {"type": "array", "maxItems": 0},
+                "carrier_id": {"type": "null"}
+              }
+            },
+            {
+              "properties": {
+                "motion_mode": {"const": "carried"},
+                "action_kind": {"const": "locomotion"},
+                "motion_type": {"const": "carried"},
+                "direction_mode": {"const": "none"},
+                "target_id": {"type": "null"},
+                "carrier_id": {"type": "string", "minLength": 1},
+                "path_type": {"const": "stationary"},
+                "local_components": {"type": "array", "maxItems": 0}
+              }
+            }
+          ]
+        },
+        {
+          "description": "[SEM-MOTION-COMBINATION] direction_mode 与 target_id 的组合。",
+          "oneOf": [
+            {
+              "properties": {
+                "direction_mode": {"enum": ["none", "world_forward", "world_left", "world_right"]},
+                "target_id": {"type": "null"}
+              }
+            },
+            {
+              "properties": {
+                "direction_mode": {"enum": ["toward_target", "away_from_target", "relative_to_target"]},
+                "target_id": {"type": "string", "minLength": 1}
+              }
+            }
+          ]
+        },
+        {
+          "description": "[SEM-MOTION-COMBINATION] 闭合相对路径与目标的组合。",
+          "oneOf": [
+            {
+              "properties": {
+                "path_type": {"enum": ["circular", "elliptical"]},
+                "direction_mode": {"const": "relative_to_target"},
+                "target_id": {"type": "string", "minLength": 1}
+              }
+            },
+            {
+              "properties": {
+                "path_type": {"enum": ["stationary", "linear", "s_curve", "figure_eight", "parabolic", "unspecified"]}
+              }
+            }
+          ]
+        }
+      ],
       "properties": {
         "action_kind": {
           "type": "string",
@@ -299,6 +418,7 @@
     },
     "spatialLayer": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "layer": {"type": "string"},
         "content_ids": {"type": "array", "items": {"type": "string"}},
@@ -310,7 +430,27 @@
     },
     "relationship": {
       "type": "object",
-      "description": "subject_id 始终是满足关系谓词的对象，reference_id 是参照对象。far_from 表示 subject 在摄影机纵深上比 reference 更远且二者有世界空间净空；scale_dominance 只表示 subject 的投影尺寸大于 reference，不表示物理尺寸。其他方向关系使用规范世界坐标，不表示屏幕左右上下。",
+      "description": "[SEM-RELATION-EVENT] subject_id 始终是满足关系谓词的对象，reference_id 是参照对象。timeline_event_id=null 只允许 throughout；at_start/at_midpoint/at_end 必须引用事件。far_from 表示 subject 在摄影机纵深上比 reference 更远且二者有世界空间净空；scale_dominance 只表示 subject 的投影尺寸大于 reference，不表示物理尺寸。其他方向关系使用规范世界坐标，不表示屏幕左右上下。",
+      "allOf": [
+        {"$ref": "#/$defs/sourceEvidence"},
+        {
+          "description": "[SEM-RELATION-EVENT] timeline_event_id 与 temporal_mode 的组合。",
+          "oneOf": [
+            {
+              "properties": {
+                "timeline_event_id": {"type": "null"},
+                "temporal_mode": {"const": "throughout"}
+              }
+            },
+            {
+              "properties": {
+                "timeline_event_id": {"type": "string", "minLength": 1},
+                "temporal_mode": {"enum": ["throughout", "at_start", "at_midpoint", "at_end"]}
+              }
+            }
+          ]
+        }
+      ],
       "properties": {
         "type": {
           "type": "string",
@@ -406,7 +546,30 @@
     },
     "cameraMovement": {
       "type": "object",
-      "description": "只描述摄影机自身的位置、朝向或焦距变化，绝不描述场景实体的运动。",
+      "description": "[SEM-CAMERA-MOVEMENT-TARGET] 只描述摄影机自身的位置、朝向或焦距变化。pan/follow/orbit 必须填写 target_id；其他类型必须为 null。",
+      "allOf": [
+        {
+          "description": "[SEM-CAMERA-MOVEMENT-TARGET] 摄影机运动类型与 target_id 的组合。",
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "properties": {"value": {"enum": ["pan", "follow", "orbit"]}}
+                },
+                "target_id": {"type": "string", "minLength": 1}
+              }
+            },
+            {
+              "properties": {
+                "type": {
+                  "properties": {"value": {"enum": [null, "static", "push_in", "pull_out", "lateral"]}}
+                },
+                "target_id": {"type": "null"}
+              }
+            }
+          ]
+        }
+      ],
       "properties": {
         "type": {
           "$ref": "#/$defs/annotatedCameraMovement",
@@ -428,6 +591,7 @@
     },
     "cameraViewRelation": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "value": {
           "type": "string",
@@ -455,13 +619,14 @@
     },
     "timelineEvent": {
       "type": "object",
-      "description": "事件可位于视频片段内任意数值时间区间，用作动作和空间关系的共享时间锚点。",
+      "description": "[SEM-TEMPORAL-INTEGRITY][SEM-REFERENCE-INTEGRITY] 事件可位于视频片段内任意有效数值时间区间，用作动作和空间关系的共享时间锚点；ID 和引用必须有效且唯一。",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "id": {"type": "string"},
         "description": {"type": "string"},
         "start_time_seconds": {"type": "number"},
         "end_time_seconds": {"type": "number"},
-        "reference_ids": {"type": "array", "items": {"type": "string"}},
+        "reference_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "source_status": {"$ref": "#/$defs/sourceStatus"},
         "source_text": {"type": ["string", "null"]}
       },
@@ -470,6 +635,8 @@
     },
     "temporalRelation": {
       "type": "object",
+      "description": "[SEM-TEMPORAL-INTEGRITY][SEM-REFERENCE-INTEGRITY] 时间关系的事件引用、枚举、数值区间和可选间隔必须互相一致。",
+      "allOf": [{"$ref": "#/$defs/sourceEvidence"}],
       "properties": {
         "relation_id": {"type": "string"},
         "source_event_id": {"type": "string"},
@@ -516,9 +683,24 @@
     },
     "uncertainty": {
       "type": "object",
+      "description": "[SEM-UNCERTAINTY-RESOLUTION] unresolved 必须配 selected_value=null；use_default/use_inference 必须配非空 selected_value，记录实际采用值。field 必须非空且在数组中唯一。",
+      "oneOf": [
+        {
+          "properties": {
+            "resolution": {"const": "unresolved"},
+            "selected_value": {"type": "null"}
+          }
+        },
+        {
+          "properties": {
+            "resolution": {"enum": ["use_default", "use_inference"]},
+            "selected_value": {"type": "string", "minLength": 1}
+          }
+        }
+      ],
       "properties": {
-        "field": {"type": "string"},
-        "reason": {"type": "string"},
+        "field": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
         "resolution": {"type": "string", "enum": ["unresolved", "use_default", "use_inference"]},
         "selected_value": {"type": ["string", "null"]}
       },

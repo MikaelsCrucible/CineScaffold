@@ -17,3 +17,7 @@
 语义契约：
 
 {{CONVERSION_RULES}}
+
+代码与 Schema 共用的跨字段强制契约：
+
+{{CROSS_FIELD_CONTRACTS}}

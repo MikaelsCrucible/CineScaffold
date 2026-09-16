@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Literal
 
 from cinescaffold.errors import PromptTemplateError
+from cinescaffold.semantic_contracts import render_semantic_ai_contracts
 
 
 RULES_PLACEHOLDER = "{{CONVERSION_RULES}}"
+CROSS_FIELD_CONTRACTS_PLACEHOLDER = "{{CROSS_FIELD_CONTRACTS}}"
 REVISION_PLACEHOLDERS = {
     "{{SOURCE_LABEL}}",
     "{{SOURCE_TEXT}}",
@@ -33,11 +35,10 @@ def build_prompt(
     source_kind: Literal["natural_text", "textual_six"] = "natural_text",
 ) -> PromptBundle:
     template = system_template_path.read_text(encoding="utf-8")
-    if RULES_PLACEHOLDER not in template:
-        raise PromptTemplateError(f"系统提示缺少占位符 {RULES_PLACEHOLDER}")
+    _validate_system_template(template)
 
     rules = rules_path.read_text(encoding="utf-8").strip()
-    system_prompt = template.replace(RULES_PLACEHOLDER, rules or "（规则暂未提供）")
+    system_prompt = _render_system_prompt(template, rules)
     example = json.loads(format_example_path.read_text(encoding="utf-8"))
     source_label = "自然语言" if source_kind == "natural_text" else "文本六维"
     source_instruction = (
@@ -70,10 +71,9 @@ def build_revision_prompt(
     """Build the bounded second-pass semantic review request."""
 
     template = system_template_path.read_text(encoding="utf-8")
-    if RULES_PLACEHOLDER not in template:
-        raise PromptTemplateError(f"系统提示缺少占位符 {RULES_PLACEHOLDER}")
+    _validate_system_template(template)
     rules = rules_path.read_text(encoding="utf-8").strip()
-    system_prompt = template.replace(RULES_PLACEHOLDER, rules or "（规则暂未提供）")
+    system_prompt = _render_system_prompt(template, rules)
 
     revision = revision_template_path.read_text(encoding="utf-8")
     missing = sorted(
@@ -104,3 +104,26 @@ def build_revision_prompt(
     for placeholder, value in values.items():
         revision = revision.replace(placeholder, value)
     return PromptBundle(system_prompt=system_prompt, user_prompt=revision)
+
+
+def _validate_system_template(template: str) -> None:
+    missing = [
+        placeholder
+        for placeholder in (
+            RULES_PLACEHOLDER,
+            CROSS_FIELD_CONTRACTS_PLACEHOLDER,
+        )
+        if placeholder not in template
+    ]
+    if missing:
+        raise PromptTemplateError("系统提示缺少占位符 " + ", ".join(missing))
+
+
+def _render_system_prompt(template: str, rules: str) -> str:
+    return (
+        template.replace(RULES_PLACEHOLDER, rules or "（规则暂未提供）")
+        .replace(
+            CROSS_FIELD_CONTRACTS_PLACEHOLDER,
+            render_semantic_ai_contracts(),
+        )
+    )

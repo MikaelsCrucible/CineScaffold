@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from cinescaffold.errors import SchemaValidationError
-from cinescaffold.schema import load_schema, validate_model_output
+from cinescaffold.schema import (
+    SUPPORTED_SCHEMA_KEYWORDS,
+    load_schema,
+    validate_model_output,
+)
 from tests.helpers import ROOT, valid_model_output
 
 
@@ -13,6 +18,14 @@ class SchemaTest(unittest.TestCase):
 
     def test_valid_output_passes(self) -> None:
         validate_model_output(valid_model_output(), self.schema)
+
+    def test_committed_schemas_only_use_enforced_or_annotation_keywords(self) -> None:
+        schema_dir = ROOT / "src/cinescaffold/resources/schemas"
+        for path in schema_dir.glob("*.json"):
+            with self.subTest(schema=path.name):
+                schema = json.loads(path.read_text(encoding="utf-8"))
+                unknown = _schema_keywords(schema) - SUPPORTED_SCHEMA_KEYWORDS
+                self.assertEqual(sorted(unknown), [])
 
     def test_missing_dimension_fails(self) -> None:
         value = valid_model_output()
@@ -149,6 +162,90 @@ class SchemaTest(unittest.TestCase):
         with self.assertRaises(SchemaValidationError):
             validate_model_output(value, self.schema)
 
+    def test_uncertainty_resolution_requires_matching_selected_value(self) -> None:
+        value = valid_model_output()
+        value["uncertainties"] = [
+            {
+                "field": "camera.view_angle",
+                "reason": "原文未指定",
+                "resolution": "use_default",
+                "selected_value": None,
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            SchemaValidationError,
+            "SEM-UNCERTAINTY-RESOLUTION",
+        ):
+            validate_model_output(value, self.schema)
+
+    def test_source_evidence_contract_rejects_inferred_without_text(self) -> None:
+        value = valid_model_output()
+        value["scene_design"]["environment"] = {
+            "value": "道路",
+            "source_status": "inferred",
+            "source_text": None,
+        }
+
+        with self.assertRaises(SchemaValidationError):
+            validate_model_output(value, self.schema)
+
+    def test_motion_schema_rejects_cross_field_mismatch(self) -> None:
+        value = valid_model_output()
+        value["subject_motion"] = [_motion()]
+        value["subject_motion"][0]["motion_semantics"]["motion_mode"] = "stationary"
+        value["subject_motion"][0]["motion_semantics"]["action_kind"] = "locomotion"
+
+        with self.assertRaisesRegex(SchemaValidationError, "SEM-MOTION-COMBINATION"):
+            validate_model_output(value, self.schema)
+
+    def test_relationship_event_mode_is_closed_in_schema(self) -> None:
+        value = valid_model_output()
+        value["scene_design"]["relationships"] = [
+            {
+                "type": "proximity",
+                "subject_id": "subject",
+                "reference_id": "reference",
+                "timeline_event_id": None,
+                "temporal_mode": "at_midpoint",
+                "source_status": "explicit",
+                "source_text": "二者接近",
+            }
+        ]
+
+        with self.assertRaisesRegex(SchemaValidationError, "SEM-RELATION-EVENT"):
+            validate_model_output(value, self.schema)
+
+    def test_camera_movement_target_is_closed_in_schema(self) -> None:
+        value = valid_model_output()
+        value["camera"]["movement"]["type"] = _annotated("pan")
+        value["camera"]["movement"]["target_id"] = None
+
+        with self.assertRaisesRegex(
+            SchemaValidationError,
+            "SEM-CAMERA-MOVEMENT-TARGET",
+        ):
+            validate_model_output(value, self.schema)
+
+    def test_local_validator_enforces_declared_schema_keywords(self) -> None:
+        schema = {
+            "allOf": [{"type": "array", "minItems": 1, "maxItems": 2}],
+            "type": "array",
+            "uniqueItems": True,
+            "items": {
+                "oneOf": [
+                    {"type": "string", "minLength": 2, "pattern": "^[a-z]+$"},
+                    {"type": "number", "minimum": 1, "maximum": 3},
+                ]
+            },
+        }
+
+        validate_model_output(["ab", 2], schema)
+        for invalid in ([], ["a"], ["AB"], [0], [4], ["ab", "ab"]):
+            with self.subTest(value=json.dumps(invalid)):
+                with self.assertRaises(SchemaValidationError):
+                    validate_model_output(invalid, schema)
+
 
 def _annotated(value: str) -> dict[str, str]:
     return {"value": value, "source_status": "explicit", "source_text": value}
@@ -156,6 +253,56 @@ def _annotated(value: str) -> dict[str, str]:
 
 def _unknown() -> dict[str, str | None]:
     return {"value": None, "source_status": "unknown", "source_text": None}
+
+
+def _motion() -> dict[str, object]:
+    return {
+        "motion_id": "subject_move",
+        "subject_id": "subject",
+        "action": _annotated("向前移动"),
+        "motion_semantics": {
+            "action_kind": "locomotion",
+            "motion_type": "moving",
+            "motion_mode": "self_propelled",
+            "direction_mode": "world_forward",
+            "target_id": None,
+            "carrier_id": None,
+            "path_type": "linear",
+            "local_components": [],
+            "timeline_event_id": None,
+            "narrative_required": True,
+            "postconditions": {
+                "contained_by_id": None,
+                "external_visibility": "unchanged",
+            },
+            "source_status": "explicit",
+            "source_text": "向前移动",
+        },
+        "direction": _annotated("向前"),
+        "speed": _unknown(),
+        "trajectory": _annotated("直线"),
+        "start_time_seconds": 0.0,
+        "end_time_seconds": 1.0,
+        "secondary_motion": [],
+    }
+
+
+def _schema_keywords(node: object) -> set[str]:
+    if not isinstance(node, dict):
+        return set()
+    result = set(node)
+    for key, value in node.items():
+        if key in {"properties", "$defs"} and isinstance(value, dict):
+            for child in value.values():
+                result.update(_schema_keywords(child))
+        elif key in {"allOf", "anyOf", "oneOf", "prefixItems"} and isinstance(
+            value, list
+        ):
+            for child in value:
+                result.update(_schema_keywords(child))
+        elif key in {"items", "additionalProperties"} and isinstance(value, dict):
+            result.update(_schema_keywords(value))
+    return result
 
 
 if __name__ == "__main__":

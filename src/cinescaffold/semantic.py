@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from cinescaffold.errors import SchemaValidationError
+from cinescaffold.errors import SchemaValidationError, SemanticContractError
 from cinescaffold.prompting import build_prompt, build_revision_prompt
 from cinescaffold.providers.base import ProviderResponse, StructuredOutputProvider
 from cinescaffold.resources.paths import RuntimeResourcePaths
@@ -36,7 +36,7 @@ class SemanticParserConfig:
     translation_rules_path: Path
     translation_parameters_schema_path: Path
     review_rules_path: Path | None = None
-    prompt_version: str = "semantic-parser-v0.18"
+    prompt_version: str = "semantic-parser-v0.19"
 
 
 @dataclass(frozen=True)
@@ -190,6 +190,8 @@ def _audit_semantic_draft(
 def _semantic_contract_failure_code(message: str) -> str:
     """Classify deterministic failures without treating text as scene semantics."""
 
+    if any(token in message for token in ("uncertainties", "selected_value")):
+        return "semantic_uncertainty_contract_failed"
     if any(token in message for token in ("target_id", "相对方向", "几何目标")):
         return "semantic_direction_contract_failed"
     if any(
@@ -226,15 +228,18 @@ def _validate_and_translate(
     source_text: str,
     translation_schema_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    validate_model_output(content, schema)
-    normalized, translation_parameters = apply_translation_rules(
-        content,
-        translation_rules,
-        source_text,
-    )
-    validate_model_output(normalized, schema)
-    translation_schema = load_schema(translation_schema_path)
-    validate_model_output(translation_parameters, translation_schema)
+    try:
+        validate_model_output(content, schema)
+        normalized, translation_parameters = apply_translation_rules(
+            content,
+            translation_rules,
+            source_text,
+        )
+        validate_model_output(normalized, schema)
+        translation_schema = load_schema(translation_schema_path)
+        validate_model_output(translation_parameters, translation_schema)
+    except (SchemaValidationError, ValueError) as error:
+        raise SemanticContractError(str(error)) from error
     return normalized, translation_parameters
 
 

@@ -9,7 +9,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from cinescaffold.errors import ProviderError, ProviderHTTPError
+from cinescaffold.errors import (
+    ProviderError,
+    ProviderHTTPError,
+    SemanticContractError,
+)
 from cinescaffold.execution.runner import ExecutionConfig, ExecutionRunner
 from cinescaffold.planning.runner import InterpreterRunConfig, InterpreterRunner
 from cinescaffold.planning.trace import (
@@ -184,6 +188,17 @@ class WorkflowRunner:
             )
             return self._finish(summary, summary_path, started)
         except ProviderError as error:
+            summary["status"] = f"{stage}_failed"
+            summary["error"] = str(error)
+            summary["failure_code"] = error.failure_code
+            self._emit(
+                "pipeline_failed",
+                stage=stage,
+                error=str(error),
+                failure_code=error.failure_code,
+            )
+            return self._finish(summary, summary_path, started)
+        except SemanticContractError as error:
             summary["status"] = f"{stage}_failed"
             summary["error"] = str(error)
             summary["failure_code"] = error.failure_code

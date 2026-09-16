@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import tempfile
@@ -59,6 +60,32 @@ from tests.test_planning_toolkit import (
 
 
 class PlanningProtocolTest(unittest.TestCase):
+    def test_every_registered_planning_tool_is_named_in_system_prompt(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "src/cinescaffold/planning/agent.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(source)
+        registered = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and isinstance(decorator.func.value, ast.Name)
+                and decorator.func.value.id == "agent"
+                and decorator.func.attr == "tool"
+                for decorator in node.decorator_list
+            )
+        }
+        prompt = (
+            root / "src/cinescaffold/resources/prompts/scene_planner/system.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertTrue(registered)
+        self.assertEqual(sorted(name for name in registered if name not in prompt), [])
+
     def test_current_path_contract_rejects_missing_representation(self) -> None:
         with self.assertRaises(ValidationError):
             TrackSpec.model_validate(
